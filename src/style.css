@@ -1,0 +1,653 @@
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  font-family: 'Segoe UI', sans-serif;
+  background: #0b1020;
+  color: #e5e7eb;
+}
+
+.editor-shell {
+  height: 100%;
+  display: grid;
+  grid-template-columns: 240px 1fr 280px;
+  grid-template-rows: 1fr 90px;
+  grid-template-areas:
+    'left center right'
+    'timeline timeline timeline';
+}
+
+.panel {
+  padding: 12px;
+  border-right: 1px solid #1f2937;
+  background: #111827;
+  overflow-y: auto;
+}
+
+.left-panel {
+  grid-area: left;
+}
+
+.right-panel {
+  grid-area: right;
+  border-right: none;
+  border-left: 1px solid #1f2937;
+}
+
+.viewport-wrap {
+  grid-area: center;
+  position: relative;
+  background: #0f172a;
+}
+
+.joint-popup {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 300px;
+  max-height: calc(100% - 24px);
+  overflow-y: auto;
+  padding: 10px;
+  border: 1px solid #334155;
+  border-radius: 8px;
+  background: rgba(2, 6, 23, 0.88);
+  backdrop-filter: blur(2px);
+}
+
+.joint-popup h2 {
+  margin-bottom: 6px;
+}
+
+.joint-popup-actions {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.joint-popup-actions button {
+  width: 100%;
+}
+
+#viewport {
+  width: 100%;
+  height: 100%;
+}
+
+h2 {
+  margin: 0 0 8px;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: #93c5fd;
+}
+
+label {
+  display: block;
+  margin-bottom: 10px;
+  font-size: 13px;
+}
+
+input[type='number'],
+input[type='range'],
+input[type='text'],
+textarea,
+select,
+button {
+  width: 100%;
+  margin-top: 4px;
+}
+
+input[type='number'],
+input[type='range'],
+input[type='text'],
+textarea,
+select {
+  background: #0f172a;
+  color: #e5e7eb;
+  border: 1px solid #334155;
+  border-radius: 4px;
+  padding: 6px;
+}
+
+button {
+  border: 1px solid #334155;
+  border-radius: 4px;
+  background: #1e293b;
+  color: #f8fafc;
+  cursor: pointer;
+  padding: 7px;
+}
+
+button:hover {
+  background: #334155;
+}
+
+#export-package-btn {
+  margin-top: 6px;
+}
+
+.upload input {
+  display: block;
+  margin-top: 6px;
+}
+
+.hint {
+  color: #9ca3af;
+  font-size: 12px;
+}
+
+.object-list,
+.keyframe-list,
+.joint-point-list,
+.joint-panel-list {
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.object-list li,
+.keyframe-list li {
+  padding: 6px;
+  margin-bottom: 4px;
+  border: 1px solid #334155;
+  border-radius: 4px;
+  font-size: 12px;
+  background: #0f172a;
+}
+
+.keyframe-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.keyframe-delete-btn {
+  width: auto;
+  margin-top: 0;
+  padding: 4px 8px;
+  font-size: 11px;
+  background: #3f1d2e;
+  border-color: #7f1d1d;
+}
+
+.keyframe-delete-btn:hover {
+  background: #7f1d1d;
+}
+
+.joint-point-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.joint-point-item.active {
+  border-color: #22d3ee;
+}
+
+.mini-btn {
+  width: auto;
+  margin-top: 0;
+  padding: 4px 8px;
+  font-size: 11px;
+}
+
+.mini-btn.danger {
+  background: #3f1d2e;
+  border-color: #7f1d1d;
+}
+
+.mini-btn.danger:hover {
+  background: #7f1d1d;
+}
+
+.object-list li {
+  cursor: pointer;
+}
+
+.object-list li:hover {
+  border-color: #60a5fa;
+}
+
+.object-list li.selected {
+  border-color: #22d3ee;
+}
+
+.object-list li.tree-node {
+  padding: 0;
+  background: transparent;
+  border: 1px solid transparent;
+}
+
+.tree-node-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 24px;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.tree-indent {
+  display: inline-flex;
+  align-items: stretch;
+  flex-shrink: 0;
+}
+
+.tree-guide {
+  width: 20px;
+  height: 20px;
+  border-left: 1px solid rgba(255, 255, 255, 0.22);
+}
+
+.tree-guide.elbow {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.22);
+}
+
+.tree-toggle-btn {
+  width: 14px;
+  min-width: 14px;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: #cbd5e1;
+  font-size: 10px;
+  line-height: 1;
+}
+
+.tree-toggle-btn:disabled {
+  opacity: 0;
+}
+
+.tree-node-icon {
+  width: 16px;
+  text-align: center;
+  font-size: 12px;
+}
+
+.tree-node-label {
+  color: #f8fafc;
+  font-size: 12px;
+}
+
+.tree-node-label.dim {
+  color: #94a3b8;
+}
+
+.object-list li.tree-node:hover .tree-node-row {
+  background: rgba(96, 165, 250, 0.14);
+}
+
+.object-list li.tree-node.selected .tree-node-row {
+  background: rgba(34, 211, 238, 0.22);
+  outline: 1px solid rgba(34, 211, 238, 0.65);
+}
+
+.object-list li.tree-node.drop-as-child .tree-node-row {
+  background: rgba(147, 197, 253, 0.18);
+  outline: 1px dashed rgba(147, 197, 253, 0.7);
+}
+
+.object-list li.tree-node.drop-as-sibling-top {
+  box-shadow: inset 0 2px 0 rgba(147, 197, 253, 0.85);
+}
+
+.object-list li.tree-node.drop-as-sibling-bottom {
+  box-shadow: inset 0 -2px 0 rgba(147, 197, 253, 0.85);
+}
+
+.tree-context-menu {
+  position: fixed;
+  z-index: 9999;
+  min-width: 110px;
+  padding: 6px;
+  border: 1px solid #334155;
+  border-radius: 6px;
+  background: #0f172a;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+}
+
+.tree-context-menu button {
+  margin: 0;
+  padding: 6px 8px;
+  text-align: left;
+  background: transparent;
+  border: none;
+}
+
+.tree-context-menu button:hover {
+  background: #1e293b;
+}
+
+.timeline {
+  grid-area: timeline;
+  display: grid;
+  grid-template-columns: 120px 1fr 170px;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-top: 1px solid #1f2937;
+  background: #111827;
+}
+
+.timeline span {
+  text-align: right;
+  color: #cbd5e1;
+  font-size: 12px;
+}
+
+.export-output {
+  min-height: 140px;
+  margin: 8px 0 0;
+  font-size: 11px;
+  padding: 8px;
+  border: 1px solid #334155;
+  border-radius: 4px;
+  background: #020617;
+  white-space: pre-wrap;
+}
+
+hr {
+  border: none;
+  border-top: 1px solid #334155;
+  margin: 14px 0;
+}
+
+/* ── Joint tag on tree nodes ── */
+
+.tree-joint-tag {
+  margin-left: auto;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 10px;
+  line-height: 1.4;
+  cursor: pointer;
+  white-space: nowrap;
+  background: rgba(51, 65, 85, 0.5);
+  color: #94a3b8;
+  border: 1px solid transparent;
+  flex-shrink: 0;
+}
+
+.tree-joint-tag:hover {
+  background: rgba(51, 65, 85, 0.9);
+  color: #e2e8f0;
+}
+
+.tree-joint-tag.active {
+  background: rgba(34, 211, 238, 0.18);
+  color: #22d3ee;
+  border-color: rgba(34, 211, 238, 0.4);
+}
+
+/* ── Joint config panel (floating) ── */
+
+.joint-config-panel {
+  position: fixed;
+  z-index: 10000;
+  width: 220px;
+  padding: 10px;
+  border: 1px solid #334155;
+  border-radius: 8px;
+  background: #0f172a;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+}
+
+.joint-config-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #93c5fd;
+}
+
+.joint-config-close {
+  width: auto !important;
+  margin: 0 !important;
+  padding: 2px 6px !important;
+  font-size: 12px;
+  background: transparent;
+  border: none;
+  color: #94a3b8;
+  cursor: pointer;
+}
+
+.joint-config-close:hover {
+  color: #f87171;
+}
+
+.joint-config-panel label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 12px;
+}
+
+.joint-config-panel select,
+.joint-config-panel input[type='number'] {
+  width: 100%;
+  margin-top: 2px;
+  padding: 4px 6px;
+  font-size: 12px;
+  background: #020617;
+  color: #e5e7eb;
+  border: 1px solid #334155;
+  border-radius: 4px;
+}
+
+.jc-axis-group {
+  margin-top: 4px;
+}
+
+.jc-origin-group {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid #334155;
+}
+
+.jc-origin-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: #93c5fd;
+  margin-bottom: 4px;
+}
+
+.jc-origin-row {
+  display: flex;
+  gap: 4px;
+}
+
+.jc-origin-row label {
+  flex: 1;
+  font-size: 11px;
+  margin-bottom: 4px;
+}
+
+.jc-origin-row input {
+  width: 100%;
+  font-size: 11px;
+  padding: 3px 4px;
+}
+
+.jc-origin-actions {
+  display: flex;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.jc-origin-actions button {
+  flex: 1;
+  font-size: 11px;
+  padding: 4px;
+}
+
+.jc-drive-group {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid #334155;
+}
+
+.jc-drive-group label {
+  margin-bottom: 4px;
+}
+
+.jc-value-slider {
+  width: 100%;
+  margin-top: 2px;
+}
+
+.jc-value-number {
+  width: 100%;
+  margin-top: 4px;
+  padding: 4px 6px;
+  font-size: 12px;
+  background: #020617;
+  color: #e5e7eb;
+  border: 1px solid #334155;
+  border-radius: 4px;
+}
+
+/* ══ PKF 参数卡片 ══ */
+
+.pkf-param-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 8px 0;
+}
+
+/* 每个参数一张卡片 */
+.pkf-param-card {
+  padding: 8px;
+  border: 1px solid #334155;
+  border-radius: 6px;
+  background: #0f172a;
+}
+
+/* 第一行：id 输入 + 删除按钮 */
+.pkf-param-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+/* 参数 id 输入框：加粗突出，占满剩余宽度 */
+.pkf-param-id {
+  flex: 1;
+  font-weight: 600;
+  font-size: 12px;
+  padding: 4px 6px;
+  background: #020617;
+  color: #22d3ee;
+  border: 1px solid #334155;
+  border-radius: 4px;
+}
+
+/* 第二行：类型/单位/默认值 三列横排 */
+.pkf-param-fields {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
+/* 每个字段列 */
+.pkf-field {
+  flex: 1;
+  font-size: 11px;
+  margin-bottom: 4px;
+}
+
+/* 描述行占满整行 */
+.pkf-field-full {
+  display: block;
+  width: 100%;
+}
+
+.pkf-field select,
+.pkf-field input {
+  width: 100%;
+  margin-top: 2px;
+  padding: 3px 4px;
+  font-size: 11px;
+  background: #020617;
+  color: #e5e7eb;
+  border: 1px solid #334155;
+  border-radius: 4px;
+}
+
+/* ══ PKF 步骤卡片 ══ */
+
+.pkf-step-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 8px 0;
+}
+
+/* 每个步骤一张卡片 */
+.pkf-step-card {
+  padding: 8px;
+  border: 1px solid #334155;
+  border-radius: 6px;
+  background: #0f172a;
+}
+
+/* 标题行：序号 + 删除按钮 */
+.pkf-step-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.pkf-step-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #93c5fd;
+}
+
+/* 三列横排行 */
+.pkf-step-row3 {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
+/* 两列横排行（公式输入） */
+.pkf-step-row2 {
+  display: flex;
+  gap: 6px;
+}
+
+/* 添加步骤 + 从关键帧生成 按钮行 */
+.pkf-step-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.pkf-step-actions button {
+  flex: 1;
+}
+
+@media (max-width: 1100px) {
+  .editor-shell {
+    grid-template-columns: 220px 1fr;
+    grid-template-rows: 1fr 260px 90px;
+    grid-template-areas:
+      'left center'
+      'right right'
+      'timeline timeline';
+  }
+}
