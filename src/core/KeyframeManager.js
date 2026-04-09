@@ -196,22 +196,45 @@ export class KeyframeManager {
     // 关节零点姿态（parent-local space）
     // 优先级：def 自带的 baseTransform（关节首次创建时捕获，最准确）
     //       > objectData.baseTransform（动画 bind pose，可能与关节零点不同）
-    //       > 当前 position/rotation（兜底，不准）
+    //       > 懒捕获：第一次驱动该关节但都没有 baseTransform 时，
+    //         把当前 local 姿态存进 def.baseTransform 作为零点。
+    //         这避免了"用 childObj.position 兜底"导致的累积漂移 bug：
+    //         如果不固化零点，每帧都会把上一帧的位置当作 base，结果不断累加偏移。
+    //         懒捕获场景：导入了没有 base_transform 字段的旧 ZIP。
     const objectData = this.objectDataById.get(nodeId);
-    const base = def.baseTransform || objectData?.baseTransform;
+    let base = def.baseTransform || objectData?.baseTransform;
+    if (!base) {
+      def.baseTransform = {
+        tx: childObj.position.x,
+        ty: childObj.position.y,
+        tz: childObj.position.z,
+        rx: childObj.rotation.x,
+        ry: childObj.rotation.y,
+        rz: childObj.rotation.z,
+      };
+      base = def.baseTransform;
+    }
 
-    // def.origin 存储在 UI 约定（Z-up），表示世界空间坐标
-    // （与 syncJointOriginMarker、onOriginFromBbox/Center、onOriginFromJointPoint 一致）
-    // 转换到 Three.js 世界空间（Y-up）：UI Z → Y，UI Y → Z
-    const originWorld = new THREE.Vector3(
+    // def.origin 存储在 UI 约定（Z-up），表示**父节点的刚性坐标系**（rotation + translation，**无 scale**）
+    // 这避免了祖先 scale 把数字放大成 mm 单位的情况——origin 始终是「世界米距离 + 父节点姿态对齐」。
+    // 父节点位移 / 旋转 → originWorld 自动跟着；父节点 scale 不影响 origin。
+    const originLocalRigid = new THREE.Vector3(
       def.origin?.x ?? 0,
       def.origin?.z ?? 0,  // UI Z → Three.js Y (vertical)
       def.origin?.y ?? 0,  // UI Y → Three.js Z
     );
 
+    const parent = childObj.parent;
+    if (!parent) return;
+    parent.updateMatrixWorld(true);
+    // 用 parent 的刚性变换（quat + position）把 origin 转世界，不乘 scale
+    const parentWorldQuat = parent.getWorldQuaternion(new THREE.Quaternion());
+    const parentWorldPos = parent.getWorldPosition(new THREE.Vector3());
+    const originWorld = originLocalRigid.clone().applyQuaternion(parentWorldQuat).add(parentWorldPos);
+
     if (def.type === 'revolute') {
       // 在世界空间绕 originWorld 旋转 currentValue 度。
-      // 之前把 origin 当 parent-local 用，导致父节点有偏移时旋转中心错位。
+      // origin 跟随父节点：父节点抬升 → originWorld 自动跟着抬升 → 旋转中心一直对
       const rad = (def.currentValue * Math.PI) / 180;
       const worldAxis = mapUiAxisToWorld(def.axis);
       const worldAxisVec = worldAxis === 'x' ? new THREE.Vector3(1, 0, 0)
@@ -219,9 +242,6 @@ export class KeyframeManager {
         : new THREE.Vector3(0, 0, 1);
       // 世界轴旋转 quaternion
       const deltaQuat = new THREE.Quaternion().setFromAxisAngle(worldAxisVec, rad);
-
-      const parent = childObj.parent;
-      if (!parent) return;
 
       // 1) 先把 child 放回关节零点姿态（parent-local）
       if (base) {
@@ -246,9 +266,7 @@ export class KeyframeManager {
       childObj.quaternion.copy(parentWorldQuatInv.multiply(newWorldQuat));
     } else if (def.type === 'prismatic') {
       // Prismatic：沿关节的世界轴方向平移 currentValue 单位。
-      // 注意必须在世界空间计算，而不是简单地加到局部 position[axis] 上。
-      // 当 childObj 的父节点有旋转时，父节点的局部 Y 方向并不等于世界 Y 方向，
-      // 直接加到局部 position.y 上会导致实际位移方向偏离用户预期（gizmo 拖拽方向）。
+      // 必须在世界空间计算（父节点有旋转时局部轴 ≠ 世界轴）。
       const worldAxis = mapUiAxisToWorld(def.axis);
       const worldAxisVec = worldAxis === 'x' ? new THREE.Vector3(1, 0, 0)
         : worldAxis === 'y' ? new THREE.Vector3(0, 1, 0)
@@ -258,30 +276,37 @@ export class KeyframeManager {
       if (base) {
         childObj.position.set(base.tx, base.ty, base.tz);
       }
-
-      // 2) 计算 child 在零点姿态下的世界位置
-      const parent = childObj.parent;
-      if (parent) {
-        parent.updateMatrixWorld(true);
-        // getWorldPosition 会使用 child 刚才设置的 local + parent 的 worldMatrix
-        const baseWorldPos = childObj.getWorldPosition(new THREE.Vector3());
-        // 3) 沿世界轴方向加上 currentValue 位移
-        const targetWorldPos = baseWorldPos.add(worldAxisVec.multiplyScalar(def.currentValue));
-        // 4) 把目标世界位置转回父 local，写入 child.position
-        childObj.position.copy(parent.worldToLocal(targetWorldPos));
-      } else {
-        // 兜底：没有父节点时，local 就是世界，直接加
-        childObj.position[worldAxis] += def.currentValue;
-      }
+      // 2) 读取零点姿态下的世界位置
+      const baseWorldPos = childObj.getWorldPosition(new THREE.Vector3());
+      // 3) 沿世界轴方向加上 currentValue 位移
+      const targetWorldPos = baseWorldPos.add(worldAxisVec.multiplyScalar(def.currentValue));
+      // 4) 转回 parent-local 写入
+      childObj.position.copy(parent.worldToLocal(targetWorldPos));
     }
   }
 
   /**
    * Apply all joint drives. Called from render loop or after value changes.
+   * 关键：按场景树深度排序，**父级先驱动**，子级后驱动。
+   * 这样子关节读 parent.matrixWorld 时父亲已经处于本帧的最终位置，
+   * 子关节的旋转中心 / 平移参考都基于最新的父姿态，避免父子级联错乱。
    */
   applyAllJointDrives(root) {
     if (!root) return;
-    this.jointDefinitions.forEach((def) => {
+    // 收集 nodeId → 深度 的映射
+    const depthById = new Map();
+    const walk = (obj, depth) => {
+      depthById.set(obj.uuid, depth);
+      (obj.children || []).forEach((c) => walk(c, depth + 1));
+    };
+    walk(root, 0);
+    // 按深度升序（浅的先）排序
+    const sorted = [...this.jointDefinitions.values()].sort((a, b) => {
+      const da = depthById.get(a.childId) ?? 9999;
+      const db = depthById.get(b.childId) ?? 9999;
+      return da - db;
+    });
+    sorted.forEach((def) => {
       this.applyJointDrive(def.childId, root);
     });
   }

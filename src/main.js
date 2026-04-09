@@ -181,12 +181,13 @@ function refreshObjectTree() {
       ui.showJointConfigPanel(node.id, node.name, currentDef, rect, {
         onChange: (patch) => {
           pushUndoSnapshot();
-          // ── 首次创建关节时捕获零点姿态和默认原点 ──
+          // ── 首次创建关节时捕获零点姿态 ──
           // baseTransform：记录对象当前 local 姿态作为零点，applyJointDrive(currentValue=0)
           //               把对象设回该姿态，视觉上不动；之后拖 Joint Value 才产生运动。
-          // origin：默认设为对象当前世界位置（转 UI 约定），这样 revolute 默认
-          //        绕对象所在位置旋转，而不是绕世界原点 orbit。用户可用「从激活关节点」
-          //        或「子对象中心」按钮改为其他位置。
+          // origin（URDF 风格）：parent-local 空间，默认 (0,0,0)。这意味着旋转中心在
+          //                      父节点的局部原点。如果用了 onInsertGroup 插了父级 group，
+          //                      newGroup 的 (0,0,0) 就是子对象原本的连接点，正好。
+          //                      用户可用「子对象底部/中心」按钮改为其他 parent-local 位置。
           const existingDef = keyframeManager.getJointDef(node.id);
           const bindPatch = {};
           if ((!existingDef || !existingDef.baseTransform) && node.object) {
@@ -199,14 +200,9 @@ function refreshObjectTree() {
               ry: obj.rotation.y,
               rz: obj.rotation.z,
             };
-            // 默认 origin = 对象当前世界位置（UI Z-up 约定）
-            // 仅在 patch 未显式传 origin 且之前也没设过 origin 时才填默认
-            const hasOriginAlready = existingDef?.origin
-              && (existingDef.origin.x !== 0 || existingDef.origin.y !== 0 || existingDef.origin.z !== 0);
-            if (!patch.origin && !hasOriginAlready) {
-              const worldPos = obj.getWorldPosition(new THREE.Vector3());
-              const uiOrigin = worldToUiVector3(worldPos);
-              bindPatch.origin = { x: uiOrigin.x, y: uiOrigin.y, z: uiOrigin.z };
+            // 默认 origin = parent-local (0,0,0)
+            if (!patch.origin && !existingDef?.origin) {
+              bindPatch.origin = { x: 0, y: 0, z: 0 };
             }
           }
           keyframeManager.setJointDef(node.id, {
@@ -226,24 +222,41 @@ function refreshObjectTree() {
           keyframeManager.applyJointDrive(node.id, sceneManager.sceneRoot);
         },
         onOriginFromBbox: (callback) => {
-          // Set origin to bottom-center of child's bounding box (UI convention)
+          // 把世界点转成 parent 的「刚性坐标系」（rotation + translation，无 scale）
+          // 不能用 parent.worldToLocal——它会乘 parent.matrixWorld^-1 包含 scale 1/0.001=1000，
+          // 数字会爆炸。这里只用 quat 和 position，确保数字保持世界米单位。
           const childObj = node.object;
           if (!childObj) return;
+          const parent = childObj.parent;
+          if (!parent) return;
           const box = new THREE.Box3().setFromObject(childObj);
           if (box.isEmpty()) return;
           const center = box.getCenter(new THREE.Vector3());
-          const uiOrigin = worldToUiVector3(new THREE.Vector3(center.x, box.min.y, center.z));
+          const worldBottom = new THREE.Vector3(center.x, box.min.y, center.z);
+          parent.updateMatrixWorld(true);
+          const parentQuat = parent.getWorldQuaternion(new THREE.Quaternion());
+          const parentPos = parent.getWorldPosition(new THREE.Vector3());
+          // worldPoint - parentPos → 用父旋转的逆 → parent-rigid frame
+          const offset = worldBottom.clone().sub(parentPos);
+          const local = offset.applyQuaternion(parentQuat.clone().invert());
+          const uiOrigin = worldToUiVector3(local);
           callback(uiOrigin.x, uiOrigin.y, uiOrigin.z);
           syncJointOriginMarker(node.id);
         },
         onOriginFromCenter: (callback) => {
-          // Set origin to center of child's bounding box (UI convention)
           const childObj = node.object;
           if (!childObj) return;
+          const parent = childObj.parent;
+          if (!parent) return;
           const box = new THREE.Box3().setFromObject(childObj);
           if (box.isEmpty()) return;
-          const center = box.getCenter(new THREE.Vector3());
-          const uiOrigin = worldToUiVector3(center);
+          const worldCenter = box.getCenter(new THREE.Vector3());
+          parent.updateMatrixWorld(true);
+          const parentQuat = parent.getWorldQuaternion(new THREE.Quaternion());
+          const parentPos = parent.getWorldPosition(new THREE.Vector3());
+          const offset = worldCenter.clone().sub(parentPos);
+          const local = offset.applyQuaternion(parentQuat.clone().invert());
+          const uiOrigin = worldToUiVector3(local);
           callback(uiOrigin.x, uiOrigin.y, uiOrigin.z);
           syncJointOriginMarker(node.id);
         },
@@ -290,21 +303,25 @@ function refreshObjectTree() {
       const parent = obj.parent || sceneManager.sceneRoot;
       const idx = parent.children.indexOf(obj);
 
-      // Create group with same local transform as the child
+      // 创建插入的父级 group：**只继承 translation**，rotation 和 scale 留给子对象
+      // 这样 newGroup 的 local 坐标系和 parent 的 local 坐标系**只差一个平移**，
+      // 后续 origin 在 newGroup-local 空间下就是世界距离尺度，不会被 scale/rotation 扭曲。
+      // 数学：newGroup(T) * obj(R*S) = T*R*S = original obj.matrix ✓ 世界变换不变
       const newGroup = new THREE.Group();
       newGroup.name = `${obj.name || 'node'}_joint_group`;
       newGroup.position.copy(obj.position);
-      newGroup.quaternion.copy(obj.quaternion);
-      newGroup.scale.copy(obj.scale);
+      // newGroup.quaternion 保持 identity（默认）
+      // newGroup.scale 保持 (1,1,1)（默认）
 
       // Remove obj from parent, add group in its place
       parent.remove(obj);
       parent.add(newGroup);
 
-      // Put obj under group with identity local transform
+      // 把 obj 放到 newGroup 下，**只重置 position 为 (0,0,0)**，
+      // rotation 和 scale 保留原样，让世界变换跟原来等价
       obj.position.set(0, 0, 0);
-      obj.quaternion.identity();
-      obj.scale.set(1, 1, 1);
+      // obj.quaternion 保留
+      // obj.scale 保留
       newGroup.add(obj);
 
       // Restore sibling order: put newGroup at the original index
@@ -383,18 +400,25 @@ function syncJointGizmo() {
 
 function syncJointOriginMarker(nodeId) {
   const id = nodeId || ui.activeJointConfigNodeId;
-  if (!id) {
-    // Don't clear — leave existing pivot marker from old joint system
-    return;
-  }
+  if (!id) return;
   const def = keyframeManager.getJointDef(id);
   if (!def || def.type === 'none' || def.type === 'fixed') return;
-  // Convert UI origin to world coordinates and show marker
-  const worldOrigin = uiToWorldVector3(
+  // origin 是 parent 的「刚性坐标系」（rotation + translation，无 scale）
+  // 转世界：parentPos + parentQuat * originLocal
+  const childObj = getSceneNodeById(id);
+  if (!childObj) return;
+  const parent = childObj.parent;
+  if (!parent) return;
+  parent.updateMatrixWorld(true);
+  // UI Z-up → Three.js Y-up
+  const localOrigin = uiToWorldVector3(
     def.origin?.x ?? 0,
     def.origin?.y ?? 0,
     def.origin?.z ?? 0,
   );
+  const parentQuat = parent.getWorldQuaternion(new THREE.Quaternion());
+  const parentPos = parent.getWorldPosition(new THREE.Vector3());
+  const worldOrigin = localOrigin.applyQuaternion(parentQuat).add(parentPos);
   sceneManager.setPivotMarker(worldOrigin);
 }
 
@@ -503,15 +527,26 @@ async function handleImportPackage(file) {
       rawFile: modelFile,
     };
 
-    // ── 检测老格式 ZIP（schema_version 1）──
-    // v1: joints.json 存的是关节点空间锚点；joint-definitions.json 存的是 FK 关节
-    // v2: joints.json 直接存 FK 关节定义；不再有关节点系统
+    // ── 检测老格式 ZIP ──
+    // v1: joints.json 是关节点空间锚点；joint-definitions.json 是 FK 关节定义
+    // v2: joints.json 是 FK 关节定义；origin 是世界坐标
+    // v3: origin 是 parent-local（URDF 风格），motion 是全局 keyframes schema
+    // v4: model.glb 由 GLTFExporter 序列化，包含运行时插入的 group。
+    //     origin 语义改为「父刚性坐标系」（parent rigid frame，无 scale）
     const schemaVersion = manifest.schema_version || 1;
     const hasLegacyJointDefsFile = !!manifest.files?.joint_definitions;
+    // v < 4：origin / 场景树状态都不兼容当前代码，导入后 reset 关节定义
+    const needsOriginReset = schemaVersion < 4;
     if (schemaVersion < 2 || hasLegacyJointDefsFile) {
       alert(
-        '该资产包使用旧版关节格式（v1），新版编辑器不再支持自动迁移。\n\n' +
-        '模型和关键帧仍会正常加载，请重新在场景树中配置关节定义。'
+        '该资产包使用旧版关节格式（v1），新版编辑器不支持自动迁移。\n\n' +
+        '模型加载正常；请重新在场景树中配置关节定义。'
+      );
+    } else if (needsOriginReset) {
+      alert(
+        '该资产包是旧版本（v' + schemaVersion + '），关节坐标语义已变更。\n\n' +
+        '已自动重置所有关节的 origin 和 currentValue 为 0；并且旧版本不包含运行时插入的父级 group，' +
+        '需要重新插入父级 + 用「子对象底部 / 中心」拾取原点。'
       );
     }
 
@@ -537,7 +572,7 @@ async function handleImportPackage(file) {
       });
 
       const data = JSON.parse(await jointsFile.async('string'));
-      // v2 用 definitions 数组；v1 老 joints.json 用 joints 数组（关节点，跳过它）
+      // v2+ 用 definitions 数组；v1 老 joints.json 用 joints 数组（关节点，跳过它）
       const definitionsArr = Array.isArray(data.definitions) ? data.definitions : [];
       definitionsArr.forEach((d) => {
         // Priority: 1) name match, 2) scene_path match, 3) fallback to stored id
@@ -547,16 +582,23 @@ async function handleImportPackage(file) {
         }
         const nodeId = childObj?.uuid || d.child_id || d.id;
         const parentObj = childObj?.parent;
+        // v < 3：origin 是世界坐标，新代码当 parent-local 解读会错位 → 强制 reset
+        // currentValue 也 reset 为 0，避免一加载就处于奇怪的姿态
+        const useOrigin = needsOriginReset
+          ? { x: 0, y: 0, z: 0 }
+          : { x: d.origin?.x ?? 0, y: d.origin?.y ?? 0, z: d.origin?.z ?? 0 };
+        const useCurrentValue = needsOriginReset ? 0 : (d.current_value ?? 0);
         keyframeManager.setJointDef(nodeId, {
           name: d.name || '',
           type: d.type || 'none',
           axis: d.axis || 'y',
-          origin: { x: d.origin?.x ?? 0, y: d.origin?.y ?? 0, z: d.origin?.z ?? 0 },
+          origin: useOrigin,
           limits: { min: d.limits?.min ?? -180, max: d.limits?.max ?? 180 },
           parentId: parentObj?.uuid || d.parent_id || null,
           childId: nodeId,
-          currentValue: d.current_value ?? 0,
-          baseTransform: d.base_transform || null,
+          currentValue: useCurrentValue,
+          // v < 3 同样 reset baseTransform，让新代码懒捕获，匹配新模型当前 local 姿态
+          baseTransform: needsOriginReset ? null : (d.base_transform || null),
         });
       });
     }
@@ -660,17 +702,10 @@ async function handleImportPackage(file) {
     keyframeManager.evaluateAllAt(0, sceneManager.sceneRoot);
     keyframeManager.applyAllJointDrives(sceneManager.sceneRoot);
 
-    const restoredClipCount = editableObjects.reduce((sum, obj) => {
-      const data = keyframeManager.ensureObjectData(obj);
-      return sum + (data ? data.clips.size : 0);
-    }, 0);
-    const restoredKfCount = editableObjects.reduce((sum, obj) => {
-      const data = keyframeManager.ensureObjectData(obj);
-      if (!data) return sum;
-      let count = 0;
-      data.clips.forEach((c) => { count += c.keyframes.length; });
-      return sum + count;
-    }, 0);
+    // 全局 clip + 关键帧统计（重构后是项目级，与对象数无关）
+    const restoredClipCount = keyframeManager.globalClips.size;
+    let restoredKfCount = 0;
+    keyframeManager.globalClips.forEach((c) => { restoredKfCount += c.keyframes.length; });
 
     // 状态信息包含 PKF 统计
     const pkfInfo = (restoredPkfParams || restoredPkfSteps)
@@ -1209,7 +1244,8 @@ ui.exportPackageBtn.addEventListener('click', async () => {
     const { manifest } = await packageExporter.exportZip({
       sourceFileName: sourceInfo.fileName,
       sourceFormat: sourceInfo.format,
-      rawModelFile: sourceInfo.rawFile,
+      // v4: 传 sceneRoot 让 GLTFExporter 序列化当前场景树（含 onInsertGroup 修改）
+      sceneRoot: sceneManager.sceneRoot,
       jointDefinitions: jointDefs.map((d) => {
         const obj = getSceneNodeById(d.childId);
         return { ...d, scenePath: obj ? getScenePath(obj) : null };

@@ -836,6 +836,11 @@ export class EditorUI {
     axisSelect.addEventListener('change', emitChange);
     minInput.addEventListener('change', () => { syncSliderRange(); emitChange(); });
     maxInput.addEventListener('change', () => { syncSliderRange(); emitChange(); });
+    // 同时监听 'input'（每次按键都触发）和 'change'（blur 时触发）
+    // 让用户改 X/Y/Z 数值时立即看到 origin marker 移动 + 关节驱动跟着重算
+    originXInput.addEventListener('input', emitChange);
+    originYInput.addEventListener('input', emitChange);
+    originZInput.addEventListener('input', emitChange);
     originXInput.addEventListener('change', emitChange);
     originYInput.addEventListener('change', emitChange);
     originZInput.addEventListener('change', emitChange);
