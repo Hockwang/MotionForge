@@ -1,6 +1,10 @@
 /**
  * 结果包导出器
- * 将编辑器数据打包为带时间戳的 ZIP 文件，包含 manifest、joints、joint-definitions、motion、pkf、model
+ * 将编辑器数据打包为带时间戳的 ZIP 文件，包含 manifest、joints、motion、pkf、model
+ *
+ * schema_version 历史：
+ *  - v1：老格式，joints.json 是关节点（空间锚点）+ joint-definitions.json 是 FK 关节定义
+ *  - v2：joints.json 直接存 FK 关节定义（type/axis/origin/limits/parent/child），删除老关节点系统
  */
 import JSZip from 'jszip';
 
@@ -11,8 +15,7 @@ export class ResultPackageExporter {
    * @param {string}  options.sourceFileName    - 源文件名
    * @param {string}  options.sourceFormat      - 源格式
    * @param {File}    options.rawModelFile      - 原始模型文件
-   * @param {Array}   options.jointPoints       - 关节点数据
-   * @param {Array}   options.jointDefinitions  - 关节定义数据
+   * @param {Array}   options.jointDefinitions  - 关节定义数组（type/axis/origin/limits/parent/child/currentValue/baseTransform）
    * @param {Array}   options.clips             - 动作片段数据
    * @param {Array}   [options.pkfParameters]   - PKF 参数声明数组
    * @param {Array}   [options.pkfSteps]        - PKF 步骤数组
@@ -23,7 +26,6 @@ export class ResultPackageExporter {
     sourceFileName,
     sourceFormat,
     rawModelFile,
-    jointPoints,
     jointDefinitions,
     clips,
     pkfParameters,
@@ -34,7 +36,6 @@ export class ResultPackageExporter {
     const timestamp = this.getTimestamp();
     const manifestFileName = `manifest-${timestamp}.json`;
     const jointsFileName = `joints-${timestamp}.json`;
-    const jointDefsFileName = `joint-definitions-${timestamp}.json`;
     const motionFileName = `motion-${timestamp}.json`;
     // PKF 文件：有参数或步骤时才生成
     const hasPkf = (pkfParameters && pkfParameters.length) || (pkfSteps && pkfSteps.length);
@@ -43,7 +44,7 @@ export class ResultPackageExporter {
     const modelFileName = rawModelFile ? `model-${timestamp}.${this.getExtension(sourceFileName)}` : null;
 
     const manifest = {
-      schema_version: 1,
+      schema_version: 2,
       generator: editorName,
       exported_at: new Date().toISOString(),
       source: {
@@ -56,53 +57,17 @@ export class ResultPackageExporter {
       files: {
         manifest: manifestFileName,
         model: modelFileName,
-        joints: jointsFileName,
-        joint_definitions: jointDefsFileName,
+        joints: jointsFileName, // v2: FK 关节定义（取代了 v1 的关节点系统）
         motion: motionFileName,
-        pkf: pkfFileName, // 可为 null（向后兼容：旧版无此字段）
+        pkf: pkfFileName,       // 可为 null
       },
     };
 
+    // joints.json（v2 schema）：FK 关节定义。
+    // 每条记录包含：type（revolute/prismatic/fixed）、axis、origin（世界空间）、
+    // limits、parent_id、child_id、current_value、base_transform（关节零点姿态）。
     const joints = {
-      _comment: {
-        offset_from_object_origin:
-          '关节点相对于跟随对象世界坐标原点的偏移量（世界坐标系）。对象平移时，关节位置 = 对象当前世界坐标 + offset_from_object_origin。关节不跟随对象旋转。',
-      },
-      joints: (jointPoints || []).map((p) => ({
-        id: p.id,
-        name: p.name,
-        position: [p.x ?? 0, p.y ?? 0, p.z ?? 0],
-        follow_object: p.followObjectName || null,
-        offset_from_object_origin: p.followOffset
-          ? [p.followOffset.x ?? 0, p.followOffset.y ?? 0, p.followOffset.z ?? 0]
-          : null,
-      })),
-    };
-
-    const motion = {
-      clips: (clips || []).map((clip) => ({
-        object: clip.object_name,
-        object_id: clip.object_id,
-        clip_name: clip.clip_name,
-        pivot: clip.pivot_enabled
-          ? [clip.pivot_x ?? 0, clip.pivot_y ?? 0, clip.pivot_z ?? 0]
-          : null,
-        duration: clip.duration,
-        channels: {
-          translate: {
-            axis: clip.translate_axis,
-            samples: (clip.keyframes || []).map((k) => ({ t: k.t, value: k.translate_value })),
-          },
-          rotate: {
-            axis: clip.rotate_axis,
-            samples: (clip.keyframes || []).map((k) => ({ t: k.t, value: k.rotate_value })),
-          },
-        },
-      })),
-    };
-
-    const jointDefs = {
-      _comment: '层级树关节定义（FK 关节类型、轴向、原点、限位、当前值）',
+      _comment: 'FK 关节定义。type 决定运动语义；origin 是世界空间旋转/平移参考点（UI Z-up 约定）；base_transform 是关节零点的 parent-local 姿态。',
       definitions: (jointDefinitions || []).map((d) => ({
         id: d.id,
         name: d.name,
@@ -114,6 +79,23 @@ export class ResultPackageExporter {
         parent_id: d.parentId,
         child_id: d.childId,
         current_value: d.currentValue ?? 0,
+        base_transform: d.baseTransform || null,
+      })),
+    };
+
+    // motion.json v2 schema：全局动画片段
+    // 每个 clip 包含 duration + 全局关键帧数组
+    // 每个关键帧含 jointValues 字典：{ jointDefName: number }
+    // 不再有 per-object channels，所有关节在同一时间线上同步
+    const motion = {
+      _comment: 'v2 全局关键帧 schema：每个 clip 是项目级动画片段，keyframes[].joint_values 字典记录所有关节在该时刻的状态。joint_values 的 key 是 joint definition 的 name。',
+      clips: (clips || []).map((clip) => ({
+        clip_name: clip.clip_name,
+        duration: clip.duration,
+        keyframes: (clip.keyframes || []).map((k) => ({
+          t: k.t,
+          joint_values: { ...(k.joint_values || {}) },
+        })),
       })),
     };
 
@@ -145,7 +127,6 @@ export class ResultPackageExporter {
 
     zip.file(manifestFileName, JSON.stringify(manifest, null, 2));
     zip.file(jointsFileName, JSON.stringify(joints, null, 2));
-    zip.file(jointDefsFileName, JSON.stringify(jointDefs, null, 2));
     zip.file(motionFileName, JSON.stringify(motion, null, 2));
 
     // PKF 文件仅在有数据时写入

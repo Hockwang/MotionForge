@@ -19,17 +19,14 @@ const assetLoader = new AssetLoader();
 let editableObjects = [];
 let sceneTreeNodes = [];
 let isPlaying = false;
+// PKF 播放模式：true 时播放循环用 PKF 公式驱动关节，覆盖关键帧动画
+let pkfPlaybackMode = false;
 let lastFrameTime = performance.now();
 let sourceInfo = {
   fileName: '',
   format: '',
   rawFile: null,
 };
-let jointObjectAId = null;
-let jointObjectBId = null;
-let jointPoints = [];
-let activeJointPointId = null;
-let motionValueEditSnapshotCaptured = false;
 const undoStack = [];
 const MAX_UNDO = 80;
 
@@ -85,87 +82,11 @@ function restoreHierarchySnapshot(snapshot) {
   });
 }
 
-function worldFromJointPoint(point) {
-  if (point?.followObjectId && point?.followOffset) {
-    const owner = findObjectById(point.followObjectId);
-    if (owner) {
-      const ownerWorld = owner.getWorldPosition(new THREE.Vector3());
-      return ownerWorld.add(
-        new THREE.Vector3(point.followOffset.x ?? 0, point.followOffset.y ?? 0, point.followOffset.z ?? 0),
-      );
-    }
-  }
-  // Legacy compatibility: old points used local-space follow (will rotate with object).
-  if (point?.followObjectId && point?.local) {
-    const owner = findObjectById(point.followObjectId);
-    if (owner) {
-      return owner.localToWorld(new THREE.Vector3(point.local.x, point.local.y, point.local.z));
-    }
-  }
-  return new THREE.Vector3(point?.x ?? 0, point?.y ?? 0, point?.z ?? 0);
-}
-
-function mapJointPointsForDisplay(points) {
-  return points.map((point) => {
-    const effectivePivot = getEffectivePivotForJoint(point);
-    const world = effectivePivot || worldFromJointPoint(point);
-    const uiPoint = worldToUiVector3(world);
-    return {
-      ...point,
-      x: uiPoint.x,
-      y: uiPoint.y,
-      z: uiPoint.z,
-    };
-  });
-}
-
-function mapJointPointsForRender(points) {
-  return points.map((point) => {
-    const effectivePivot = getEffectivePivotForJoint(point);
-    if (effectivePivot) {
-      return { ...point, x: effectivePivot.x, y: effectivePivot.y, z: effectivePivot.z };
-    }
-    const world = worldFromJointPoint(point);
-    return { ...point, x: world.x, y: world.y, z: world.z };
-  });
-}
-
-function mapUiAxisToWorldAxis(axis) {
-  if (axis === 'z') return 'y';
-  if (axis === 'y') return 'z';
-  return 'x';
-}
-
-function getSelectedClipPivotWorld() {
-  const selected = selectionManager.selectedObject;
-  if (!selected) return null;
-  const clip = keyframeManager.getActiveClip(selected);
-  if (!clip?.pivotEnabled) return null;
-  return new THREE.Vector3(clip.pivotX, clip.pivotY, clip.pivotZ);
-}
-
-function getEffectivePivotForJoint(point) {
-  if (!point) return null;
-  const owner = point.followObjectId ? findObjectById(point.followObjectId) : null;
-  if (!owner) return null;
-  const clip = keyframeManager.getActiveClip(owner);
-  if (!clip?.pivotEnabled || !Number.isFinite(clip.pivotX)) return null;
-
-  const pivot = new THREE.Vector3(clip.pivotX, clip.pivotY, clip.pivotZ);
-  const worldAxis = mapUiAxisToWorldAxis(clip.translateAxis);
-  pivot[worldAxis] += clip.currentTranslateValue ?? 0;
-  return pivot;
-}
-
 function pushUndoSnapshot() {
   undoStack.push({
     selectedObjectId: selectionManager.selectedObject?.uuid || null,
     keyframeState: keyframeManager.serializeState(),
-    jointPoints: jointPoints.map((p) => ({ ...p })),
     hierarchyState: captureHierarchySnapshot(),
-    activeJointPointId,
-    jointObjectAId,
-    jointObjectBId,
   });
   if (undoStack.length > MAX_UNDO) undoStack.shift();
 }
@@ -175,10 +96,6 @@ function undoLastChange() {
   if (!snapshot) return;
   keyframeManager.restoreState(snapshot.keyframeState);
   restoreHierarchySnapshot(snapshot.hierarchyState);
-  jointPoints = (snapshot.jointPoints || []).map((p) => ({ ...p }));
-  activeJointPointId = snapshot.activeJointPointId || null;
-  jointObjectAId = snapshot.jointObjectAId || null;
-  jointObjectBId = snapshot.jointObjectBId || null;
   const selected = findObjectById(snapshot.selectedObjectId);
   selectionManager.selectObject(selected || null);
   keyframeManager.evaluateAllAt(keyframeManager.currentTime, sceneManager.sceneRoot);
@@ -230,6 +147,29 @@ function buildSceneTree(root) {
   return walk(root);
 }
 
+/**
+ * 在对象被 reparent 后，重新捕获其关节零点姿态
+ * 因为 jointDef.baseTransform 存储的是 parent-local 坐标，
+ * 换父节点后旧值不再适用，需要用新父节点下的 local 值覆盖。
+ * 如果对象本身没有关节定义则跳过。
+ * @param {THREE.Object3D} obj - 被 reparent 的对象
+ */
+function rebindJointBaseTransform(obj) {
+  if (!obj) return;
+  const def = keyframeManager.getJointDef(obj.uuid);
+  if (!def || !def.baseTransform) return;
+  keyframeManager.setJointDef(obj.uuid, {
+    baseTransform: {
+      tx: obj.position.x,
+      ty: obj.position.y,
+      tz: obj.position.z,
+      rx: obj.rotation.x,
+      ry: obj.rotation.y,
+      rz: obj.rotation.z,
+    },
+  });
+}
+
 function refreshObjectTree() {
   ui.renderObjectList(sceneTreeNodes, selectionManager.selectedObject?.uuid, {
     onSelect: (obj) => selectionManager.selectObject(obj),
@@ -241,8 +181,37 @@ function refreshObjectTree() {
       ui.showJointConfigPanel(node.id, node.name, currentDef, rect, {
         onChange: (patch) => {
           pushUndoSnapshot();
+          // ── 首次创建关节时捕获零点姿态和默认原点 ──
+          // baseTransform：记录对象当前 local 姿态作为零点，applyJointDrive(currentValue=0)
+          //               把对象设回该姿态，视觉上不动；之后拖 Joint Value 才产生运动。
+          // origin：默认设为对象当前世界位置（转 UI 约定），这样 revolute 默认
+          //        绕对象所在位置旋转，而不是绕世界原点 orbit。用户可用「从激活关节点」
+          //        或「子对象中心」按钮改为其他位置。
+          const existingDef = keyframeManager.getJointDef(node.id);
+          const bindPatch = {};
+          if ((!existingDef || !existingDef.baseTransform) && node.object) {
+            const obj = node.object;
+            bindPatch.baseTransform = {
+              tx: obj.position.x,
+              ty: obj.position.y,
+              tz: obj.position.z,
+              rx: obj.rotation.x,
+              ry: obj.rotation.y,
+              rz: obj.rotation.z,
+            };
+            // 默认 origin = 对象当前世界位置（UI Z-up 约定）
+            // 仅在 patch 未显式传 origin 且之前也没设过 origin 时才填默认
+            const hasOriginAlready = existingDef?.origin
+              && (existingDef.origin.x !== 0 || existingDef.origin.y !== 0 || existingDef.origin.z !== 0);
+            if (!patch.origin && !hasOriginAlready) {
+              const worldPos = obj.getWorldPosition(new THREE.Vector3());
+              const uiOrigin = worldToUiVector3(worldPos);
+              bindPatch.origin = { x: uiOrigin.x, y: uiOrigin.y, z: uiOrigin.z };
+            }
+          }
           keyframeManager.setJointDef(node.id, {
             ...patch,
+            ...bindPatch,
             name: node.name || node.id,
             parentId,
             childId: node.id,
@@ -308,6 +277,9 @@ function refreshObjectTree() {
         }
       }
 
+      // reparent 后刷新关节零点
+      rebindJointBaseTransform(dragged);
+
       sceneTreeNodes = buildSceneTree(sceneManager.sceneRoot);
       refreshObjectTree();
       refreshSelectionUI();
@@ -345,6 +317,10 @@ function refreshObjectTree() {
         }
       }
 
+      // 重要：reparent 后必须刷新关节零点，否则 applyJointDrive 会把对象
+      // 设到基于旧父节点的 local 坐标，视觉上"飞走"
+      rebindJointBaseTransform(obj);
+
       editableObjects = collectEditableObjects(sceneManager.sceneRoot);
       sceneTreeNodes = buildSceneTree(sceneManager.sceneRoot);
       refreshObjectTree();
@@ -354,6 +330,7 @@ function refreshObjectTree() {
       if (!obj || obj.parent === sceneManager.sceneRoot) return;
       pushUndoSnapshot();
       sceneManager.sceneRoot.attach(obj);
+      rebindJointBaseTransform(obj); // reparent 后刷新关节零点
       sceneTreeNodes = buildSceneTree(sceneManager.sceneRoot);
       refreshObjectTree();
       refreshSelectionUI();
@@ -362,9 +339,8 @@ function refreshObjectTree() {
 }
 
 function getCurrentDuration() {
-  const selected = selectionManager.selectedObject;
-  if (!selected) return 10;
-  return keyframeManager.getClipDuration(selected);
+  // 全局 clip 时长，与选择无关
+  return keyframeManager.getClipDuration();
 }
 
 function syncJointGizmo() {
@@ -422,44 +398,30 @@ function syncJointOriginMarker(nodeId) {
   sceneManager.setPivotMarker(worldOrigin);
 }
 
+/**
+ * 刷新选择相关 UI（变换显示、关节 gizmo、关键帧列表）
+ * 注意：关键帧现在是全局的，不再依赖当前选中对象。
+ *      只有 gizmo / 关节配置等是 per-selection 的。
+ */
 function refreshSelectionUI() {
   const selected = selectionManager.selectedObject;
   ui.setSelectedObject(selected);
-  refreshJointPanel();
   syncJointGizmo();
 
-  if (!selected) {
-    ui.setClipOptions([], null);
-    ui.setActiveClipInfo(null);
-    ui.renderKeyframes([]);
-    ui.setTimelineRange(10);
-    ui.updateTimelineLabel(keyframeManager.currentTime, 10);
-    refreshObjectTree();
-    return;
-  }
+  // 全局 clip 列表（不再 per-object）
+  const clipNames = keyframeManager.getClipNames();
+  ui.setClipOptions(clipNames, keyframeManager.activeClipName);
 
-  const clipNames = keyframeManager.getClipNames(selected);
-  const activeClip = keyframeManager.getActiveClip(selected);
-  ui.setClipOptions(clipNames, activeClip?.clipName);
-  if (activeClip) {
-    const uiPivot = worldToUiVector3(new THREE.Vector3(activeClip.pivotX, activeClip.pivotY, activeClip.pivotZ));
-    ui.setActiveClipInfo({
-      ...activeClip,
-      pivotX: uiPivot.x,
-      pivotY: uiPivot.y,
-      pivotZ: uiPivot.z,
-    });
-  } else {
-    ui.setActiveClipInfo(null);
-  }
+  // 全局关键帧列表（不依赖选中对象）
   const handleDeleteKeyframe = (keyframe) => {
     pushUndoSnapshot();
-    keyframeManager.removeKeyframe(selected, keyframe.time);
-    keyframeManager.evaluateObjectAt(selected, keyframeManager.currentTime);
-    ui.setSelectedObject(selected);
+    keyframeManager.removeKeyframe(keyframe.time);
+    keyframeManager.evaluateAllAt(keyframeManager.currentTime, sceneManager.sceneRoot);
     refreshSelectionUI();
   };
-  ui.renderKeyframes(keyframeManager.getTrack(selected), handleDeleteKeyframe);
+  // 把关节定义传给 UI，让 keyframe 能用 jointDef.name 显示
+  const jointDefs = keyframeManager.getAllJointDefs();
+  ui.renderKeyframes(keyframeManager.getKeyframes(), handleDeleteKeyframe, jointDefs);
 
   const duration = getCurrentDuration();
   if (keyframeManager.currentTime > duration) {
@@ -468,186 +430,8 @@ function refreshSelectionUI() {
   }
   ui.setTimelineRange(duration);
   ui.updateTimelineLabel(keyframeManager.currentTime, duration);
-  updatePivotMarkerFromInputs();
+  ui.durationInput.value = String(duration);
   refreshObjectTree();
-}
-
-function refreshJointPanel() {
-  if (!editableObjects.length) {
-    jointObjectAId = null;
-    jointObjectBId = null;
-    activeJointPointId = null;
-    ui.setJointObjectOptions([], null, null);
-    ui.renderJointPoints([], null, null);
-    ui.setJointEditor(null);
-    sceneManager.clearPivotMarker();
-    return;
-  }
-
-  if (!jointObjectAId || !findObjectById(jointObjectAId)) {
-    jointObjectAId = editableObjects[0].uuid;
-  }
-  const secondCandidate = editableObjects.find((obj) => obj.uuid !== jointObjectAId);
-  if (!jointObjectBId || !findObjectById(jointObjectBId) || jointObjectBId === jointObjectAId) {
-    jointObjectBId = secondCandidate?.uuid || jointObjectAId;
-  }
-  ui.setJointObjectOptions(editableObjects, jointObjectAId, jointObjectBId);
-
-  if (!jointPoints.length) {
-    activeJointPointId = null;
-    ui.renderJointPoints([], null, null);
-    ui.setJointEditor(null);
-    sceneManager.clearPivotMarker();
-    return;
-  }
-  if (!activeJointPointId || !jointPoints.some((p) => p.id === activeJointPointId)) {
-    activeJointPointId = jointPoints[0].id;
-  }
-  const displayPoints = mapJointPointsForDisplay(jointPoints);
-  const renderPoints = mapJointPointsForRender(jointPoints);
-  const activePoint = displayPoints.find((p) => p.id === activeJointPointId) || null;
-  const activeWorldPoint = renderPoints.find((p) => p.id === activeJointPointId) || null;
-  ui.renderJointPoints(displayPoints, activeJointPointId, {
-    onSelect: (point) => {
-      activeJointPointId = point.id;
-      refreshJointPanel();
-    },
-  });
-  sceneManager.renderJointMarkers(renderPoints, activeJointPointId);
-  ui.setJointEditor(activePoint);
-  if (activeWorldPoint) {
-    sceneManager.setPivotMarker(new THREE.Vector3(activeWorldPoint.x, activeWorldPoint.y, activeWorldPoint.z));
-  } else {
-    sceneManager.clearPivotMarker();
-  }
-}
-
-function syncJointMarkerVisuals() {
-  if (!jointPoints.length) {
-    sceneManager.renderJointMarkers([], null);
-    return;
-  }
-  const renderPoints = mapJointPointsForRender(jointPoints);
-  sceneManager.renderJointMarkers(renderPoints, activeJointPointId);
-
-  const activeRenderPoint = renderPoints.find((p) => p.id === activeJointPointId) || null;
-  if (activeRenderPoint) {
-    sceneManager.setPivotMarker(new THREE.Vector3(activeRenderPoint.x, activeRenderPoint.y, activeRenderPoint.z));
-  }
-}
-
-function updatePivotMarkerFromInputs() {
-  const selected = selectionManager.selectedObject;
-  if (!selected || !ui.pivotEnabledInput.checked) {
-    sceneManager.clearPivotMarker();
-    return;
-  }
-  const x = Number(ui.pivotXInput.value);
-  const y = Number(ui.pivotYInput.value);
-  const z = Number(ui.pivotZInput.value);
-  if (![x, y, z].every(Number.isFinite)) {
-    sceneManager.clearPivotMarker();
-    return;
-  }
-  const worldPivot = uiToWorldVector3(x, y, z);
-  sceneManager.setPivotMarker(worldPivot);
-}
-
-function setPivotInputsAndApply(x, y, z, recordUndo = true) {
-  if (recordUndo) pushUndoSnapshot();
-  const uiPivot = worldToUiVector3(new THREE.Vector3(x, y, z));
-  ui.pivotEnabledInput.checked = true;
-  ui.pivotXInput.value = Number(uiPivot.x).toFixed(3);
-  ui.pivotYInput.value = Number(uiPivot.y).toFixed(3);
-  ui.pivotZInput.value = Number(uiPivot.z).toFixed(3);
-  applyClipConfigFromUI(false, true);
-}
-
-function toFiniteOr(raw, fallback) {
-  const n = Number(raw);
-  return Number.isFinite(n) ? n : fallback;
-}
-
-function computeCenterMidpoint(objectA, objectB) {
-  const boxA = new THREE.Box3().setFromObject(objectA);
-  const boxB = new THREE.Box3().setFromObject(objectB);
-  const centerA = boxA.getCenter(new THREE.Vector3());
-  const centerB = boxB.getCenter(new THREE.Vector3());
-  return centerA.add(centerB).multiplyScalar(0.5);
-}
-
-function computeNearestMidpoint(objectA, objectB) {
-  const boxA = new THREE.Box3().setFromObject(objectA);
-  const boxB = new THREE.Box3().setFromObject(objectB);
-  const centerA = boxA.getCenter(new THREE.Vector3());
-  const centerB = boxB.getCenter(new THREE.Vector3());
-
-  const onA = boxA.clampPoint(centerB, new THREE.Vector3());
-  const onB = boxB.clampPoint(centerA, new THREE.Vector3());
-  return onA.add(onB).multiplyScalar(0.5);
-}
-
-function applyClipConfigFromUI(recordUndo = false, forceNewPivot = false) {
-  const object = selectionManager.selectedObject;
-  if (!object) return;
-  if (recordUndo) pushUndoSnapshot();
-
-  let worldPivot;
-  const existingClip = keyframeManager.getActiveClip(object);
-  const activeJoint = activeJointPointId ? jointPoints.find((p) => p.id === activeJointPointId) : null;
-  if (ui.pivotEnabledInput.checked) {
-    if (!forceNewPivot && existingClip?.pivotEnabled && Number.isFinite(existingClip.pivotX)) {
-      worldPivot = new THREE.Vector3(existingClip.pivotX, existingClip.pivotY, existingClip.pivotZ);
-    } else if (activeJoint) {
-      worldPivot = worldFromJointPoint(activeJoint);
-    } else {
-      const pivotInputX = Number(ui.pivotXInput.value);
-      const pivotInputY = Number(ui.pivotYInput.value);
-      const pivotInputZ = Number(ui.pivotZInput.value);
-      worldPivot = uiToWorldVector3(
-        Number.isFinite(pivotInputX) ? pivotInputX : 0,
-        Number.isFinite(pivotInputY) ? pivotInputY : 0,
-        Number.isFinite(pivotInputZ) ? pivotInputZ : 0,
-      );
-    }
-    const uiPivot = worldToUiVector3(worldPivot);
-    ui.pivotXInput.value = uiPivot.x.toFixed(3);
-    ui.pivotYInput.value = uiPivot.y.toFixed(3);
-    ui.pivotZInput.value = uiPivot.z.toFixed(3);
-  } else {
-    const pivotInputX = Number(ui.pivotXInput.value);
-    const pivotInputY = Number(ui.pivotYInput.value);
-    const pivotInputZ = Number(ui.pivotZInput.value);
-    worldPivot = uiToWorldVector3(
-      Number.isFinite(pivotInputX) ? pivotInputX : 0,
-      Number.isFinite(pivotInputY) ? pivotInputY : 0,
-      Number.isFinite(pivotInputZ) ? pivotInputZ : 0,
-    );
-  }
-
-  keyframeManager.updateActiveClipConfig(object, {
-    jointEnabled: ui.jointEnabledInput.checked,
-    translateAxis: ui.translateAxisSelect.value,
-    translateValue: ui.translateValueInput.value,
-    rotateAxis: ui.rotateAxisSelect.value,
-    rotateValue: ui.rotateValueInput.value,
-    pivotEnabled: ui.pivotEnabledInput.checked,
-    pivotX: worldPivot.x,
-    pivotY: worldPivot.y,
-    pivotZ: worldPivot.z,
-    duration: ui.durationInput.value,
-  });
-  keyframeManager.applyCurrentChannelValues(object);
-  ui.setSelectedObject(object);
-  const duration = getCurrentDuration();
-  if (keyframeManager.currentTime > duration) {
-    keyframeManager.currentTime = duration;
-    ui.setTime(duration);
-  }
-  ui.setTimelineRange(duration);
-  ui.updateTimelineLabel(keyframeManager.currentTime, duration);
-  updatePivotMarkerFromInputs();
-  refreshSelectionUI();
 }
 
 async function handleAssetFile(file) {
@@ -664,10 +448,6 @@ async function handleAssetFile(file) {
     sceneTreeNodes = buildSceneTree(root);
     keyframeManager.reset();
     undoStack.length = 0;
-    jointPoints = [];
-    activeJointPointId = null;
-    jointObjectAId = null;
-    jointObjectBId = null;
     sourceInfo = {
       fileName: file.name,
       format: (file.name.split('.').pop() || '').toLowerCase(),
@@ -723,41 +503,32 @@ async function handleImportPackage(file) {
       rawFile: modelFile,
     };
 
-    // Restore joints
-    jointPoints = [];
-    activeJointPointId = null;
-    jointObjectAId = null;
-    jointObjectBId = null;
-
-    const jointsFileName = manifest.files?.joints || 'joints.json';
-    const jointsFile = zip.file(jointsFileName) || zip.file('joints.json');
-    if (jointsFile) {
-      const jointsData = JSON.parse(await jointsFile.async('string'));
-      (jointsData.joints || []).forEach((j) => {
-        const followObj = j.follow_object ? objectsByName.get(j.follow_object) : null;
-        const pos = j.position || [0, 0, 0];
-        const offset = j.offset_from_object_origin || j.follow_offset || null;
-        jointPoints.push({
-          id: j.id || `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-          name: j.name || '关节',
-          x: pos[0] ?? 0,
-          y: pos[1] ?? 0,
-          z: pos[2] ?? 0,
-          followObjectId: followObj?.uuid || null,
-          followOffset: offset ? { x: offset[0] ?? 0, y: offset[1] ?? 0, z: offset[2] ?? 0 } : null,
-          local: null,
-        });
-      });
-      if (jointPoints.length) activeJointPointId = jointPoints[0].id;
+    // ── 检测老格式 ZIP（schema_version 1）──
+    // v1: joints.json 存的是关节点空间锚点；joint-definitions.json 存的是 FK 关节
+    // v2: joints.json 直接存 FK 关节定义；不再有关节点系统
+    const schemaVersion = manifest.schema_version || 1;
+    const hasLegacyJointDefsFile = !!manifest.files?.joint_definitions;
+    if (schemaVersion < 2 || hasLegacyJointDefsFile) {
+      alert(
+        '该资产包使用旧版关节格式（v1），新版编辑器不再支持自动迁移。\n\n' +
+        '模型和关键帧仍会正常加载，请重新在场景树中配置关节定义。'
+      );
     }
 
-    // Restore joint definitions (FK layer-tree joints)
+    // Restore joint definitions (FK layer-tree joints) — v2 stored under "joints"
     keyframeManager.jointDefinitions.clear();
-    const jointDefsFileName = manifest.files?.joint_definitions;
-    const jointDefsFile = jointDefsFileName
-      ? zip.file(jointDefsFileName)
-      : Object.values(zip.files).find((f) => /^joint-definitions.*\.json$/i.test(f.name));
-    if (jointDefsFile) {
+    const jointsFileName = manifest.files?.joints;
+    // v2 优先：joints-{ts}.json 直接是 FK 关节定义
+    // v1 兜底：尝试老的 joint-definitions-{ts}.json
+    let jointsFile = jointsFileName ? zip.file(jointsFileName) : null;
+    if (!jointsFile) {
+      jointsFile = Object.values(zip.files).find((f) => /^joints-.*\.json$/i.test(f.name)) || null;
+    }
+    if (!jointsFile && hasLegacyJointDefsFile) {
+      jointsFile = zip.file(manifest.files.joint_definitions)
+        || Object.values(zip.files).find((f) => /^joint-definitions.*\.json$/i.test(f.name));
+    }
+    if (jointsFile) {
       // Build path-based lookup for fallback matching
       const objectsByPath = new Map();
       editableObjects.forEach((obj) => {
@@ -765,8 +536,10 @@ async function handleImportPackage(file) {
         if (path) objectsByPath.set(path, obj);
       });
 
-      const jointDefsData = JSON.parse(await jointDefsFile.async('string'));
-      (jointDefsData.definitions || []).forEach((d) => {
+      const data = JSON.parse(await jointsFile.async('string'));
+      // v2 用 definitions 数组；v1 老 joints.json 用 joints 数组（关节点，跳过它）
+      const definitionsArr = Array.isArray(data.definitions) ? data.definitions : [];
+      definitionsArr.forEach((d) => {
         // Priority: 1) name match, 2) scene_path match, 3) fallback to stored id
         let childObj = d.name ? objectsByName.get(d.name) : null;
         if (!childObj && d.scene_path) {
@@ -783,79 +556,66 @@ async function handleImportPackage(file) {
           parentId: parentObj?.uuid || d.parent_id || null,
           childId: nodeId,
           currentValue: d.current_value ?? 0,
+          baseTransform: d.base_transform || null,
         });
       });
     }
 
-    // Restore clips & keyframes
+    // ── 恢复 motion.json（v2 schema：全局 clips + jointValues 关键帧） ──
+    // 老 schema (v1) 是 per-object channels.translate/rotate/joint，不再支持
     const motionFileName = manifest.files?.motion || 'motion.json';
     const motionFile = zip.file(motionFileName) || zip.file('motion.json');
+    let oldMotionDetected = false;
     if (motionFile) {
       const motionData = JSON.parse(await motionFile.async('string'));
-      (motionData.clips || []).forEach((clipData) => {
-        const obj = objectsByName.get(clipData.object);
-        if (!obj) return;
+      const clipsArr = motionData.clips || [];
 
-        const objectData = keyframeManager.ensureObjectData(obj);
-        if (!objectData) return;
+      // 检测格式：v2 用 keyframes[].joint_values，v1 用 channels.translate/rotate
+      const isV2 = clipsArr.length > 0 && clipsArr[0].keyframes && Array.isArray(clipsArr[0].keyframes)
+        && clipsArr[0].keyframes.length > 0 && clipsArr[0].keyframes[0].joint_values !== undefined;
+      const isV1 = !isV2 && clipsArr.length > 0 && clipsArr[0].channels !== undefined;
 
-        const clipName = clipData.clip_name || 'default';
-        let clip;
-        if (objectData.clips.has(clipName)) {
-          clip = objectData.clips.get(clipName);
-        } else {
-          keyframeManager.createClip(obj, clipName);
-          clip = objectData.clips.get(clipName);
+      if (isV1) {
+        oldMotionDetected = true;
+      }
+
+      if (isV2) {
+        // 清空默认 clip，从导入的数据重建全局 clips
+        keyframeManager.globalClips.clear();
+        // 建立 jointDef name → id 的映射，用于把导出时的 name 转回当前 uuid
+        const jointDefIdByName = new Map();
+        keyframeManager.getAllJointDefs().forEach((d) => {
+          if (d.name) jointDefIdByName.set(d.name, d.id);
+        });
+        clipsArr.forEach((clipData) => {
+          const clipName = clipData.clip_name || 'default';
+          const newClip = {
+            clipName,
+            duration: Math.max(0.1, Number(clipData.duration) || 10),
+            keyframes: (clipData.keyframes || []).map((k) => {
+              // joint_values 是 { defName: number }，转成当前 jointDef id
+              const jv = {};
+              const src = k.joint_values || {};
+              Object.entries(src).forEach(([defName, value]) => {
+                const id = jointDefIdByName.get(defName);
+                if (id !== undefined && value !== null && value !== undefined) {
+                  jv[id] = Number(value);
+                }
+              });
+              return { time: Number(k.t ?? k.time ?? 0), jointValues: jv };
+            }).sort((a, b) => a.time - b.time),
+          };
+          keyframeManager.globalClips.set(clipName, newClip);
+        });
+        if (!keyframeManager.globalClips.size) {
+          keyframeManager.globalClips.set('default', { clipName: 'default', duration: 10, keyframes: [] });
         }
-        if (!clip) return;
-
-        keyframeManager.setActiveClip(obj, clipName);
-
-        const translateChannel = clipData.channels?.translate || null;
-        const rotateChannel = clipData.channels?.rotate || null;
-        clip.translateAxis = translateChannel?.axis || clipData.translate_axis || 'z';
-        clip.rotateAxis = rotateChannel?.axis || clipData.rotate_axis || 'z';
-        clip.duration = clipData.duration || 10;
-        clip.jointEnabled = true;
-
-        if (clipData.pivot) {
-          clip.pivotEnabled = true;
-          clip.pivotX = clipData.pivot[0] ?? 0;
-          clip.pivotY = clipData.pivot[1] ?? 0;
-          clip.pivotZ = clipData.pivot[2] ?? 0;
-        }
-
-        const legacyFrames = clipData.keyframes || [];
-        const translateSamples = translateChannel?.samples || [];
-        const rotateSamples = rotateChannel?.samples || [];
-        if (translateSamples.length || rotateSamples.length) {
-          const timeSet = new Set();
-          translateSamples.forEach((s) => timeSet.add(Number(s.t)));
-          rotateSamples.forEach((s) => timeSet.add(Number(s.t)));
-          const sortedTimes = [...timeSet].filter(Number.isFinite).sort((a, b) => a - b);
-          clip.keyframes = sortedTimes.map((t) => {
-            const tSample = translateSamples.find((s) => Number(s.t) === t);
-            const rSample = rotateSamples.find((s) => Number(s.t) === t);
-            return {
-              time: t,
-              translateValue: Number(tSample?.value ?? 0),
-              rotateValue: Number(rSample?.value ?? 0),
-            };
-          });
-        } else {
-          clip.keyframes = legacyFrames.map((k) => ({
-            time: k.t ?? 0,
-            translateValue: k.translate ?? 0,
-            rotateValue: k.rotate ?? 0,
-          }));
-        }
-        clip.keyframes.sort((a, b) => a.time - b.time);
-
-        if (clip.keyframes.length) {
-          clip.currentTranslateValue = clip.keyframes[0].translateValue;
-          clip.currentRotateValue = clip.keyframes[0].rotateValue;
-        }
-      });
+        keyframeManager.activeClipName = clipsArr[0]?.clip_name || keyframeManager.globalClips.keys().next().value;
+      }
+    }
+    // v1 检测到时给一次提示（不阻止其他数据加载）
+    if (oldMotionDetected) {
+      alert('该资产包使用旧版 motion.json 格式（per-object channels），已忽略关键帧数据。\n请重新配置关节并重新加关键帧。');
     }
 
     // ── 恢复 PKF 数据（向后兼容：旧包无 pkf 字段时跳过）──
@@ -917,10 +677,9 @@ async function handleImportPackage(file) {
       ? `，PKF 参数：${restoredPkfParams}，PKF 步骤：${restoredPkfSteps}`
       : '';
     ui.setLoadStatus(
-      `已导入资产包。对象：${editableObjects.length}，关节：${jointPoints.length}，片段：${restoredClipCount}，关键帧：${restoredKfCount}${pkfInfo}`,
+      `已导入资产包。对象：${editableObjects.length}，片段：${restoredClipCount}，关键帧：${restoredKfCount}${pkfInfo}`,
     );
     refreshObjectTree();
-    refreshJointPanel();
     refreshPkfParamsUI();  // 刷新 PKF 参数 UI
     refreshPkfStepsUI();   // 刷新 PKF 步骤 UI
   } catch (error) {
@@ -928,12 +687,39 @@ async function handleImportPackage(file) {
   }
 }
 
+/**
+ * 用 PKF 步骤驱动所有关节定义到指定时间点
+ * 遍历每一步：求值起止公式，在 [t_start, t_end] 区间内按缓动插值，
+ * 把结果写入对应 jointDefinition.currentValue。
+ * 区间外的步骤跳过；同一关节被多步骤覆盖时后写入的覆盖前面的（按 steps 数组顺序）。
+ *
+ * @param {number} t - 当前时间（秒）
+ */
+function applyPkfAtTime(t) {
+  const results = keyframeManager.evaluatePkfAt(t);
+  results.forEach((r) => {
+    if (r.error || !r.joint_def_id) return;
+    const def = keyframeManager.jointDefinitions.get(r.joint_def_id);
+    if (!def) return;
+    def.currentValue = r.value;
+  });
+}
+
 function updateTimeline(deltaSeconds) {
   if (!isPlaying) return;
 
   const duration = getCurrentDuration();
   const next = (keyframeManager.currentTime + deltaSeconds) % duration;
-  keyframeManager.evaluateAllAt(next, sceneManager.sceneRoot);
+
+  if (pkfPlaybackMode) {
+    // PKF 模式：跳过关键帧求值，用 PKF 公式驱动关节
+    keyframeManager.currentTime = next;
+    applyPkfAtTime(next);
+  } else {
+    // 原有模式：用 motion.json 关键帧求值
+    keyframeManager.evaluateAllAt(next, sceneManager.sceneRoot);
+  }
+
   ui.setTime(keyframeManager.currentTime);
   ui.updateTimelineLabel(keyframeManager.currentTime, duration);
 }
@@ -944,7 +730,6 @@ function loop(now) {
 
   updateTimeline(deltaSeconds);
   keyframeManager.applyAllJointDrives(sceneManager.sceneRoot);
-  syncJointMarkerVisuals();
   sceneManager.render();
   requestAnimationFrame(loop);
 }
@@ -962,204 +747,46 @@ ui.importPackageInput.addEventListener('change', (e) => {
   handleImportPackage(file);
 });
 
-sceneManager.renderer.domElement.addEventListener(
-  'pointerdown',
-  (event) => {
-    const pointId = sceneManager.pickJointMarker(event.clientX, event.clientY);
-    if (!pointId) return;
-    event.preventDefault();
-    event.stopPropagation();
-    activeJointPointId = pointId;
-    refreshJointPanel();
-  },
-  true,
-);
+// ── 全局动画片段管理 ──
 
-ui.jointObjectASelect.addEventListener('change', () => {
-  jointObjectAId = ui.jointObjectASelect.value || null;
-  if (jointObjectAId === jointObjectBId) {
-    const candidate = editableObjects.find((obj) => obj.uuid !== jointObjectAId);
-    jointObjectBId = candidate?.uuid || jointObjectAId;
-  }
-  refreshJointPanel();
-});
-ui.jointObjectBSelect.addEventListener('change', () => {
-  jointObjectBId = ui.jointObjectBSelect.value || null;
-  if (jointObjectAId === jointObjectBId) {
-    const candidate = editableObjects.find((obj) => obj.uuid !== jointObjectBId);
-    jointObjectAId = candidate?.uuid || jointObjectBId;
-  }
-  refreshJointPanel();
-});
-
-ui.jointEnabledInput.addEventListener('change', () => applyClipConfigFromUI(true));
-ui.translateAxisSelect.addEventListener('change', () => applyClipConfigFromUI(true));
-ui.rotateAxisSelect.addEventListener('change', () => applyClipConfigFromUI(true));
-ui.pivotEnabledInput.addEventListener('change', () => applyClipConfigFromUI(true, true));
-ui.pivotXInput.addEventListener('change', () => applyClipConfigFromUI(true, true));
-ui.pivotYInput.addEventListener('change', () => applyClipConfigFromUI(true, true));
-ui.pivotZInput.addEventListener('change', () => applyClipConfigFromUI(true, true));
-ui.translateValueInput.addEventListener('input', () => applyClipConfigFromUI(false));
-ui.rotateValueInput.addEventListener('input', () => applyClipConfigFromUI(false));
-ui.translateValueInput.addEventListener('focus', () => {
-  if (motionValueEditSnapshotCaptured) return;
+ui.durationInput.addEventListener('change', () => {
   pushUndoSnapshot();
-  motionValueEditSnapshotCaptured = true;
+  keyframeManager.setClipDuration(Number(ui.durationInput.value) || 10);
+  const duration = getCurrentDuration();
+  if (keyframeManager.currentTime > duration) {
+    keyframeManager.currentTime = duration;
+    ui.setTime(duration);
+  }
+  ui.setTimelineRange(duration);
+  ui.updateTimelineLabel(keyframeManager.currentTime, duration);
 });
-ui.rotateValueInput.addEventListener('focus', () => {
-  if (motionValueEditSnapshotCaptured) return;
-  pushUndoSnapshot();
-  motionValueEditSnapshotCaptured = true;
-});
-ui.translateValueInput.addEventListener('blur', () => {
-  motionValueEditSnapshotCaptured = false;
-});
-ui.rotateValueInput.addEventListener('blur', () => {
-  motionValueEditSnapshotCaptured = false;
-});
-ui.translateValueInput.addEventListener('change', () => applyClipConfigFromUI(false));
-ui.rotateValueInput.addEventListener('change', () => applyClipConfigFromUI(false));
-
-ui.durationInput.addEventListener('change', () => applyClipConfigFromUI(true));
 
 ui.createClipBtn.addEventListener('click', () => {
-  const object = selectionManager.selectedObject;
-  if (!object) {
-    ui.exportOutput.textContent = '请先选择对象再创建片段。';
-    return;
-  }
   pushUndoSnapshot();
-  keyframeManager.createClip(object, ui.clipNameInput.value);
+  const created = keyframeManager.createClip(ui.clipNameInput.value);
+  keyframeManager.setActiveClip(created);
   ui.clipNameInput.value = '';
   refreshSelectionUI();
 });
 
 ui.clipSelect.addEventListener('change', () => {
-  const object = selectionManager.selectedObject;
-  if (!object) return;
   pushUndoSnapshot();
-  keyframeManager.setActiveClip(object, ui.clipSelect.value);
-  keyframeManager.applyCurrentChannelValues(object);
-  ui.setSelectedObject(object);
+  keyframeManager.setActiveClip(ui.clipSelect.value);
+  // 切片段后立即在当前时间求值，让对象同步到新片段的状态
+  keyframeManager.evaluateAllAt(keyframeManager.currentTime, sceneManager.sceneRoot);
   refreshSelectionUI();
-});
-
-ui.jointFromCenterBtn.addEventListener('click', () => {
-  const objectA = findObjectById(jointObjectAId);
-  const objectB = findObjectById(jointObjectBId);
-  if (!objectA || !objectB || objectA.uuid === objectB.uuid) {
-    ui.exportOutput.textContent = '请在关节面板中选择两个不同对象。';
-    return;
-  }
-  const pivot = computeCenterMidpoint(objectA, objectB);
-  setPivotInputsAndApply(pivot.x, pivot.y, pivot.z, true);
-});
-
-ui.jointFromNearestBtn.addEventListener('click', () => {
-  const objectA = findObjectById(jointObjectAId);
-  const objectB = findObjectById(jointObjectBId);
-  if (!objectA || !objectB || objectA.uuid === objectB.uuid) {
-    ui.exportOutput.textContent = '请在关节面板中选择两个不同对象。';
-    return;
-  }
-  const pivot = computeNearestMidpoint(objectA, objectB);
-  setPivotInputsAndApply(pivot.x, pivot.y, pivot.z, true);
-});
-
-ui.jointSaveCurrentBtn.addEventListener('click', () => {
-  const x = Number(ui.pivotXInput.value);
-  const y = Number(ui.pivotYInput.value);
-  const z = Number(ui.pivotZInput.value);
-  if (![x, y, z].every(Number.isFinite)) {
-    ui.exportOutput.textContent = 'Pivot 坐标无效，无法保存关节点。';
-    return;
-  }
-  const worldPivot = uiToWorldVector3(x, y, z);
-  pushUndoSnapshot();
-  const nextIndex = jointPoints.length + 1;
-  const created = {
-    id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-    name: `关节${nextIndex}`,
-    x: worldPivot.x,
-    y: worldPivot.y,
-    z: worldPivot.z,
-    followObjectId: jointObjectAId || null,
-    local: null,
-  };
-  if (created.followObjectId) {
-    const owner = findObjectById(created.followObjectId);
-    if (owner) {
-      const ownerWorld = owner.getWorldPosition(new THREE.Vector3());
-      created.followOffset = {
-        x: worldPivot.x - ownerWorld.x,
-        y: worldPivot.y - ownerWorld.y,
-        z: worldPivot.z - ownerWorld.z,
-      };
-      created.local = null;
-    }
-  }
-  jointPoints = [...jointPoints, created];
-  activeJointPointId = created.id;
-  refreshJointPanel();
-});
-
-ui.jointApplyBtn.addEventListener('click', () => {
-  const selected = selectionManager.selectedObject;
-  if (!activeJointPointId) return;
-  pushUndoSnapshot();
-  const nextFollowObjectId = ui.jointFollowAInput.checked ? jointObjectAId : null;
-  const existing = jointPoints.find((p) => p.id === activeJointPointId);
-  const currentWorld = existing ? worldFromJointPoint(existing) : new THREE.Vector3(0, 0, 0);
-  const uiCurrent = worldToUiVector3(currentWorld);
-  const uiX = toFiniteOr(ui.jointXInput.value, uiCurrent.x);
-  const uiY = toFiniteOr(ui.jointYInput.value, uiCurrent.y);
-  const uiZ = toFiniteOr(ui.jointZInput.value, uiCurrent.z);
-  const worldPoint = uiToWorldVector3(uiX, uiY, uiZ);
-  jointPoints = jointPoints.map((p) =>
-    p.id === activeJointPointId
-      ? {
-          ...p,
-          name: (ui.jointNameInput.value || '').trim() || p.name,
-          x: Number.isFinite(worldPoint.x) ? worldPoint.x : p.x,
-          y: Number.isFinite(worldPoint.y) ? worldPoint.y : p.y,
-          z: Number.isFinite(worldPoint.z) ? worldPoint.z : p.z,
-          followObjectId: nextFollowObjectId,
-          followOffset:
-            nextFollowObjectId && findObjectById(nextFollowObjectId)
-              ? (() => {
-                  const owner = findObjectById(nextFollowObjectId);
-                  const ownerWorld = owner.getWorldPosition(new THREE.Vector3());
-                  return {
-                    x: worldPoint.x - ownerWorld.x,
-                    y: worldPoint.y - ownerWorld.y,
-                    z: worldPoint.z - ownerWorld.z,
-                  };
-                })()
-              : null,
-          local: null,
-        }
-      : p,
-  );
-  const activeRawPoint = jointPoints.find((p) => p.id === activeJointPointId);
-  if (activeRawPoint) {
-    const worldPoint = worldFromJointPoint(activeRawPoint);
-    setPivotInputsAndApply(worldPoint.x, worldPoint.y, worldPoint.z, false);
-  }
-  if (selected) applyClipConfigFromUI(false);
-  refreshJointPanel();
-});
-
-ui.jointDeleteBtn.addEventListener('click', () => {
-  if (!activeJointPointId) return;
-  pushUndoSnapshot();
-  jointPoints = jointPoints.filter((p) => p.id !== activeJointPointId);
-  activeJointPointId = null;
-  refreshJointPanel();
 });
 
 ui.timeInput.addEventListener('input', () => {
   const t = Number(ui.timeInput.value);
-  keyframeManager.evaluateAllAt(t, sceneManager.sceneRoot);
+  if (pkfPlaybackMode) {
+    // PKF 模式：用公式驱动关节
+    keyframeManager.currentTime = t;
+    applyPkfAtTime(t);
+  } else {
+    // 关键帧模式：插值所有 jointDef 的 jointValue
+    keyframeManager.evaluateAllAt(t, sceneManager.sceneRoot);
+  }
   ui.updateTimelineLabel(keyframeManager.currentTime, getCurrentDuration());
   refreshSelectionUI();
 });
@@ -1169,10 +796,10 @@ ui.playBtn.addEventListener('click', () => {
   ui.setPlayState(isPlaying);
 });
 
+// 「在当前时间添加关键帧」：不再依赖选中对象，全局捕获所有 jointDef 当前状态
 ui.keyframeBtn.addEventListener('click', () => {
-  if (!selectionManager.selectedObject) return;
   pushUndoSnapshot();
-  keyframeManager.addKeyframe(selectionManager.selectedObject, keyframeManager.currentTime);
+  keyframeManager.addKeyframe(keyframeManager.currentTime);
   refreshSelectionUI();
 });
 
@@ -1193,6 +820,11 @@ async function requestAiTask(prompt) {
   return response.json();
 }
 
+/**
+ * 把 AI 返回的步骤转化为全局关键帧
+ * 每个 step 形如 { part, action, axis, value }；找到对应对象的 jointDef
+ * 把 value 写入对应 jointDef 的 jointValue 字段，构建 t=0 → t=末尾 的关键帧序列。
+ */
 function applyAiSteps(steps) {
   if (!steps?.length) return;
   pushUndoSnapshot();
@@ -1200,33 +832,40 @@ function applyAiSteps(steps) {
   editableObjects.forEach((obj) => {
     if (obj.name) objectsByName.set(obj.name, obj);
   });
-  let accumulatedTime = 0;
+
+  // 切到 / 创建一个 ai 片段
+  const clipName = 'ai_generated';
+  if (!keyframeManager.getClipNames().includes(clipName)) {
+    keyframeManager.createClip(clipName);
+  }
+  keyframeManager.setActiveClip(clipName);
+
   const stepDuration = 2;
+  let accumulatedTime = 0;
+  // 累计每个 jointDef 的"上一刻状态"，用于在新时间点生成完整的 jointValues 快照
+  const accumState = {};
+  keyframeManager.getAllJointDefs().forEach((d) => { accumState[d.id] = 0; });
+
+  // t=0 的零状态关键帧
+  keyframeManager.addKeyframe(0);
+
   steps.forEach((step) => {
     const obj = objectsByName.get(step.part);
     if (!obj) return;
-    const clipName = `ai_${step.action}_${step.axis}`;
-    const objectData = keyframeManager.ensureObjectData(obj);
-    if (!objectData.clips.has(clipName)) keyframeManager.createClip(obj, clipName);
-    keyframeManager.setActiveClip(obj, clipName);
-    const clip = objectData.clips.get(clipName);
-    clip.jointEnabled = true;
-    clip.duration = Math.max(clip.duration, accumulatedTime + stepDuration);
-    if (step.action === 'translate') {
-      clip.translateAxis = step.axis || 'z';
-      clip.keyframes = [
-        { time: accumulatedTime, translateValue: 0, rotateValue: 0 },
-        { time: accumulatedTime + stepDuration, translateValue: step.value ?? 0, rotateValue: 0 },
-      ];
-    } else if (step.action === 'rotate') {
-      clip.rotateAxis = step.axis || 'z';
-      clip.keyframes = [
-        { time: accumulatedTime, translateValue: 0, rotateValue: 0 },
-        { time: accumulatedTime + stepDuration, translateValue: 0, rotateValue: step.value ?? 0 },
-      ];
-    }
+    const def = keyframeManager.getJointDef(obj.uuid);
+    if (!def) return; // AI 指向的对象没有关节定义，跳过
     accumulatedTime += stepDuration;
+    accumState[def.id] = step.value ?? 0;
+    // 在累计时间点添加全局关键帧前，把 def.currentValue 同步到 accumState 再 addKeyframe 抓取
+    Object.entries(accumState).forEach(([id, val]) => {
+      const d = keyframeManager.jointDefinitions.get(id);
+      if (d) d.currentValue = val;
+    });
+    keyframeManager.addKeyframe(accumulatedTime);
   });
+
+  // 同步时长 + 求值 t=0
+  keyframeManager.setClipDuration(Math.max(10, accumulatedTime + 1));
   keyframeManager.evaluateAllAt(0, sceneManager.sceneRoot);
   selectionManager.clearSelection();
   refreshSelectionUI();
@@ -1280,33 +919,35 @@ function getScenePath(obj) {
   return parts.join('/');
 }
 
-function buildExportJointPoints() {
-  return jointPoints.map((p) => {
-    const owner = p.followObjectId ? findObjectById(p.followObjectId) : null;
-    return {
-      ...p,
-      followObjectName: owner?.name || null,
-    };
-  });
-}
-
+/**
+ * 构建导出 motion.json 用的全局 clips 数据
+ * v2 schema: 每个 clip 有 duration + keyframes，每个 keyframe 有 jointValues 字典
+ * jointValues 的 key 在导出时从 jointDef.id (uuid) 转成 jointDef.name（更稳定）
+ */
 function buildExportClips() {
-  const raw = keyframeManager.exportForObjects(editableObjects);
-  return raw
-    .filter((obj) => obj.keyframes.length > 0)
-    .map((obj) => ({
-      object_id: obj.object_id,
-      object_name: obj.object_name,
-      clip_name: obj.clip_name,
-      translate_axis: obj.channels?.translate?.axis ?? 'z',
-      rotate_axis: obj.channels?.rotate?.axis ?? 'z',
-      pivot_enabled: obj.pivot?.enabled ?? false,
-      pivot_x: obj.pivot?.x ?? 0,
-      pivot_y: obj.pivot?.y ?? 0,
-      pivot_z: obj.pivot?.z ?? 0,
-      duration: obj.duration,
-      keyframes: obj.keyframes,
-    }));
+  // 建立 jointDef.id → name 映射
+  const idToName = new Map();
+  keyframeManager.getAllJointDefs().forEach((d) => {
+    if (d.name) idToName.set(d.id, d.name);
+  });
+
+  const clipsArr = [];
+  keyframeManager.globalClips.forEach((clip) => {
+    clipsArr.push({
+      clip_name: clip.clipName,
+      duration: clip.duration,
+      keyframes: clip.keyframes.map((k) => {
+        // 把 jointValues 的 key 从 uuid 转成 name
+        const jvByName = {};
+        Object.entries(k.jointValues || {}).forEach(([id, val]) => {
+          const name = idToName.get(id);
+          if (name) jvByName[name] = val;
+        });
+        return { t: k.time, joint_values: jvByName };
+      }),
+    });
+  });
+  return clipsArr;
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -1487,6 +1128,21 @@ refreshPkfStepsUI();
  * 「PKF 预览」按钮：用参数默认值求值所有步骤，显示结果并驱动关节
  * 使用当前时间轴时间进行求值，结果显示在输出面板中
  */
+/**
+ * 「用 PKF 驱动播放」开关
+ * 切换播放循环和时间轴拖动的求值来源（PKF 公式 vs 关键帧）
+ */
+ui.pkfPlaybackModeInput.addEventListener('change', () => {
+  pkfPlaybackMode = ui.pkfPlaybackModeInput.checked;
+  // 切换后立即用当前时间重新求值，让视口同步
+  const t = keyframeManager.currentTime;
+  if (pkfPlaybackMode) {
+    applyPkfAtTime(t);
+  } else {
+    keyframeManager.evaluateAllAt(t, sceneManager.sceneRoot);
+  }
+});
+
 ui.pkfPreviewBtn.addEventListener('click', () => {
   const steps = keyframeManager.getAllPkfSteps();
   if (!steps.length) {
@@ -1532,19 +1188,19 @@ ui.pkfPreviewBtn.addEventListener('click', () => {
 
 ui.exportJsonBtn.addEventListener('click', () => {
   const clips = buildExportClips();
-  const joints = buildExportJointPoints();
-  if (!clips.length && !joints.length) {
+  const jointDefs = keyframeManager.getAllJointDefs();
+  if (!clips.length && !jointDefs.length) {
     ui.exportOutput.textContent = '没有可导出的数据，请先创建关节或添加关键帧。';
     return;
   }
-  ui.exportOutput.textContent = JSON.stringify({ joints, clips }, null, 2);
+  ui.exportOutput.textContent = JSON.stringify({ jointDefs, clips }, null, 2);
 });
 
 ui.exportPackageBtn.addEventListener('click', async () => {
   const clips = buildExportClips();
-  const joints = buildExportJointPoints();
+  const jointDefs = keyframeManager.getAllJointDefs();
 
-  if (!clips.length && !joints.length) {
+  if (!clips.length && !jointDefs.length) {
     ui.exportOutput.textContent = '没有可导出的数据，请先创建关节或添加关键帧。';
     return;
   }
@@ -1554,8 +1210,7 @@ ui.exportPackageBtn.addEventListener('click', async () => {
       sourceFileName: sourceInfo.fileName,
       sourceFormat: sourceInfo.format,
       rawModelFile: sourceInfo.rawFile,
-      jointPoints: joints,
-      jointDefinitions: keyframeManager.getAllJointDefs().map((d) => {
+      jointDefinitions: jointDefs.map((d) => {
         const obj = getSceneNodeById(d.childId);
         return { ...d, scenePath: obj ? getScenePath(obj) : null };
       }),
@@ -1578,7 +1233,15 @@ window.addEventListener('keydown', (event) => {
   undoLastChange();
 });
 
-window.__mf = { sceneManager, keyframeManager, selectionManager, editableObjects: () => editableObjects };
+// 调试钩子：浏览器控制台可用 __mf 访问内部状态
+// __mf.getJointDefs() 返回当前所有关节定义的快照副本
+window.__mf = {
+  sceneManager,
+  keyframeManager,
+  selectionManager,
+  editableObjects: () => editableObjects,
+  getJointDefs: () => keyframeManager.getAllJointDefs(),
+};
 
 ui.setTimelineRange(10);
 ui.updateTimelineLabel(0, 10);

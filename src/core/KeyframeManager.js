@@ -19,9 +19,22 @@ function mapUiAxisToWorld(axis) {
 export class KeyframeManager {
   constructor() {
     this.currentTime = 0;
+    // objectDataById：对象元数据。仅保留 baseTransform（被 jointDef baseTransform 兜底用）。
+    // 不再有 per-object clips。
     this.objectDataById = new Map();
-    /** Map<nodeUuid, {id, name, type, axis, limits:{min,max}, parentId, childId, currentValue}> */
+    /** Map<nodeUuid, {id, name, type, axis, limits:{min,max}, parentId, childId, currentValue, baseTransform}> */
     this.jointDefinitions = new Map();
+
+    // ── 全局关键帧系统 ──
+    // 项目级动画片段，所有关节共享同一时间线。每个 clip 包含：
+    //   - clipName: 片段名（"default" / "open" / "close" 等）
+    //   - duration: 片段时长（秒）
+    //   - keyframes: 全局关键帧数组，每个 keyframe 是 { time, jointValues: { [jointDefId]: number } }
+    //     一个 keyframe 同时记录多个关节在该时刻的状态，回放时所有关节同步插值
+    /** @type {Map<string, {clipName:string, duration:number, keyframes:Array<{time:number, jointValues:Object<string,number>}>}>} */
+    this.globalClips = new Map();
+    this.globalClips.set('default', { clipName: 'default', duration: 10, keyframes: [] });
+    this.activeClipName = 'default';
 
     // ── PKF（参数化关键帧公式）数据容器 ──
     // 参数声明表：每个参数有 id（唯一标识）、type（number/vec3）、unit（单位）、desc（描述）、default（默认值）
@@ -36,10 +49,18 @@ export class KeyframeManager {
     this.currentTime = 0;
     this.objectDataById.clear();
     this.jointDefinitions.clear();
+    this.globalClips.clear();
+    this.globalClips.set('default', { clipName: 'default', duration: 10, keyframes: [] });
+    this.activeClipName = 'default';
     this.pkfParameters.clear();  // 清空 PKF 参数
     this.pkfSteps = [];           // 清空 PKF 步骤
   }
 
+  /**
+   * 确保对象有 objectData 记录（仅保留 baseTransform）
+   * 主要用途：作为 jointDef.baseTransform 的兜底（当关节定义没有自己的零点时）
+   * @param {THREE.Object3D} object
+   */
   ensureObjectData(object) {
     if (!object) return null;
     const current = this.objectDataById.get(object.uuid);
@@ -47,31 +68,9 @@ export class KeyframeManager {
       current.objectName = object.name || '(unnamed)';
       return current;
     }
-
-    const defaultClip = {
-      clipName: 'default',
-      jointEnabled: true,
-      translateAxis: 'z',
-      currentTranslateValue: 0,
-      rotateAxis: 'z',
-      currentRotateValue: 0,
-      pivotEnabled: false,
-      pivotX: object.position.x,
-      pivotY: object.position.y,
-      pivotZ: object.position.z,
-      minValue: null,
-      maxValue: null,
-      duration: 10,
-      keyframes: [],
-    };
     const created = {
       objectId: object.uuid,
       objectName: object.name || '(unnamed)',
-      jointNode: {
-        marked: false,
-        name: object.name || object.uuid,
-      },
-      jointPoints: [],
       baseTransform: {
         tx: object.position.x,
         ty: object.position.y,
@@ -80,76 +79,9 @@ export class KeyframeManager {
         ry: object.rotation.y,
         rz: object.rotation.z,
       },
-      activeClipName: 'default',
-      clips: new Map([['default', defaultClip]]),
     };
     this.objectDataById.set(object.uuid, created);
     return created;
-  }
-
-  markJointNode(object, name) {
-    const objectData = this.ensureObjectData(object);
-    if (!objectData) return;
-    objectData.jointNode = {
-      marked: true,
-      name: (name || object.name || object.uuid || 'joint_node').trim(),
-    };
-  }
-
-  getJointNodeInfo(object) {
-    const objectData = this.ensureObjectData(object);
-    if (!objectData) return null;
-    return objectData.jointNode;
-  }
-
-  getJointPoints(object) {
-    const objectData = this.ensureObjectData(object);
-    if (!objectData) return [];
-    return objectData.jointPoints || [];
-  }
-
-  addJointPoint(object, point) {
-    const objectData = this.ensureObjectData(object);
-    if (!objectData) return null;
-    const nextIndex = (objectData.jointPoints?.length || 0) + 1;
-    const created = {
-      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      name: point?.name?.trim() || `关节${nextIndex}`,
-      x: normalizeValue(point?.x, 0),
-      y: normalizeValue(point?.y, 0),
-      z: normalizeValue(point?.z, 0),
-    };
-    objectData.jointPoints = [...(objectData.jointPoints || []), created];
-    return created;
-  }
-
-  renameJointPoint(object, pointId, newName) {
-    const objectData = this.ensureObjectData(object);
-    if (!objectData) return false;
-    const target = (objectData.jointPoints || []).find((p) => p.id === pointId);
-    if (!target) return false;
-    target.name = (newName || '').trim() || target.name;
-    return true;
-  }
-
-  updateJointPoint(object, pointId, patch) {
-    const objectData = this.ensureObjectData(object);
-    if (!objectData) return false;
-    const target = (objectData.jointPoints || []).find((p) => p.id === pointId);
-    if (!target) return false;
-    if (typeof patch.name !== 'undefined') target.name = (patch.name || '').trim() || target.name;
-    if (typeof patch.x !== 'undefined') target.x = normalizeValue(patch.x, target.x);
-    if (typeof patch.y !== 'undefined') target.y = normalizeValue(patch.y, target.y);
-    if (typeof patch.z !== 'undefined') target.z = normalizeValue(patch.z, target.z);
-    return true;
-  }
-
-  removeJointPoint(object, pointId) {
-    const objectData = this.ensureObjectData(object);
-    if (!objectData) return false;
-    const before = (objectData.jointPoints || []).length;
-    objectData.jointPoints = (objectData.jointPoints || []).filter((p) => p.id !== pointId);
-    return objectData.jointPoints.length !== before;
   }
 
   // ── Joint Definition CRUD (layer-tree joint type per node) ──
@@ -158,6 +90,17 @@ export class KeyframeManager {
     return this.jointDefinitions.get(nodeId) ?? null;
   }
 
+  /**
+   * 创建或更新指定节点的关节定义
+   * @param {string} nodeId - child 节点 uuid
+   * @param {Object} patch - 要更新的字段
+   * @param {Object} [patch.baseTransform] - 关节零点姿态 {tx,ty,tz,rx,ry,rz}
+   *   首次创建关节时由调用方传入对象当前的 local position/rotation。
+   *   之后 applyJointDrive 以此为零点（currentValue=0 时回到这个姿态）。
+   *   注意：def.baseTransform 与 objectData.baseTransform 是两个独立概念，
+   *   后者用于关键帧动画的 bind pose，前者只服务于关节驱动。
+   * @returns {Object|null}
+   */
   setJointDef(nodeId, patch) {
     const existing = this.jointDefinitions.get(nodeId);
     const def = existing || {
@@ -165,11 +108,12 @@ export class KeyframeManager {
       name: '',
       type: 'none',       // none | revolute | prismatic | fixed
       axis: 'y',           // x | y | z (UI convention)
-      origin: { x: 0, y: 0, z: 0 }, // joint origin in parent-local space (UI convention)
+      origin: { x: 0, y: 0, z: 0 }, // 关节原点（世界空间，UI Z-up 约定）——revolute 的旋转中心
       limits: { min: -180, max: 180 },
       parentId: null,
       childId: nodeId,
       currentValue: 0,
+      baseTransform: null, // 关节零点姿态，由首次创建关节时捕获
     };
     if (typeof patch.name !== 'undefined') def.name = String(patch.name);
     if (patch.type) def.type = patch.type;
@@ -186,6 +130,17 @@ export class KeyframeManager {
     if (typeof patch.parentId !== 'undefined') def.parentId = patch.parentId;
     if (typeof patch.childId !== 'undefined') def.childId = patch.childId;
     if (typeof patch.currentValue !== 'undefined') def.currentValue = normalizeValue(patch.currentValue, 0);
+    // 仅在 patch 显式传入时更新 baseTransform，避免后续修改类型/轴时覆盖零点
+    if (patch.baseTransform) {
+      def.baseTransform = {
+        tx: normalizeValue(patch.baseTransform.tx, 0),
+        ty: normalizeValue(patch.baseTransform.ty, 0),
+        tz: normalizeValue(patch.baseTransform.tz, 0),
+        rx: normalizeValue(patch.baseTransform.rx, 0),
+        ry: normalizeValue(patch.baseTransform.ry, 0),
+        rz: normalizeValue(patch.baseTransform.rz, 0),
+      };
+    }
 
     if (def.type === 'none') {
       this.jointDefinitions.delete(nodeId);
@@ -238,48 +193,86 @@ export class KeyframeManager {
     root.traverse((obj) => { if (obj.uuid === nodeId) childObj = obj; });
     if (!childObj) return;
 
-    // Get base transform (bind pose) — this is in parent-local space
+    // 关节零点姿态（parent-local space）
+    // 优先级：def 自带的 baseTransform（关节首次创建时捕获，最准确）
+    //       > objectData.baseTransform（动画 bind pose，可能与关节零点不同）
+    //       > 当前 position/rotation（兜底，不准）
     const objectData = this.objectDataById.get(nodeId);
-    const base = objectData?.baseTransform;
+    const base = def.baseTransform || objectData?.baseTransform;
 
-    // Origin is stored in UI convention; convert to parent-local space (swap Y/Z)
-    const originLocal = new THREE.Vector3(
+    // def.origin 存储在 UI 约定（Z-up），表示世界空间坐标
+    // （与 syncJointOriginMarker、onOriginFromBbox/Center、onOriginFromJointPoint 一致）
+    // 转换到 Three.js 世界空间（Y-up）：UI Z → Y，UI Y → Z
+    const originWorld = new THREE.Vector3(
       def.origin?.x ?? 0,
-      def.origin?.z ?? 0,  // UI Z -> Three.js Y
-      def.origin?.y ?? 0,  // UI Y -> Three.js Z
+      def.origin?.z ?? 0,  // UI Z → Three.js Y (vertical)
+      def.origin?.y ?? 0,  // UI Y → Three.js Z
     );
 
     if (def.type === 'revolute') {
+      // 在世界空间绕 originWorld 旋转 currentValue 度。
+      // 之前把 origin 当 parent-local 用，导致父节点有偏移时旋转中心错位。
       const rad = (def.currentValue * Math.PI) / 180;
       const worldAxis = mapUiAxisToWorld(def.axis);
-      const axisVec = worldAxis === 'x' ? new THREE.Vector3(1, 0, 0)
+      const worldAxisVec = worldAxis === 'x' ? new THREE.Vector3(1, 0, 0)
         : worldAxis === 'y' ? new THREE.Vector3(0, 1, 0)
         : new THREE.Vector3(0, 0, 1);
-      const deltaQuat = new THREE.Quaternion().setFromAxisAngle(axisVec, rad);
+      // 世界轴旋转 quaternion
+      const deltaQuat = new THREE.Quaternion().setFromAxisAngle(worldAxisVec, rad);
 
-      // Base position/rotation in parent-local space
-      const basePos = base
-        ? new THREE.Vector3(base.tx, base.ty, base.tz)
-        : childObj.position.clone();
-      const baseQuat = base
-        ? new THREE.Quaternion().setFromEuler(new THREE.Euler(base.rx, base.ry, base.rz))
-        : childObj.quaternion.clone();
+      const parent = childObj.parent;
+      if (!parent) return;
 
-      // Rotate around origin in parent-local space:
-      // newPos = origin + deltaQuat * (basePos - origin)
-      const offset = basePos.clone().sub(originLocal);
+      // 1) 先把 child 放回关节零点姿态（parent-local）
+      if (base) {
+        childObj.position.set(base.tx, base.ty, base.tz);
+        childObj.rotation.set(base.rx, base.ry, base.rz);
+      }
+
+      // 2) 读取零点姿态下的世界 transform
+      //    getWorldPosition/Quaternion 会向上递归 updateWorldMatrix，确保准确
+      const baseWorldPos = childObj.getWorldPosition(new THREE.Vector3());
+      const baseWorldQuat = childObj.getWorldQuaternion(new THREE.Quaternion());
+
+      // 3) 绕 originWorld 旋转 deltaQuat：newPos = origin + deltaQuat * (basePos - origin)
+      const offset = baseWorldPos.clone().sub(originWorld);
       const rotatedOffset = offset.applyQuaternion(deltaQuat);
-      const newPos = originLocal.clone().add(rotatedOffset);
+      const newWorldPos = originWorld.clone().add(rotatedOffset);
+      const newWorldQuat = deltaQuat.clone().multiply(baseWorldQuat);
 
-      childObj.position.copy(newPos);
-      childObj.quaternion.copy(deltaQuat.clone().multiply(baseQuat));
+      // 4) 世界 transform 转回 parent-local，写入 child
+      childObj.position.copy(parent.worldToLocal(newWorldPos.clone()));
+      const parentWorldQuatInv = parent.getWorldQuaternion(new THREE.Quaternion()).invert();
+      childObj.quaternion.copy(parentWorldQuatInv.multiply(newWorldQuat));
     } else if (def.type === 'prismatic') {
+      // Prismatic：沿关节的世界轴方向平移 currentValue 单位。
+      // 注意必须在世界空间计算，而不是简单地加到局部 position[axis] 上。
+      // 当 childObj 的父节点有旋转时，父节点的局部 Y 方向并不等于世界 Y 方向，
+      // 直接加到局部 position.y 上会导致实际位移方向偏离用户预期（gizmo 拖拽方向）。
       const worldAxis = mapUiAxisToWorld(def.axis);
-      // Reset to base position in parent-local space
+      const worldAxisVec = worldAxis === 'x' ? new THREE.Vector3(1, 0, 0)
+        : worldAxis === 'y' ? new THREE.Vector3(0, 1, 0)
+        : new THREE.Vector3(0, 0, 1);
+
+      // 1) 先把 child 放回关节零点（parent-local）
       if (base) {
         childObj.position.set(base.tx, base.ty, base.tz);
       }
-      childObj.position[worldAxis] += def.currentValue;
+
+      // 2) 计算 child 在零点姿态下的世界位置
+      const parent = childObj.parent;
+      if (parent) {
+        parent.updateMatrixWorld(true);
+        // getWorldPosition 会使用 child 刚才设置的 local + parent 的 worldMatrix
+        const baseWorldPos = childObj.getWorldPosition(new THREE.Vector3());
+        // 3) 沿世界轴方向加上 currentValue 位移
+        const targetWorldPos = baseWorldPos.add(worldAxisVec.multiplyScalar(def.currentValue));
+        // 4) 把目标世界位置转回父 local，写入 child.position
+        childObj.position.copy(parent.worldToLocal(targetWorldPos));
+      } else {
+        // 兜底：没有父节点时，local 就是世界，直接加
+        childObj.position[worldAxis] += def.currentValue;
+      }
     }
   }
 
@@ -293,341 +286,156 @@ export class KeyframeManager {
     });
   }
 
-  getClipNames(object) {
-    const objectData = this.ensureObjectData(object);
-    if (!objectData) return [];
-    return [...objectData.clips.keys()];
+  // ══════════════════════════════════════════════════════════════
+  //  全局动画片段（Global Clips）管理
+  // ══════════════════════════════════════════════════════════════
+
+  /** 当前激活的全局 clip 对象 */
+  getActiveGlobalClip() {
+    return this.globalClips.get(this.activeClipName) ?? null;
   }
 
-  getActiveClip(object) {
-    const objectData = this.ensureObjectData(object);
-    if (!objectData) return null;
-    return objectData.clips.get(objectData.activeClipName) ?? null;
+  /** 所有全局 clip 名称列表 */
+  getClipNames() {
+    return [...this.globalClips.keys()];
   }
 
-  getActiveMotionValue(object) {
-    return this.getActiveClip(object)?.currentTranslateValue ?? 0;
+  /** 切换激活的全局 clip */
+  setActiveClip(clipName) {
+    if (!this.globalClips.has(clipName)) return false;
+    this.activeClipName = clipName;
+    return true;
   }
 
-  createClip(object, requestedName) {
-    const objectData = this.ensureObjectData(object);
-    if (!objectData) return null;
-
+  /**
+   * 创建一个全局 clip。如果名字冲突自动加后缀
+   * @param {string} requestedName
+   * @returns {string} 实际创建的 clip 名（可能带后缀）
+   */
+  createClip(requestedName) {
     const base = (requestedName || 'new_clip').trim() || 'new_clip';
-    let clipName = base;
+    let name = base;
     let i = 1;
-    while (objectData.clips.has(clipName)) {
-      clipName = `${base}_${i}`;
+    while (this.globalClips.has(name)) {
       i += 1;
+      name = `${base}_${i}`;
     }
-
-    const template = this.getActiveClip(object) ?? {
-      jointEnabled: true,
-      translateAxis: 'z',
-      currentTranslateValue: 0,
-      rotateAxis: 'z',
-      currentRotateValue: 0,
-      pivotEnabled: false,
-      pivotX: object.position.x,
-      pivotY: object.position.y,
-      pivotZ: object.position.z,
-      minValue: null,
-      maxValue: null,
-      duration: 10,
-    };
-    objectData.clips.set(clipName, {
-      clipName,
-      jointEnabled: template.jointEnabled,
-      translateAxis: template.translateAxis,
-      currentTranslateValue: template.currentTranslateValue,
-      rotateAxis: template.rotateAxis,
-      currentRotateValue: template.currentRotateValue,
-      pivotEnabled: template.pivotEnabled,
-      pivotX: template.pivotX,
-      pivotY: template.pivotY,
-      pivotZ: template.pivotZ,
-      minValue: template.minValue,
-      maxValue: template.maxValue,
-      duration: template.duration,
-      keyframes: [],
-    });
-    objectData.activeClipName = clipName;
-    return objectData.clips.get(clipName);
+    this.globalClips.set(name, { clipName: name, duration: 10, keyframes: [] });
+    return name;
   }
 
-  setActiveClip(object, clipName) {
-    const objectData = this.ensureObjectData(object);
-    if (!objectData || !objectData.clips.has(clipName)) return;
-    objectData.activeClipName = clipName;
+  /** 当前 clip 时长（秒） */
+  getClipDuration() {
+    return this.getActiveGlobalClip()?.duration ?? 10;
   }
 
-  updateActiveClipConfig(object, patch) {
-    const clip = this.getActiveClip(object);
+  /** 设置当前 clip 时长 */
+  setClipDuration(duration) {
+    const clip = this.getActiveGlobalClip();
     if (!clip) return;
-
-    if (typeof patch.jointEnabled !== 'undefined') clip.jointEnabled = Boolean(patch.jointEnabled);
-    if (patch.translateAxis) clip.translateAxis = patch.translateAxis;
-    if (patch.rotateAxis) clip.rotateAxis = patch.rotateAxis;
-    if (typeof patch.pivotEnabled !== 'undefined') clip.pivotEnabled = Boolean(patch.pivotEnabled);
-    if (typeof patch.pivotX !== 'undefined') clip.pivotX = normalizeValue(patch.pivotX, clip.pivotX);
-    if (typeof patch.pivotY !== 'undefined') clip.pivotY = normalizeValue(patch.pivotY, clip.pivotY);
-    if (typeof patch.pivotZ !== 'undefined') clip.pivotZ = normalizeValue(patch.pivotZ, clip.pivotZ);
-    if (typeof patch.translateValue !== 'undefined') {
-      clip.currentTranslateValue = normalizeValue(patch.translateValue, clip.currentTranslateValue);
-    }
-    if (typeof patch.rotateValue !== 'undefined') {
-      clip.currentRotateValue = normalizeValue(patch.rotateValue, clip.currentRotateValue);
-    }
-    if (typeof patch.duration !== 'undefined') {
-      clip.duration = Math.max(0.1, Number(patch.duration) || 10);
-    }
-    if (typeof patch.minValue !== 'undefined') {
-      clip.minValue = patch.minValue === null || patch.minValue === '' ? null : Number(patch.minValue);
-    }
-    if (typeof patch.maxValue !== 'undefined') {
-      clip.maxValue = patch.maxValue === null || patch.maxValue === '' ? null : Number(patch.maxValue);
-    }
+    clip.duration = Math.max(0.1, Number(duration) || 10);
   }
 
-  getTrack(object) {
-    const clip = this.getActiveClip(object);
-    return clip?.keyframes ?? [];
+  /** 当前 clip 的关键帧数组 */
+  getKeyframes() {
+    return this.getActiveGlobalClip()?.keyframes ?? [];
   }
 
-  getClipDuration(object) {
-    const clip = this.getActiveClip(object);
-    return clip?.duration ?? 10;
+  // ══════════════════════════════════════════════════════════════
+  //  全局关键帧 CRUD
+  // ══════════════════════════════════════════════════════════════
+
+  /**
+   * 在指定时间添加一个全局关键帧
+   * 抓取**所有有 jointDef 的对象**的当前 def.currentValue，存入 keyframe.jointValues
+   * @param {number} time
+   * @returns {Object|null} 创建的关键帧对象
+   */
+  addKeyframe(time) {
+    const clip = this.getActiveGlobalClip();
+    if (!clip) return null;
+
+    // 收集所有关节定义的当前状态
+    const jointValues = {};
+    this.jointDefinitions.forEach((def) => {
+      jointValues[def.id] = normalizeValue(def.currentValue, 0);
+    });
+
+    const t = Number(time);
+    // 同一时间已有关键帧则替换
+    clip.keyframes = clip.keyframes.filter((k) => Math.abs(k.time - t) > 0.0001);
+    const keyframe = { time: t, jointValues };
+    clip.keyframes.push(keyframe);
+    clip.keyframes.sort((a, b) => a.time - b.time);
+    return keyframe;
   }
 
-  applyCurrentChannelValues(object) {
-    const clip = this.getActiveClip(object);
-    const objectData = this.ensureObjectData(object);
-    if (!clip || !objectData || !object) return;
-    this.applySemanticToObject(
-      object,
-      objectData.baseTransform,
-      clip,
-      clip.currentTranslateValue,
-      clip.currentRotateValue,
-    );
-  }
-
-  addKeyframe(object, time) {
-    const clip = this.getActiveClip(object);
-    if (!object || !clip) return;
-
-    const keyframe = {
-      time: Number(time),
-      translateValue: normalizeValue(clip.currentTranslateValue, 0),
-      rotateValue: normalizeValue(clip.currentRotateValue, 0),
-    };
-
-    const withoutSameTime = clip.keyframes.filter((k) => Math.abs(k.time - keyframe.time) > 0.0001);
-    withoutSameTime.push(keyframe);
-    withoutSameTime.sort((a, b) => a.time - b.time);
-    clip.keyframes = withoutSameTime;
-  }
-
-  removeKeyframe(object, time) {
-    const clip = this.getActiveClip(object);
+  /**
+   * 删除指定时间的全局关键帧
+   * @param {number} time
+   * @returns {boolean}
+   */
+  removeKeyframe(time) {
+    const clip = this.getActiveGlobalClip();
     if (!clip) return false;
     const before = clip.keyframes.length;
     clip.keyframes = clip.keyframes.filter((k) => Math.abs(k.time - Number(time)) > 0.0001);
     return clip.keyframes.length !== before;
   }
 
-  getFrameAtTime(track, time, fallbackTranslate = 0, fallbackRotate = 0) {
-    if (!track.length) {
-      return { translateValue: fallbackTranslate, rotateValue: fallbackRotate };
-    }
-    if (time <= track[0].time) {
-      return {
-        translateValue: track[0].translateValue,
-        rotateValue: track[0].rotateValue,
-      };
-    }
-    if (time >= track[track.length - 1].time) {
-      return {
-        translateValue: track[track.length - 1].translateValue,
-        rotateValue: track[track.length - 1].rotateValue,
-      };
-    }
+  // ══════════════════════════════════════════════════════════════
+  //  关键帧求值
+  // ══════════════════════════════════════════════════════════════
 
-    for (let i = 0; i < track.length - 1; i += 1) {
-      const left = track[i];
-      const right = track[i + 1];
-      if (time < left.time || time > right.time) continue;
-      const ratio = (time - left.time) / (right.time - left.time);
-      return {
-        translateValue: lerp(left.translateValue, right.translateValue, ratio),
-        rotateValue: lerp(left.rotateValue, right.rotateValue, ratio),
-      };
+  /**
+   * 在时间 t 上为指定 joint def 求值（在当前 clip 的关键帧中插值）
+   * 只考虑那些 jointValues 字典里**包含该 jointDefId**的关键帧
+   * @param {Array} keyframes - 全局关键帧数组
+   * @param {string} jointDefId
+   * @param {number} t
+   * @returns {number|null} 插值结果，没有任何相关关键帧则返回 null
+   */
+  _interpolateJointValueAtTime(keyframes, jointDefId, t) {
+    // 只看包含该关节状态的关键帧
+    const relevant = keyframes.filter(
+      (k) => k.jointValues && k.jointValues[jointDefId] !== undefined && k.jointValues[jointDefId] !== null,
+    );
+    if (!relevant.length) return null;
+
+    if (t <= relevant[0].time) {
+      return relevant[0].jointValues[jointDefId];
     }
-    return { translateValue: fallbackTranslate, rotateValue: fallbackRotate };
+    if (t >= relevant[relevant.length - 1].time) {
+      return relevant[relevant.length - 1].jointValues[jointDefId];
+    }
+    for (let i = 0; i < relevant.length - 1; i += 1) {
+      const left = relevant[i];
+      const right = relevant[i + 1];
+      if (t < left.time || t > right.time) continue;
+      const ratio = (t - left.time) / (right.time - left.time);
+      return lerp(left.jointValues[jointDefId], right.jointValues[jointDefId], ratio);
+    }
+    return null;
   }
 
-  evaluateObjectAt(object, time) {
-    const objectData = this.ensureObjectData(object);
-    const clip = this.getActiveClip(object);
-    if (!objectData || !clip || !object) return;
-
-    const frame = this.getFrameAtTime(
-      clip.keyframes,
-      time,
-      clip.currentTranslateValue,
-      clip.currentRotateValue,
-    );
-    clip.currentTranslateValue = frame.translateValue;
-    clip.currentRotateValue = frame.rotateValue;
-    this.applySemanticToObject(
-      object,
-      objectData.baseTransform,
-      clip,
-      frame.translateValue,
-      frame.rotateValue,
-    );
-  }
-
-  applySemanticToObject(object, baseTransform, clip, translateValue, rotateValue) {
-    // Reset to object bind-like baseline before applying semantic delta.
-    object.position.set(baseTransform.tx, baseTransform.ty, baseTransform.tz);
-    object.rotation.set(baseTransform.rx, baseTransform.ry, baseTransform.rz);
-
-    if (!clip.jointEnabled) return;
-
-    const parent = object.parent;
-    const parentWorldQuat = parent ? parent.getWorldQuaternion(new THREE.Quaternion()) : new THREE.Quaternion();
-    const parentWorldQuatInv = parentWorldQuat.clone().invert();
-    const baseLocalQuat = new THREE.Quaternion().setFromEuler(
-      new THREE.Euler(baseTransform.rx, baseTransform.ry, baseTransform.rz),
-    );
-    const baseWorldQuat = parent ? parentWorldQuat.clone().multiply(baseLocalQuat) : baseLocalQuat.clone();
-    const baseWorldPos = parent
-      ? parent.localToWorld(new THREE.Vector3(baseTransform.tx, baseTransform.ty, baseTransform.tz))
-      : new THREE.Vector3(baseTransform.tx, baseTransform.ty, baseTransform.tz);
-
-    const worldRotateAxis = mapUiAxisToWorld(clip.rotateAxis);
-    const axisVector =
-      worldRotateAxis === 'x'
-        ? new THREE.Vector3(1, 0, 0)
-        : worldRotateAxis === 'y'
-          ? new THREE.Vector3(0, 1, 0)
-          : new THREE.Vector3(0, 0, 1);
-    const rotateRad = (rotateValue * Math.PI) / 180;
-
-    const rotateDeltaQuat = new THREE.Quaternion().setFromAxisAngle(axisVector, rotateRad);
-    const finalWorldQuat = rotateDeltaQuat.clone().multiply(baseWorldQuat);
-
-    let finalWorldPos = baseWorldPos.clone();
-
-    // Extension point: replace single-pivot math with parent-child FK solver.
-    if (clip.pivotEnabled) {
-      const pivot = new THREE.Vector3(clip.pivotX, clip.pivotY, clip.pivotZ);
-      const rotatedOffset = baseWorldPos.clone().sub(pivot).applyQuaternion(rotateDeltaQuat);
-      finalWorldPos = pivot.clone().add(rotatedOffset);
-    }
-
-    // Keep translate channel as additive delta after rotation solve.
-    const worldTranslateAxis = mapUiAxisToWorld(clip.translateAxis);
-    finalWorldPos[worldTranslateAxis] += translateValue;
-
-    const finalLocalPos = parent ? parent.worldToLocal(finalWorldPos.clone()) : finalWorldPos;
-    const finalLocalQuat = parent ? parentWorldQuatInv.multiply(finalWorldQuat) : finalWorldQuat;
-
-    object.position.copy(finalLocalPos);
-    object.quaternion.copy(finalLocalQuat);
-  }
-
-  evaluateAllAt(time, root) {
-    if (!root) return;
+  /**
+   * 在时间 t 求值整个项目的关键帧动画
+   * 对每个 jointDef 在当前 clip 中插值，写回 def.currentValue
+   * 之后 loop 里的 applyAllJointDrives 会用新的 currentValue 驱动对象
+   * @param {number} time
+   * @param {THREE.Object3D} _root - 兼容旧签名，未使用
+   */
+  evaluateAllAt(time, _root) {
     this.currentTime = Math.max(0, Number(time) || 0);
+    const clip = this.getActiveGlobalClip();
+    if (!clip || !clip.keyframes.length) return;
 
-    const objectMap = new Map();
-    root.traverse((obj) => objectMap.set(obj.uuid, obj));
-
-    this.objectDataById.forEach((_data, objectId) => {
-      const object = objectMap.get(objectId);
-      if (!object) return;
-      this.evaluateObjectAt(object, this.currentTime);
+    this.jointDefinitions.forEach((def) => {
+      const value = this._interpolateJointValueAtTime(clip.keyframes, def.id, this.currentTime);
+      if (value !== null && value !== undefined) {
+        def.currentValue = normalizeValue(value, def.currentValue);
+      }
     });
-  }
-
-  exportForObject(object) {
-    const objectData = this.ensureObjectData(object);
-    if (!objectData) return null;
-    const clip = this.getActiveClip(object);
-    if (!clip) return null;
-
-    const payload = {
-      object_id: objectData.objectId,
-      object_name: objectData.objectName,
-      joint_node: objectData.jointNode,
-      joint_points: objectData.jointPoints || [],
-      joint_enabled: clip.jointEnabled,
-      channels: {
-        translate: { axis: clip.translateAxis },
-        rotate: { axis: clip.rotateAxis },
-      },
-      pivot: {
-        enabled: clip.pivotEnabled,
-        x: clip.pivotX,
-        y: clip.pivotY,
-        z: clip.pivotZ,
-      },
-      clip_name: clip.clipName,
-      duration: clip.duration,
-      keyframes: clip.keyframes.map((k) => ({
-        t: k.time,
-        translate_value: k.translateValue,
-        rotate_value: k.rotateValue,
-      })),
-      // Extension point: map joint semantics to USD Skel / internal system.
-      semantics_version: 3,
-    };
-    if (clip.minValue !== null) payload.min_value = clip.minValue;
-    if (clip.maxValue !== null) payload.max_value = clip.maxValue;
-    return payload;
-  }
-
-  exportForObjects(objects) {
-    const list = [];
-    objects.forEach((obj) => {
-      const objectData = this.ensureObjectData(obj);
-      if (!objectData) return;
-
-      objectData.clips.forEach((clip) => {
-        const payload = {
-          object_id: objectData.objectId,
-          object_name: objectData.objectName,
-          joint_node: objectData.jointNode,
-          joint_points: objectData.jointPoints || [],
-          joint_enabled: clip.jointEnabled,
-          channels: {
-            translate: { axis: clip.translateAxis },
-            rotate: { axis: clip.rotateAxis },
-          },
-          pivot: {
-            enabled: clip.pivotEnabled,
-            x: clip.pivotX,
-            y: clip.pivotY,
-            z: clip.pivotZ,
-          },
-          clip_name: clip.clipName,
-          duration: clip.duration,
-          keyframes: clip.keyframes.map((k) => ({
-            t: k.time,
-            translate_value: k.translateValue,
-            rotate_value: k.rotateValue,
-          })),
-          // Extension point: future multi-joint/FK export schema.
-          semantics_version: 3,
-        };
-        if (clip.minValue !== null) payload.min_value = clip.minValue;
-        if (clip.maxValue !== null) payload.max_value = clip.maxValue;
-        list.push(payload);
-      });
-    });
-    return list;
   }
 
   // ══════════════════════════════════════════════════════════════
@@ -800,33 +608,22 @@ export class KeyframeManager {
         parentId: d.parentId,
         childId: d.childId,
         currentValue: d.currentValue,
+        // 关节零点姿态（深拷贝），undo/redo 时不能丢
+        baseTransform: d.baseTransform ? { ...d.baseTransform } : null,
       })),
       objects: [...this.objectDataById.values()].map((obj) => ({
         objectId: obj.objectId,
         objectName: obj.objectName,
-        jointNode: obj.jointNode,
-        jointPoints: obj.jointPoints || [],
         baseTransform: obj.baseTransform,
-        activeClipName: obj.activeClipName,
-        clips: [...obj.clips.values()].map((clip) => ({
-          clipName: clip.clipName,
-          jointEnabled: clip.jointEnabled,
-          translateAxis: clip.translateAxis,
-          currentTranslateValue: clip.currentTranslateValue,
-          rotateAxis: clip.rotateAxis,
-          currentRotateValue: clip.currentRotateValue,
-          pivotEnabled: clip.pivotEnabled,
-          pivotX: clip.pivotX,
-          pivotY: clip.pivotY,
-          pivotZ: clip.pivotZ,
-          minValue: clip.minValue,
-          maxValue: clip.maxValue,
-          duration: clip.duration,
-          keyframes: clip.keyframes.map((k) => ({
-            time: k.time,
-            translateValue: k.translateValue,
-            rotateValue: k.rotateValue,
-          })),
+      })),
+      // 全局 clips：每个 clip 包含 duration + keyframes（每个 keyframe 含全局 jointValues）
+      activeClipName: this.activeClipName,
+      globalClips: [...this.globalClips.values()].map((clip) => ({
+        clipName: clip.clipName,
+        duration: clip.duration,
+        keyframes: clip.keyframes.map((k) => ({
+          time: k.time,
+          jointValues: { ...k.jointValues }, // 浅拷贝足够（值都是 number）
         })),
       })),
       // PKF 数据序列化（深拷贝，确保快照与当前数据解耦）
@@ -851,44 +648,40 @@ export class KeyframeManager {
         parentId: d.parentId ?? null,
         childId: d.childId ?? d.id,
         currentValue: normalizeValue(d.currentValue, 0),
+        // 关节零点姿态：可能为 null（旧数据），applyJointDrive 会 fallback
+        baseTransform: d.baseTransform ? { ...d.baseTransform } : null,
       });
     });
 
+    // Restore objectData (only baseTransform, no per-object clips anymore)
     this.objectDataById.clear();
     (serializedState?.objects || []).forEach((obj) => {
-      const clips = new Map();
-      (obj.clips || []).forEach((clip) => {
-        clips.set(clip.clipName, {
-          clipName: clip.clipName,
-          jointEnabled: typeof clip.jointEnabled === 'undefined' ? true : clip.jointEnabled,
-          translateAxis: clip.translateAxis || 'z',
-          currentTranslateValue: normalizeValue(clip.currentTranslateValue, 0),
-          rotateAxis: clip.rotateAxis || 'z',
-          currentRotateValue: normalizeValue(clip.currentRotateValue, 0),
-          pivotEnabled: typeof clip.pivotEnabled === 'undefined' ? false : clip.pivotEnabled,
-          pivotX: normalizeValue(clip.pivotX, 0),
-          pivotY: normalizeValue(clip.pivotY, 0),
-          pivotZ: normalizeValue(clip.pivotZ, 0),
-          minValue: clip.minValue,
-          maxValue: clip.maxValue,
-          duration: clip.duration,
-          keyframes: (clip.keyframes || []).map((k) => ({
-            time: k.time,
-            translateValue: normalizeValue(k.translateValue, 0),
-            rotateValue: normalizeValue(k.rotateValue, 0),
-          })),
-        });
-      });
       this.objectDataById.set(obj.objectId, {
         objectId: obj.objectId,
         objectName: obj.objectName,
-        jointNode: obj.jointNode || { marked: false, name: obj.objectName || obj.objectId },
-        jointPoints: obj.jointPoints || [],
         baseTransform: obj.baseTransform,
-        activeClipName: obj.activeClipName,
-        clips,
       });
     });
+
+    // Restore global clips
+    this.globalClips.clear();
+    (serializedState?.globalClips || []).forEach((clip) => {
+      this.globalClips.set(clip.clipName, {
+        clipName: clip.clipName,
+        duration: Math.max(0.1, Number(clip.duration) || 10),
+        keyframes: (clip.keyframes || []).map((k) => ({
+          time: Number(k.time) || 0,
+          jointValues: { ...(k.jointValues || {}) },
+        })),
+      });
+    });
+    // 至少保证有一个 default clip
+    if (!this.globalClips.size) {
+      this.globalClips.set('default', { clipName: 'default', duration: 10, keyframes: [] });
+    }
+    this.activeClipName = serializedState?.activeClipName && this.globalClips.has(serializedState.activeClipName)
+      ? serializedState.activeClipName
+      : this.globalClips.keys().next().value;
 
     // ── 恢复 PKF 数据 ──
     this.pkfParameters.clear(); // 先清空再重建，避免残留

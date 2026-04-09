@@ -25,7 +25,6 @@ export class SceneManager {
     this.addDefaultLights();
     this.addHelpers();
     this.addPivotMarker();
-    this.addJointMarkersLayer();
     this.initJointGizmo();
     this.resize();
   }
@@ -66,40 +65,6 @@ export class SceneManager {
     this.scene.add(this.pivotMarker);
   }
 
-  addJointMarkersLayer() {
-    this.jointMarkersGroup = new THREE.Group();
-    this.scene.add(this.jointMarkersGroup);
-    this.jointRaycaster = new THREE.Raycaster();
-    this.jointPointer = new THREE.Vector2();
-  }
-
-  renderJointMarkers(points, activeId = null) {
-    if (!this.jointMarkersGroup) return;
-    this.jointMarkersGroup.clear();
-
-    points.forEach((point) => {
-      const isActive = point.id === activeId;
-      const sphere = new THREE.Mesh(
-        new THREE.SphereGeometry(isActive ? 0.1 : 0.06, 14, 14),
-        new THREE.MeshBasicMaterial({ color: isActive ? 0xff3b30 : 0xffc107 }),
-      );
-      sphere.position.set(point.x, point.y, point.z);
-      sphere.userData.jointPointId = point.id;
-      this.jointMarkersGroup.add(sphere);
-    });
-  }
-
-  pickJointMarker(clientX, clientY) {
-    if (!this.jointMarkersGroup || !this.jointMarkersGroup.children.length) return null;
-    const rect = this.renderer.domElement.getBoundingClientRect();
-    this.jointPointer.x = ((clientX - rect.left) / rect.width) * 2 - 1;
-    this.jointPointer.y = -((clientY - rect.top) / rect.height) * 2 + 1;
-    this.jointRaycaster.setFromCamera(this.jointPointer, this.camera);
-    const hits = this.jointRaycaster.intersectObjects(this.jointMarkersGroup.children, false);
-    if (!hits.length) return null;
-    return hits[0].object.userData.jointPointId ?? null;
-  }
-
   setPivotMarker(position) {
     if (!this.pivotMarker || !position) return;
     this.pivotMarker.position.copy(position);
@@ -109,7 +74,6 @@ export class SceneManager {
   clearPivotMarker() {
     if (!this.pivotMarker) return;
     this.pivotMarker.visible = false;
-    this.renderJointMarkers([], null);
   }
 
   setSceneRoot(root) {
@@ -208,9 +172,15 @@ export class SceneManager {
     this.jointGizmoTarget = object;
     this.jointGizmoOnChange = onChange || null;
 
-    // Store initial state for delta computation
+    // 记录拖拽起始状态，用于后续 delta 计算
     this._gizmoStartQuat = object.quaternion.clone();
     this._gizmoStartPos = object.position.clone();
+    // 起始世界位置/四元数：平移 gizmo 和旋转 gizmo 都用世界空间计算 delta
+    // 之所以必须用世界空间：TransformControls 默认沿世界轴操作，直接用
+    // object.position/quaternion（局部）计算，当父节点有旋转时结果错乱。
+    object.updateMatrixWorld(true);
+    this._gizmoStartWorldPos = object.getWorldPosition(new THREE.Vector3());
+    this._gizmoStartWorldQuat = object.getWorldQuaternion(new THREE.Quaternion());
     this._gizmoWorldAxis = worldAxis;
     this._gizmoMode = mode;
 
@@ -223,17 +193,40 @@ export class SceneManager {
       if (!this.jointGizmoOnChange) return;
 
       if (this._gizmoMode === 'rotate') {
-        // Compute rotation delta in degrees around the constrained axis
-        const invStart = this._gizmoStartQuat.clone().invert();
-        const deltaQuat = object.quaternion.clone().multiply(invStart);
-        const euler = new THREE.Euler().setFromQuaternion(deltaQuat, 'XYZ');
-        const axisKey = this._gizmoWorldAxis === 'X' ? 'x' : this._gizmoWorldAxis === 'Y' ? 'y' : 'z';
-        const degrees = (euler[axisKey] * 180) / Math.PI;
+        // 世界空间旋转 delta：current_world = delta_world * start_world
+        // → delta_world = current_world * start_world^-1
+        object.updateMatrixWorld(true);
+        const currentWorldQuat = object.getWorldQuaternion(new THREE.Quaternion());
+        const startWorldQuatInv = this._gizmoStartWorldQuat.clone().invert();
+        const deltaWorldQuat = currentWorldQuat.clone().multiply(startWorldQuatInv);
+
+        // 提取绕世界轴的有符号角度。
+        // 对于绕单位轴 A 旋转 θ 角度的 quaternion：q = (cos(θ/2), sin(θ/2) * A)
+        // 所以 sin(θ/2) = q.xyz 在 A 方向上的点积，cos(θ/2) = q.w
+        // Euler 分解在多轴耦合时会失真，这里用点积法稳定准确。
+        const axisVec = this._gizmoWorldAxis === 'X' ? new THREE.Vector3(1, 0, 0)
+          : this._gizmoWorldAxis === 'Y' ? new THREE.Vector3(0, 1, 0)
+          : new THREE.Vector3(0, 0, 1);
+        const vecPart = new THREE.Vector3(deltaWorldQuat.x, deltaWorldQuat.y, deltaWorldQuat.z);
+        const sinHalf = vecPart.dot(axisVec);
+        const cosHalf = deltaWorldQuat.w;
+        const angle = 2 * Math.atan2(sinHalf, cosHalf);
+        const degrees = (angle * 180) / Math.PI;
         this.jointGizmoOnChange(degrees);
       } else if (this._gizmoMode === 'translate') {
-        const delta = object.position.clone().sub(this._gizmoStartPos);
-        const axisKey = this._gizmoWorldAxis === 'X' ? 'x' : this._gizmoWorldAxis === 'Y' ? 'y' : 'z';
-        this.jointGizmoOnChange(delta[axisKey]);
+        // 世界空间位移 → 投影到关节的世界轴方向，得到有符号标量
+        // 之前用 object.position（局部空间）- startPos 会在父节点有旋转时失败：
+        // 世界 Y 拖拽在局部空间可能分散到 XYZ，局部 Y 分量很小导致"弹回"。
+        object.updateMatrixWorld(true);
+        const currentWorldPos = object.getWorldPosition(new THREE.Vector3());
+        const deltaWorld = currentWorldPos.sub(this._gizmoStartWorldPos);
+        // 世界轴单位向量（worldAxis 是 'X'/'Y'/'Z'）
+        const axisVec = this._gizmoWorldAxis === 'X' ? new THREE.Vector3(1, 0, 0)
+          : this._gizmoWorldAxis === 'Y' ? new THREE.Vector3(0, 1, 0)
+          : new THREE.Vector3(0, 0, 1);
+        // 有符号投影长度 = 位移向量在轴方向上的分量
+        const signedMagnitude = deltaWorld.dot(axisVec);
+        this.jointGizmoOnChange(signedMagnitude);
       }
     };
 

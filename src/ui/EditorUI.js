@@ -15,29 +15,6 @@ export class EditorUI {
     this.txInput = this.appRoot.querySelector('#tx-input');
     this.tyInput = this.appRoot.querySelector('#ty-input');
     this.ryInput = this.appRoot.querySelector('#ry-input');
-    this.jointEnabledInput = this.appRoot.querySelector('#joint-enabled-input');
-    this.translateAxisSelect = this.appRoot.querySelector('#translate-axis-select');
-    this.translateValueInput = this.appRoot.querySelector('#translate-value-input');
-    this.rotateAxisSelect = this.appRoot.querySelector('#rotate-axis-select');
-    this.rotateValueInput = this.appRoot.querySelector('#rotate-value-input');
-    this.pivotEnabledInput = this.appRoot.querySelector('#pivot-enabled-input');
-    this.jointPanelList = this.appRoot.querySelector('#joint-panel-list');
-    this.jointObjectASelect = this.appRoot.querySelector('#joint-object-a-select');
-    this.jointObjectBSelect = this.appRoot.querySelector('#joint-object-b-select');
-    this.jointFromCenterBtn = this.appRoot.querySelector('#joint-from-center-btn');
-    this.jointFromNearestBtn = this.appRoot.querySelector('#joint-from-nearest-btn');
-    this.jointSaveCurrentBtn = this.appRoot.querySelector('#joint-save-current-btn');
-    this.jointNameInput = this.appRoot.querySelector('#joint-name-input');
-    this.jointInfoText = this.appRoot.querySelector('#joint-info-text');
-    this.jointFollowAInput = this.appRoot.querySelector('#joint-follow-a-input');
-    this.jointXInput = this.appRoot.querySelector('#joint-x-input');
-    this.jointYInput = this.appRoot.querySelector('#joint-y-input');
-    this.jointZInput = this.appRoot.querySelector('#joint-z-input');
-    this.jointApplyBtn = this.appRoot.querySelector('#joint-apply-btn');
-    this.jointDeleteBtn = this.appRoot.querySelector('#joint-delete-btn');
-    this.pivotXInput = this.jointXInput;
-    this.pivotYInput = this.jointYInput;
-    this.pivotZInput = this.jointZInput;
     this.clipNameInput = this.appRoot.querySelector('#clip-name-input');
     this.createClipBtn = this.appRoot.querySelector('#create-clip-btn');
     this.clipSelect = this.appRoot.querySelector('#clip-select');
@@ -62,6 +39,7 @@ export class EditorUI {
     this.pkfGenFromKfBtn = this.appRoot.querySelector('#pkf-gen-from-kf-btn');
     this.pkfPreviewBtn = this.appRoot.querySelector('#pkf-preview-btn');
     this.pkfPreviewOutput = this.appRoot.querySelector('#pkf-preview-output');
+    this.pkfPlaybackModeInput = this.appRoot.querySelector('#pkf-playback-mode-input');
 
     this.exportJsonBtn = this.appRoot.querySelector('#export-json-btn');
     this.exportPackageBtn = this.appRoot.querySelector('#export-package-btn');
@@ -92,44 +70,6 @@ export class EditorUI {
 
         <main class="viewport-wrap">
           <div id="viewport"></div>
-          <section class="joint-popup">
-            <h2>关节面板</h2>
-            <label>对象 A
-              <select id="joint-object-a-select"></select>
-            </label>
-            <label>对象 B
-              <select id="joint-object-b-select"></select>
-            </label>
-            <div class="joint-popup-actions">
-              <button id="joint-from-center-btn" type="button">中心点中点</button>
-              <button id="joint-from-nearest-btn" type="button">最近点中点</button>
-            </div>
-            <button id="joint-save-current-btn" type="button">保存当前 Pivot 为关节</button>
-            <ul id="joint-panel-list" class="joint-panel-list"></ul>
-
-            <hr />
-            <p id="joint-info-text" class="hint">当前关节：无</p>
-            <label>
-              <input id="joint-follow-a-input" type="checkbox" checked />
-              跟随对象 A（推荐）
-            </label>
-            <label>关节名称
-              <input id="joint-name-input" type="text" value="" />
-            </label>
-            <label>X
-              <input id="joint-x-input" type="number" step="0.1" value="0" />
-            </label>
-            <label>Y
-              <input id="joint-y-input" type="number" step="0.1" value="0" />
-            </label>
-            <label>Z
-              <input id="joint-z-input" type="number" step="0.1" value="0" />
-            </label>
-            <div class="joint-popup-actions">
-              <button id="joint-apply-btn" type="button">应用到 Pivot</button>
-              <button id="joint-delete-btn" type="button">删除关节</button>
-            </div>
-          </section>
         </main>
 
         <aside class="panel right-panel">
@@ -149,41 +89,8 @@ export class EditorUI {
           </label>
 
           <hr />
-          <h2>动作语义</h2>
-
-          <label>
-            <input id="joint-enabled-input" type="checkbox" checked />
-            启用关节驱动
-          </label>
-
-          <label>平移轴向
-            <select id="translate-axis-select">
-              <option value="x">x</option>
-              <option value="y">y</option>
-              <option value="z" selected>z</option>
-            </select>
-          </label>
-
-          <label>平移值（用于抬升）
-            <input id="translate-value-input" type="number" step="0.1" value="0" />
-          </label>
-
-          <label>旋转轴向
-            <select id="rotate-axis-select">
-              <option value="x">x</option>
-              <option value="y">y</option>
-              <option value="z">z</option>
-            </select>
-          </label>
-
-          <label>旋转值（度）
-            <input id="rotate-value-input" type="number" step="0.1" value="0" />
-          </label>
-
-          <label>
-            <input id="pivot-enabled-input" type="checkbox" />
-            启用旋转中心（Pivot）
-          </label>
+          <h2>动画片段</h2>
+          <p class="hint">关键帧全局共享：所有有关节定义的对象在同一时间点同步捕获 / 回放。</p>
 
           <label>新片段名称
             <input id="clip-name-input" type="text" placeholder="例如 open / close" />
@@ -227,7 +134,11 @@ export class EditorUI {
             <button id="pkf-add-step-btn" type="button">添加步骤</button>
             <button id="pkf-gen-from-kf-btn" type="button">从关键帧生成</button>
           </div>
-          <button id="pkf-preview-btn" type="button" style="margin-top:6px">PKF 预览（用默认值）</button>
+          <label style="margin-top:6px;display:flex;align-items:center;gap:6px">
+            <input id="pkf-playback-mode-input" type="checkbox" />
+            用 PKF 驱动播放（覆盖关键帧动画）
+          </label>
+          <button id="pkf-preview-btn" type="button" style="margin-top:6px">PKF 预览（当前时间一次性求值）</button>
           <pre id="pkf-preview-output" class="export-output" style="max-height:100px;overflow:auto"></pre>
 
           <hr />
@@ -276,100 +187,6 @@ export class EditorUI {
       if (name === activeClipName) option.selected = true;
       this.clipSelect.appendChild(option);
     });
-  }
-
-  setJointObjectOptions(objects, objectAId, objectBId) {
-    this.jointObjectASelect.innerHTML = '';
-    this.jointObjectBSelect.innerHTML = '';
-    if (!objects.length) {
-      const optionA = document.createElement('option');
-      optionA.value = '';
-      optionA.textContent = '无对象';
-      const optionB = document.createElement('option');
-      optionB.value = '';
-      optionB.textContent = '无对象';
-      this.jointObjectASelect.appendChild(optionA);
-      this.jointObjectBSelect.appendChild(optionB);
-      return;
-    }
-
-    objects.forEach((obj) => {
-      const optionA = document.createElement('option');
-      optionA.value = obj.uuid;
-      optionA.textContent = obj.name || obj.uuid;
-      if (obj.uuid === objectAId) optionA.selected = true;
-      this.jointObjectASelect.appendChild(optionA);
-
-      const optionB = document.createElement('option');
-      optionB.value = obj.uuid;
-      optionB.textContent = obj.name || obj.uuid;
-      if (obj.uuid === objectBId) optionB.selected = true;
-      this.jointObjectBSelect.appendChild(optionB);
-    });
-  }
-
-  renderJointPoints(points, activePointId, handlers) {
-    this.jointPanelList.innerHTML = '';
-    if (!points.length) {
-      this.jointPanelList.innerHTML = '<li class="hint">暂无关节点。</li>';
-      return;
-    }
-
-    points.forEach((point) => {
-      const li = document.createElement('li');
-      li.className = `joint-point-item ${point.id === activePointId ? 'active' : ''}`;
-      li.addEventListener('click', () => handlers?.onSelect?.(point));
-
-      const label = document.createElement('span');
-      label.textContent = `${point.name} (${point.x.toFixed(2)}, ${point.y.toFixed(2)}, ${point.z.toFixed(2)})`;
-
-      li.append(label);
-      this.jointPanelList.appendChild(li);
-    });
-  }
-
-  setJointEditor(point) {
-    if (!point) {
-      this.jointInfoText.textContent = '当前关节：无';
-      this.jointFollowAInput.checked = true;
-      this.jointNameInput.value = '';
-      this.jointXInput.value = '0';
-      this.jointYInput.value = '0';
-      this.jointZInput.value = '0';
-      return;
-    }
-    this.jointInfoText.textContent = `当前关节：${point.name} (${point.x.toFixed(2)}, ${point.y.toFixed(2)}, ${point.z.toFixed(2)})`;
-    this.jointFollowAInput.checked = Boolean(point.followObjectId);
-    this.jointNameInput.value = point.name;
-    this.jointXInput.value = String(point.x);
-    this.jointYInput.value = String(point.y);
-    this.jointZInput.value = String(point.z);
-  }
-
-  setActiveClipInfo(clip) {
-    if (!clip) {
-      this.jointEnabledInput.checked = true;
-      this.translateAxisSelect.value = 'z';
-      this.translateValueInput.value = 0;
-      this.rotateAxisSelect.value = 'z';
-      this.rotateValueInput.value = 0;
-      this.pivotEnabledInput.checked = false;
-      this.pivotXInput.value = 0;
-      this.pivotYInput.value = 0;
-      this.pivotZInput.value = 0;
-      this.durationInput.value = 10;
-      return;
-    }
-    this.jointEnabledInput.checked = clip.jointEnabled ?? true;
-    this.translateAxisSelect.value = clip.translateAxis;
-    this.translateValueInput.value = String(clip.currentTranslateValue ?? 0);
-    this.rotateAxisSelect.value = clip.rotateAxis;
-    this.rotateValueInput.value = String(clip.currentRotateValue ?? 0);
-    this.pivotEnabledInput.checked = clip.pivotEnabled ?? false;
-    this.pivotXInput.value = String(clip.pivotX ?? 0);
-    this.pivotYInput.value = String(clip.pivotY ?? 0);
-    this.pivotZInput.value = String(clip.pivotZ ?? 0);
-    this.durationInput.value = String(clip.duration);
   }
 
   hideTreeContextMenu() {
@@ -522,21 +339,44 @@ export class EditorUI {
     treeNodes.forEach((n) => renderNode(n, 0));
   }
 
-  renderKeyframes(track, onDelete) {
+  /**
+   * 渲染全局关键帧列表
+   * 每个 keyframe 显示为一行：时间 + 所有关节状态汇总
+   * @param {Array<{time:number, jointValues:Object}>} keyframes
+   * @param {Function} onDelete
+   * @param {Array<{id, name, type}>} jointDefs - 关节定义列表，用于把 id 转成可读 name
+   */
+  renderKeyframes(keyframes, onDelete, jointDefs = []) {
     this.keyframeList.innerHTML = '';
-    if (!track.length) {
-      this.keyframeList.innerHTML = '<li class="hint">当前选中对象还没有关键帧。</li>';
+    if (!keyframes || !keyframes.length) {
+      this.keyframeList.innerHTML = '<li class="hint">当前片段没有关键帧。拖动 gizmo 或 Joint Value 滑条改变关节状态后，点「在当前时间添加关键帧」。</li>';
       return;
     }
 
-    track.forEach((k) => {
+    // 构建 id → 显示名映射
+    const nameById = new Map();
+    jointDefs.forEach((d) => nameById.set(d.id, d.name || d.id.slice(0, 8)));
+
+    keyframes.forEach((k) => {
       const li = document.createElement('li');
       li.className = 'keyframe-item';
 
       const text = document.createElement('span');
-      const translateValue = Number.isFinite(k.translateValue) ? k.translateValue : 0;
-      const rotateValue = Number.isFinite(k.rotateValue) ? k.rotateValue : 0;
-      text.textContent = `t=${k.time.toFixed(2)}秒 | 抬升=${translateValue.toFixed(3)} | 旋转=${rotateValue.toFixed(3)}°`;
+      const jvEntries = Object.entries(k.jointValues || {});
+      // 把所有关节状态格式化成 "name=value" 的逗号串；最多显示 3 个，超出折叠
+      const formatted = jvEntries
+        .map(([id, val]) => {
+          const name = nameById.get(id) || id.slice(0, 8);
+          return `${name}=${Number(val).toFixed(2)}`;
+        });
+      const summary = formatted.length === 0
+        ? '（空）'
+        : formatted.length <= 3
+          ? formatted.join(', ')
+          : `${formatted.slice(0, 3).join(', ')} … (+${formatted.length - 3})`;
+      text.textContent = `t=${k.time.toFixed(2)}s | ${summary}`;
+      // 完整内容放 title，鼠标悬停可查看
+      if (formatted.length) text.title = formatted.join('\n');
 
       const delBtn = document.createElement('button');
       delBtn.type = 'button';
@@ -1016,7 +856,6 @@ export class EditorUI {
         emitChange();
       });
     });
-
     // Joint value drive events
     valueSlider.addEventListener('input', () => {
       const v = Number(valueSlider.value);
