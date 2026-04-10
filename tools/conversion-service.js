@@ -167,6 +167,128 @@ app.post('/api/understand-task', async (req, res) => {
   }
 });
 
+// ── AI 生成 PKF ──
+// 新端点：接收关节定义列表 + 用户自然语言描述，输出 PKF parameters + steps
+const PKF_SYSTEM_PROMPT = `你是一个工业设备参数化运动规划助手。你将收到：
+1. joints: 设备上所有可动关节的列表，每个关节有 name（名字）、type（revolute 旋转 / prismatic 平移）、axis（轴向 x/y/z，Z-up 约定）
+2. 用户的自然语言动作描述
+
+你的任务：根据用户描述，输出一个 PKF (Parameterized Keyframe Formula) JSON。
+
+**只输出 JSON**，不要有多余文字。格式如下：
+{
+  "parameters": [
+    { "id": "参数名（英文标识符，如 stroke/angle/height）", "type": "number", "unit": "单位如 mm/deg", "desc": "中文描述", "default": 默认数值 }
+  ],
+  "steps": [
+    {
+      "joint": "关节名字（必须与 joints 列表中的 name 精确匹配）",
+      "channel": "translate 或 rotate（必须与该关节的 type 匹配：prismatic→translate, revolute→rotate）",
+      "axis": "x/y/z（与关节的 axis 一致）",
+      "t_start": 起始时间（秒），
+      "t_end": 结束时间（秒），
+      "value_start": "起始值公式（可引用 parameters 里声明的参数名，如 '0'）",
+      "value_end": "结束值公式（如 'stroke' 或 'angle * 0.5'）",
+      "easing": "linear / ease-in / ease-out / ease-in-out"
+    }
+  ]
+}
+
+**规则**：
+- 每个 step 的 joint 必须精确匹配 joints 列表中的某个 name
+- channel 必须与关节 type 对应（revolute→rotate, prismatic→translate）
+- axis 与关节的 axis 保持一致
+- 公式中只能引用 parameters 里声明的 id，以及数字、加减乘除、Math 函数
+- 多个关节可以在同一时间段同时运动（并行 step）
+- 顺序动作用不同的 t_start/t_end 区间表达
+- 默认 easing 为 linear
+- 参数 id 用英文小写 + 下划线命名`;
+
+app.post('/api/generate-pkf', async (req, res) => {
+  const { prompt, joints } = req.body || {};
+  if (!prompt) {
+    res.status(400).json({ error: '缺少 prompt 字段' });
+    return;
+  }
+  if (!AI_API_KEY) {
+    res.status(500).json({ error: 'AI_API_KEY 未配置，请在 .env 文件中设置' });
+    return;
+  }
+  try {
+    // 把关节定义精简后拼到 user message 里
+    const jointsSummary = (joints || []).map((j) =>
+      `- ${j.name}: type=${j.type}, axis=${j.axis}`
+    ).join('\n');
+    const userMessage = `可用关节:\n${jointsSummary || '（无）'}\n\n用户指令: ${prompt}`;
+
+    const response = await fetch(`${AI_BASE_URL}/v1/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${AI_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: AI_MODEL,
+        messages: [
+          { role: 'system', content: PKF_SYSTEM_PROMPT },
+          { role: 'user', content: userMessage },
+        ],
+        temperature: 0.2,
+      }),
+    });
+    if (!response.ok) {
+      const detail = await response.text().catch(() => '');
+      res.status(502).json({ error: `AI API 返回错误 (${response.status})`, detail });
+      return;
+    }
+    const data = await response.json();
+    const content = data.choices?.[0]?.message?.content || '';
+    // 提取 JSON 块
+    const match = content.match(/\{[\s\S]*\}/);
+    if (!match) {
+      res.status(422).json({ error: 'AI 返回内容中未找到有效 JSON', raw_response: content });
+      return;
+    }
+    const parsed = JSON.parse(match[0]);
+    // 基础校验
+    if (!Array.isArray(parsed.parameters) || !Array.isArray(parsed.steps)) {
+      res.status(422).json({ error: 'AI 返回 JSON 缺少 parameters 或 steps 数组', raw_response: content });
+      return;
+    }
+    // ── 后处理1：修正 LLM 可能截断或拼错的 joint 名字 ──
+    const inputJoints = joints || [];
+    const inputJointNames = inputJoints.map((j) => j.name);
+    if (inputJointNames.length) {
+      parsed.steps.forEach((step) => {
+        if (!step.joint) return;
+        if (inputJointNames.includes(step.joint)) return;
+        const fuzzy = inputJointNames.find(
+          (n) => n.includes(step.joint) || step.joint.includes(n),
+        );
+        if (fuzzy) step.joint = fuzzy;
+      });
+    }
+    // ── 后处理2：修正 channel/type 不匹配 ──
+    // 如果 step.channel=rotate 但 joint 是 prismatic（反之亦然），自动换到正确的 joint
+    if (inputJoints.length) {
+      parsed.steps.forEach((step) => {
+        const expectedType = step.channel === 'rotate' ? 'revolute' : 'prismatic';
+        const matchedJoint = inputJoints.find((j) => j.name === step.joint);
+        if (matchedJoint && matchedJoint.type !== expectedType) {
+          const correctJoints = inputJoints.filter((j) => j.type === expectedType);
+          if (correctJoints.length === 1) {
+            step.joint = correctJoints[0].name;
+          }
+        }
+      });
+    }
+    res.json(parsed);
+  } catch (error) {
+    console.error('[MotionForge] AI generate-pkf error:', error.message);
+    res.status(500).json({ error: `AI 请求失败: ${error.message}` });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`[MotionForge] Conversion service running on http://localhost:${PORT}`);
   console.log(`[MotionForge] Blender path: ${blenderPath}`);

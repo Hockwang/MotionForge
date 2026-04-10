@@ -856,15 +856,28 @@ ui.keyframeBtn.addEventListener('click', () => {
   refreshSelectionUI();
 });
 
+// ══════════════════════════════════════════════════════════════
+//  AI 生成 PKF
+// ══════════════════════════════════════════════════════════════
 const AI_SERVICE_URL = import.meta.env.VITE_AI_SERVICE_URL || 'http://localhost:8091';
-let pendingAiSteps = null;
+let pendingAiPkf = null;
 
-async function requestAiTask(prompt) {
-  const objectNames = editableObjects.map((obj) => obj.name || obj.uuid);
-  const response = await fetch(`${AI_SERVICE_URL}/api/understand-task`, {
+/**
+ * 请求后端 /api/generate-pkf 接口
+ * 传入当前关节定义列表 + 用户自然语言描述，返回 { parameters, steps } PKF 格式
+ * @param {string} prompt - 用户的动作描述
+ * @returns {Promise<{parameters: Array, steps: Array}>}
+ */
+async function requestAiGeneratePkf(prompt) {
+  // 把当前关节定义精简后传给后端
+  const joints = keyframeManager.getAllJointDefs()
+    .filter((d) => d.type === 'revolute' || d.type === 'prismatic')
+    .map((d) => ({ name: d.name, type: d.type, axis: d.axis }));
+
+  const response = await fetch(`${AI_SERVICE_URL}/api/generate-pkf`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ prompt, objects: objectNames }),
+    body: JSON.stringify({ prompt, joints }),
   });
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));
@@ -874,79 +887,85 @@ async function requestAiTask(prompt) {
 }
 
 /**
- * 把 AI 返回的步骤转化为全局关键帧
- * 每个 step 形如 { part, action, axis, value }；找到对应对象的 jointDef
- * 把 value 写入对应 jointDef 的 jointValue 字段，构建 t=0 → t=末尾 的关键帧序列。
+ * 把 AI 返回的 PKF 数据写入 keyframeManager
+ * 清空现有 PKF（参数 + 步骤），用 AI 生成的替换
+ * @param {{parameters: Array, steps: Array}} pkfData
  */
-function applyAiSteps(steps) {
-  if (!steps?.length) return;
+function applyAiPkf(pkfData) {
+  if (!pkfData?.parameters || !pkfData?.steps) return;
   pushUndoSnapshot();
-  const objectsByName = new Map();
-  editableObjects.forEach((obj) => {
-    if (obj.name) objectsByName.set(obj.name, obj);
+
+  // 建立 name → uuid 映射
+  const defByName = new Map();
+  keyframeManager.getAllJointDefs().forEach((d) => {
+    if (d.name) defByName.set(d.name, d.id);
   });
 
-  // 切到 / 创建一个 ai 片段
-  const clipName = 'ai_generated';
-  if (!keyframeManager.getClipNames().includes(clipName)) {
-    keyframeManager.createClip(clipName);
-  }
-  keyframeManager.setActiveClip(clipName);
+  // 清空现有 PKF 数据
+  keyframeManager.pkfParameters.clear();
+  keyframeManager.pkfSteps = [];
 
-  const stepDuration = 2;
-  let accumulatedTime = 0;
-  // 累计每个 jointDef 的"上一刻状态"，用于在新时间点生成完整的 jointValues 快照
-  const accumState = {};
-  keyframeManager.getAllJointDefs().forEach((d) => { accumState[d.id] = 0; });
-
-  // t=0 的零状态关键帧
-  keyframeManager.addKeyframe(0);
-
-  steps.forEach((step) => {
-    const obj = objectsByName.get(step.part);
-    if (!obj) return;
-    const def = keyframeManager.getJointDef(obj.uuid);
-    if (!def) return; // AI 指向的对象没有关节定义，跳过
-    accumulatedTime += stepDuration;
-    accumState[def.id] = step.value ?? 0;
-    // 在累计时间点添加全局关键帧前，把 def.currentValue 同步到 accumState 再 addKeyframe 抓取
-    Object.entries(accumState).forEach(([id, val]) => {
-      const d = keyframeManager.jointDefinitions.get(id);
-      if (d) d.currentValue = val;
+  // 写入 AI 生成的参数
+  pkfData.parameters.forEach((p) => {
+    keyframeManager.addPkfParameter({
+      id: p.id || `param_${Math.random().toString(36).slice(2, 6)}`,
+      type: p.type || 'number',
+      unit: p.unit || '',
+      desc: p.desc || '',
+      default: p.default ?? 0,
     });
-    keyframeManager.addKeyframe(accumulatedTime);
   });
 
-  // 同步时长 + 求值 t=0
-  keyframeManager.setClipDuration(Math.max(10, accumulatedTime + 1));
-  keyframeManager.evaluateAllAt(0, sceneManager.sceneRoot);
-  selectionManager.clearSelection();
+  // 写入 AI 生成的步骤，同时用 name 查当前 joint_def_id
+  pkfData.steps.forEach((s) => {
+    keyframeManager.addPkfStep({
+      joint: s.joint || '',
+      joint_def_id: defByName.get(s.joint) || '',
+      channel: s.channel || 'translate',
+      axis: s.axis || 'z',
+      t_start: s.t_start ?? 0,
+      t_end: s.t_end ?? 1,
+      value_start: String(s.value_start ?? '0'),
+      value_end: String(s.value_end ?? '0'),
+      easing: s.easing || 'linear',
+    });
+  });
+
+  refreshPkfParamsUI();
+  refreshPkfStepsUI();
   refreshSelectionUI();
-  refreshObjectTree();
 }
 
+// ── AI 生成按钮事件 ──
 ui.aiGenerateBtn.addEventListener('click', async () => {
   const prompt = ui.aiPromptInput.value.trim();
   if (!prompt) {
     ui.aiResultOutput.textContent = '请输入动作描述。';
     return;
   }
-  if (!editableObjects.length) {
-    ui.aiResultOutput.textContent = '请先加载模型。';
+  const jointDefs = keyframeManager.getAllJointDefs().filter(
+    (d) => d.type === 'revolute' || d.type === 'prismatic',
+  );
+  if (!jointDefs.length) {
+    ui.aiResultOutput.textContent = '请先在场景树中配置关节定义（旋转/平移），AI 才能生成 PKF。';
     return;
   }
   ui.aiGenerateBtn.disabled = true;
-  ui.aiResultOutput.textContent = '正在请求 AI 解析...';
+  ui.aiResultOutput.textContent = '正在请求 AI 生成 PKF...';
   ui.aiApplyBtn.style.display = 'none';
-  pendingAiSteps = null;
+  pendingAiPkf = null;
   try {
-    const result = await requestAiTask(prompt);
-    pendingAiSteps = result.steps || [];
-    const preview = pendingAiSteps
-      .map((s, i) => `${i + 1}. ${s.part}: ${s.action} ${s.axis} ${s.value}${s.unit || ''}`)
+    const result = await requestAiGeneratePkf(prompt);
+    pendingAiPkf = result;
+    // 预览生成结果
+    const paramPreview = (result.parameters || [])
+      .map((p) => `  ${p.id} = ${p.default}${p.unit ? ' ' + p.unit : ''} (${p.desc || ''})`)
       .join('\n');
-    ui.aiResultOutput.textContent = preview || '(AI 未返回有效步骤)';
-    if (pendingAiSteps.length) ui.aiApplyBtn.style.display = '';
+    const stepPreview = (result.steps || [])
+      .map((s, i) => `  ${i + 1}. [${s.joint}] ${s.channel}.${s.axis} : ${s.value_start} → ${s.value_end} (${s.t_start}s~${s.t_end}s, ${s.easing})`)
+      .join('\n');
+    ui.aiResultOutput.textContent = `参数:\n${paramPreview || '  (无)'}\n\n步骤:\n${stepPreview || '  (无)'}`;
+    if ((result.parameters?.length || result.steps?.length)) ui.aiApplyBtn.style.display = '';
   } catch (error) {
     ui.aiResultOutput.textContent = `AI 请求失败：${error.message}`;
   } finally {
@@ -954,12 +973,13 @@ ui.aiGenerateBtn.addEventListener('click', async () => {
   }
 });
 
+// ── 确认并应用 AI 生成的 PKF ──
 ui.aiApplyBtn.addEventListener('click', () => {
-  if (!pendingAiSteps?.length) return;
-  applyAiSteps(pendingAiSteps);
-  ui.aiResultOutput.textContent = `已应用 ${pendingAiSteps.length} 个动作步骤。`;
+  if (!pendingAiPkf) return;
+  applyAiPkf(pendingAiPkf);
+  ui.aiResultOutput.textContent = `已应用 AI 生成的 PKF：${pendingAiPkf.parameters?.length || 0} 个参数，${pendingAiPkf.steps?.length || 0} 个步骤。\n\n可在下方 PKF 区域编辑公式，或勾选「用 PKF 驱动播放」预览动画。`;
   ui.aiApplyBtn.style.display = 'none';
-  pendingAiSteps = null;
+  pendingAiPkf = null;
 });
 
 function getScenePath(obj) {
