@@ -1,0 +1,59 @@
+{
+  "_comment": "FK 关节定义。type 决定运动语义；origin 是世界空间旋转/平移参考点（UI Z-up 约定）；base_transform 是关节零点的 parent-local 姿态。",
+  "definitions": [
+    {
+      "id": "6034933c-99e0-4255-923b-3aff0ee3eb21",
+      "name": "叉齿004",
+      "scene_path": "组001001/叉齿004_joint_group/叉齿004",
+      "type": "revolute",
+      "axis": "z",
+      "origin": {
+        "x": 0.45,
+        "y": -0.001,
+        "z": -0.591
+      },
+      "limits": {
+        "min": -180,
+        "max": 180
+      },
+      "parent_id": "81958db0-d48a-49e6-8c26-ebfdf8546896",
+      "child_id": "6034933c-99e0-4255-923b-3aff0ee3eb21",
+      "current_value": 89.99099999999956,
+      "base_transform": {
+        "tx": 0,
+        "ty": 0,
+        "tz": 0,
+        "rx": 0,
+        "ry": 0,
+        "rz": 0
+      }
+    },
+    {
+      "id": "81958db0-d48a-49e6-8c26-ebfdf8546896",
+      "name": "叉齿004_joint_group",
+      "scene_path": "组001001/叉齿004_joint_group",
+      "type": "prismatic",
+      "axis": "z",
+      "origin": {
+        "x": 0,
+        "y": 0,
+        "z": 0
+      },
+      "limits": {
+        "min": -180,
+        "max": 180
+      },
+      "parent_id": "a587139d-a423-471e-83fb-7f6390a5b58b",
+      "child_id": "81958db0-d48a-49e6-8c26-ebfdf8546896",
+      "current_value": 1.7998199999999913,
+      "base_transform": {
+        "tx": -1090.42822265625,
+        "ty": -661.6386108398438,
+        "tz": -42.4114990234375,
+        "rx": 0,
+        "ry": 0,
+        "rz": 0
+      }
+    }
+  ]
+}

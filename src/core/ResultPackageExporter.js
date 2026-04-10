@@ -135,9 +135,11 @@ export class ResultPackageExporter {
     };
 
     // ── 构建 PKF 数据（参数化关键帧公式）──
+    // 注意：step 只序列化 `joint`（关节名字），不写 `joint_def_id`（那是运行时 uuid，
+    // 跨导出/导入不稳定）。下游按 joint 名字匹配 joints.json 里的 name 字段即可。
     const pkf = hasPkf
       ? {
-          _comment: '参数化关键帧公式：parameters 声明输入参数，steps 定义公式驱动的运动步骤',
+          _comment: '参数化关键帧公式：parameters 声明输入参数，steps 定义公式驱动的运动步骤。joint 字段引用 joints.json 的 name。',
           parameters: (pkfParameters || []).map((p) => ({
             id: p.id,
             type: p.type || 'number',
@@ -147,8 +149,7 @@ export class ResultPackageExporter {
           })),
           steps: (pkfSteps || []).map((s) => ({
             id: s.id,
-            joint: s.joint || '',
-            joint_def_id: s.joint_def_id || '',
+            joint: s.joint || '', // 关节名字（对应 joints.json 里的 name）
             channel: s.channel || 'translate',
             axis: s.axis || 'z',
             t_start: s.t_start ?? 0,

@@ -1,0 +1,19 @@
+{
+  "schema_version": 4,
+  "generator": "MotionForge",
+  "exported_at": "2026-04-10T02:57:37.777Z",
+  "source": {
+    "file_name": "未命名.glb",
+    "format": "glb",
+    "up_axis": "Z",
+    "units_in_meters": 1,
+    "fps": 30
+  },
+  "files": {
+    "manifest": "manifest-20260410-105737.json",
+    "model": "model-20260410-105737.glb",
+    "joints": "joints-20260410-105737.json",
+    "motion": "motion-20260410-105737.json",
+    "pkf": "pkf-20260410-105737.json"
+  }
+}

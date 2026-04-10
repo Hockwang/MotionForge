@@ -684,12 +684,18 @@ async function handleImportPackage(file) {
         });
       });
       restoredPkfParams = (pkfData.parameters || []).length;
-      // 恢复步骤
+      // 恢复步骤：用 joint 名字查当前 jointDef，重建 joint_def_id
+      // pkf.json v4+ 只存 joint 名字；joint_def_id 是运行时 uuid，导入后才填充
+      const jointDefIdByName = new Map();
+      keyframeManager.getAllJointDefs().forEach((d) => {
+        if (d.name) jointDefIdByName.set(d.name, d.id);
+      });
       (pkfData.steps || []).forEach((s) => {
+        const resolvedDefId = jointDefIdByName.get(s.joint) || s.joint_def_id || '';
         keyframeManager.addPkfStep({
           id: s.id,
           joint: s.joint || '',
-          joint_def_id: s.joint_def_id || '',
+          joint_def_id: resolvedDefId,
           channel: s.channel || 'translate',
           axis: s.axis || 'z',
           t_start: s.t_start ?? 0,
@@ -730,15 +736,23 @@ async function handleImportPackage(file) {
  * 用 PKF 步骤驱动所有关节定义到指定时间点
  * 遍历每一步：求值起止公式，在 [t_start, t_end] 区间内按缓动插值，
  * 把结果写入对应 jointDefinition.currentValue。
- * 区间外的步骤跳过；同一关节被多步骤覆盖时后写入的覆盖前面的（按 steps 数组顺序）。
+ * 查找策略：优先 joint_def_id（uuid），失败则按 joint 名字 fallback。
+ * 这样即使 PKF 步骤从 pkf.json 导入后 uuid 变了，只要名字还在就能正确驱动。
  *
  * @param {number} t - 当前时间（秒）
  */
 function applyPkfAtTime(t) {
   const results = keyframeManager.evaluatePkfAt(t);
+  // 建立 name → def 的索引（fallback 用）
+  const defByName = new Map();
+  keyframeManager.jointDefinitions.forEach((d) => {
+    if (d.name) defByName.set(d.name, d);
+  });
   results.forEach((r) => {
-    if (r.error || !r.joint_def_id) return;
-    const def = keyframeManager.jointDefinitions.get(r.joint_def_id);
+    if (r.error) return;
+    // 先按 uuid 查，失败再按名字
+    let def = r.joint_def_id ? keyframeManager.jointDefinitions.get(r.joint_def_id) : null;
+    if (!def && r.joint) def = defByName.get(r.joint);
     if (!def) return;
     def.currentValue = r.value;
   });
@@ -1095,64 +1109,75 @@ ui.pkfAddStepBtn.addEventListener('click', () => {
 });
 
 /**
- * 「从关键帧生成」按钮：读取当前所有对象的关键帧数据，
- * 为每个有关键帧的 clip 生成对应的 PKF 步骤（translate + rotate）。
- * 公式值直接使用关键帧的固定数值（用户可后续手动改为参数公式）。
+ * 「从关键帧生成」按钮：把当前 clip 的全局关键帧转换成 PKF 步骤骨架
+ * 新流程（v4 全局 keyframes）：
+ *   - 当前 clip 的 keyframes 是 [{t, jointValues: {defId: number}}]
+ *   - 对每个关节，取它在各帧中的值序列，相邻两帧如果值不同就生成一个 step
+ *   - step.channel 由 jointDef.type 决定（revolute → rotate，prismatic → translate）
+ *   - step.axis 取 jointDef.axis
+ *   - value_start / value_end 填当前具体数字（字符串），用户后续手动改成 "stroke"、"angle" 等参数引用
+ *   - **不删除已有的 PKF steps**，而是追加
  */
 ui.pkfGenFromKfBtn.addEventListener('click', () => {
-  const clips = buildExportClips();
-  if (!clips.length) {
-    alert('没有关键帧数据可生成。请先为对象添加关键帧。');
+  const clip = keyframeManager.getActiveGlobalClip();
+  if (!clip || !clip.keyframes || clip.keyframes.length < 2) {
+    alert('当前动画片段关键帧不足（至少 2 帧）。\n请先拖 gizmo 改变关节状态并点「在当前时间添加关键帧」。');
     return;
   }
+  const jointDefs = keyframeManager.getAllJointDefs();
+  if (!jointDefs.length) {
+    alert('没有关节定义。请先在场景树为节点配置关节（旋转/平移）。');
+    return;
+  }
+
   pushUndoSnapshot();
 
-  // 查找对象对应的关节定义 id（如果有的话）
-  const allJointDefs = keyframeManager.getAllJointDefs();
+  // 按时间排序的关键帧
+  const sortedKfs = [...clip.keyframes].sort((a, b) => a.time - b.time);
 
-  clips.forEach((clip) => {
-    // 尝试匹配关节定义
-    const matchedDef = allJointDefs.find((jd) => jd.childId === clip.object_id) || null;
-    const kfs = clip.keyframes || [];
-    if (kfs.length < 2) return; // 至少需要两个关键帧才能生成步骤
+  let generatedCount = 0;
 
-    // 为相邻关键帧对生成步骤
-    for (let i = 0; i < kfs.length - 1; i++) {
-      const kfA = kfs[i];
-      const kfB = kfs[i + 1];
+  // 为每个关节定义独立生成 step 序列
+  jointDefs.forEach((def) => {
+    if (def.type !== 'revolute' && def.type !== 'prismatic') return; // fixed/none 跳过
+    // 提取该关节在每帧的值（若某帧没捕获该关节则用 null）
+    const samples = sortedKfs.map((k) => ({
+      t: k.time,
+      value: k.jointValues?.[def.id] ?? null,
+    }));
+    // 过滤掉 null，保留该关节有数据的时间点
+    const withValues = samples.filter((s) => s.value !== null && s.value !== undefined);
+    if (withValues.length < 2) return; // 该关节没有足够数据
 
-      // 平移通道：如果值有变化则生成步骤
-      if (kfA.translate_value !== kfB.translate_value) {
-        keyframeManager.addPkfStep({
-          joint: clip.object_name || '',
-          joint_def_id: matchedDef?.id || '',
-          channel: 'translate',
-          axis: clip.translate_axis || 'z',
-          t_start: kfA.t,
-          t_end: kfB.t,
-          value_start: String(kfA.translate_value ?? 0),
-          value_end: String(kfB.translate_value ?? 0),
-          easing: 'linear',
-        });
-      }
+    const channel = def.type === 'revolute' ? 'rotate' : 'translate';
 
-      // 旋转通道：如果值有变化则生成步骤
-      if (kfA.rotate_value !== kfB.rotate_value) {
-        keyframeManager.addPkfStep({
-          joint: clip.object_name || '',
-          joint_def_id: matchedDef?.id || '',
-          channel: 'rotate',
-          axis: clip.rotate_axis || 'z',
-          t_start: kfA.t,
-          t_end: kfB.t,
-          value_start: String(kfA.rotate_value ?? 0),
-          value_end: String(kfB.rotate_value ?? 0),
-          easing: 'linear',
-        });
-      }
+    // 相邻对生成 step（值相同的区间也生成，保持完整时间线）
+    for (let i = 0; i < withValues.length - 1; i++) {
+      const a = withValues[i];
+      const b = withValues[i + 1];
+      keyframeManager.addPkfStep({
+        joint: def.name || def.id,
+        joint_def_id: def.id, // 运行时 uuid，导出时会被剥离
+        channel,
+        axis: def.axis || 'z',
+        t_start: a.t,
+        t_end: b.t,
+        value_start: String(a.value),
+        value_end: String(b.value),
+        easing: 'linear',
+      });
+      generatedCount++;
     }
   });
 
+  if (generatedCount === 0) {
+    alert('没有可生成的步骤。可能所有关节在关键帧中都没有捕获状态。');
+  } else {
+    alert(
+      `已生成 ${generatedCount} 个 PKF 步骤（具体数值）。\n\n` +
+      '下一步：在"PKF 步骤"区域编辑每个步骤，把 value_start / value_end 里的固定数字替换成参数引用（如 "stroke" 或 "angle * 0.5"）。',
+    );
+  }
   refreshPkfStepsUI();
 });
 
@@ -1197,18 +1222,24 @@ ui.pkfPreviewBtn.addEventListener('click', () => {
   const lines = [`预览时间: ${t.toFixed(2)}s`, `参数值: ${JSON.stringify(keyframeManager.buildDefaultParamValues())}`, ''];
   let hasError = false;
 
+  // 建立 name → def 索引（fallback）
+  const defByName = new Map();
+  keyframeManager.jointDefinitions.forEach((d) => {
+    if (d.name) defByName.set(d.name, d);
+  });
+
   results.forEach((r) => {
     const status = r.error ? `⚠ ${r.error}` : `= ${r.value.toFixed(4)}`;
     lines.push(`[${r.joint || r.joint_def_id}] ${r.channel}.${r.axis} ${status}`);
     if (r.error) hasError = true;
 
-    // 尝试驱动对应的关节定义
-    if (!r.error && r.joint_def_id && sceneManager.sceneRoot) {
-      const def = keyframeManager.jointDefinitions.get(r.joint_def_id);
+    // 查找关节定义：先 uuid 后 name
+    if (!r.error && sceneManager.sceneRoot) {
+      let def = r.joint_def_id ? keyframeManager.jointDefinitions.get(r.joint_def_id) : null;
+      if (!def && r.joint) def = defByName.get(r.joint);
       if (def) {
-        // 临时设置关节值并应用驱动
         def.currentValue = r.value;
-        keyframeManager.applyJointDrive(def, sceneManager.sceneRoot);
+        keyframeManager.applyJointDrive(def.id, sceneManager.sceneRoot);
       }
     }
   });
