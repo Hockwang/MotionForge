@@ -43,7 +43,7 @@ body,
 .viewport-wrap {
   grid-area: center;
   position: relative;
-  background: #0f172a;
+  background: #585858;
 }
 
 #viewport {

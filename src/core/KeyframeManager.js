@@ -176,142 +176,187 @@ export class KeyframeManager {
   }
 
   /**
-   * Apply joint drive for a single node.
-   * Operates in parent-local space: revolute rotates child around axis,
-   * prismatic translates child along axis. Fixed does nothing.
-   * @param {string} nodeId - uuid of the child node
-   * @param {THREE.Object3D} root - scene root for traversal
-   * @param {boolean} [force=false] - 若为 true，忽略 gizmo 拖动守卫（用于拖动时覆盖
-   *        TransformControls 的 local 写入，让 fork 每帧都处于"绕 def.origin 旋转"的正确姿态）
+   * FK 求解：驱动单个关节
+   *
+   * 核心改变（v4→v5）：不再依赖 Three.js 场景树层级来传递运动。
+   * 运动链完全由 jointDefinition 的 parentId/childId 决定。
+   *
+   * def.parentId = "关节父级"（逻辑概念，可以是场景树里的任意节点，不一定是 childObj 的场景树 parent）
+   * def.baseTransform = child 相对于**关节父级**的 local 姿态（不是场景树 parent）
+   * def.origin = 旋转/平移参考点，在关节父级的 local 空间（UI Z-up）
+   *
+   * 求解流程：
+   *  1. 找到关节父级对象（by def.parentId），读取其当前 worldMatrix
+   *  2. 从关节父级的 local 空间恢复 child 的零点世界位置（jointParent.localToWorld(base)）
+   *  3. 从关节父级的 local 空间恢复 origin 的世界位置
+   *  4. 根据 type + axis + currentValue 在世界空间旋转/平移
+   *  5. 把结果世界坐标转回**场景树 parent** 的 local，写入 childObj.position/quaternion
+   *
+   * 效果：场景树里平级的节点也能互相形成关节链。
+   *       场景树层级变化不影响运动（只要关节定义不变）。
+   *
+   * @param {string} nodeId
+   * @param {THREE.Object3D} root
+   * @param {boolean} [force=false]
    */
   applyJointDrive(nodeId, root, force = false) {
     const def = this.jointDefinitions.get(nodeId);
     if (!def || def.type === 'none' || def.type === 'fixed') return;
-
-    // Skip if gizmo is actively dragging this node (avoid double-write)
-    // 除非调用方传入 force=true（gizmo onChange 回调会这样做）
     if (!force && this._gizmoDraggingNodeId === nodeId) return;
 
-    let childObj = null;
-    root.traverse((obj) => { if (obj.uuid === nodeId) childObj = obj; });
+    // ── 找对象 ──
+    const nodeMap = this._nodeMap;
+    const childObj = nodeMap?.get(nodeId) || null;
     if (!childObj) return;
+    const jointParent = def.parentId ? (nodeMap.get(def.parentId) || null) : null;
+    const sceneParent = childObj.parent; // 场景树 parent（用于最后写回 local）
+    if (!sceneParent) return;
 
-    // 关节零点姿态（parent-local space）
-    // 优先级：def 自带的 baseTransform（关节首次创建时捕获，最准确）
-    //       > objectData.baseTransform（动画 bind pose，可能与关节零点不同）
-    //       > 懒捕获：第一次驱动该关节但都没有 baseTransform 时，
-    //         把当前 local 姿态存进 def.baseTransform 作为零点。
-    //         这避免了"用 childObj.position 兜底"导致的累积漂移 bug：
-    //         如果不固化零点，每帧都会把上一帧的位置当作 base，结果不断累加偏移。
-    //         懒捕获场景：导入了没有 base_transform 字段的旧 ZIP。
-    const objectData = this.objectDataById.get(nodeId);
-    let base = def.baseTransform || objectData?.baseTransform;
-    if (!base) {
-      def.baseTransform = {
-        tx: childObj.position.x,
-        ty: childObj.position.y,
-        tz: childObj.position.z,
-        rx: childObj.rotation.x,
-        ry: childObj.rotation.y,
-        rz: childObj.rotation.z,
-      };
-      base = def.baseTransform;
+    // ── 懒捕获 baseTransform（相对于关节父级）──
+    if (!def.baseTransform) {
+      if (jointParent) {
+        jointParent.updateMatrixWorld(true);
+        childObj.updateMatrixWorld(true);
+        const childWorldPos = childObj.getWorldPosition(new THREE.Vector3());
+        const childWorldQuat = childObj.getWorldQuaternion(new THREE.Quaternion());
+        const jpWorldQuatInv = jointParent.getWorldQuaternion(new THREE.Quaternion()).invert();
+        const childInJP = jointParent.worldToLocal(childWorldPos.clone());
+        const childQuatInJP = jpWorldQuatInv.multiply(childWorldQuat);
+        const euler = new THREE.Euler().setFromQuaternion(childQuatInJP, 'XYZ');
+        def.baseTransform = {
+          tx: childInJP.x, ty: childInJP.y, tz: childInJP.z,
+          rx: euler.x, ry: euler.y, rz: euler.z,
+        };
+      } else {
+        // 没有关节父级，用场景树 local 兜底
+        def.baseTransform = {
+          tx: childObj.position.x, ty: childObj.position.y, tz: childObj.position.z,
+          rx: childObj.rotation.x, ry: childObj.rotation.y, rz: childObj.rotation.z,
+        };
+      }
     }
+    const base = def.baseTransform;
 
-    // def.origin 存储在 UI 约定（Z-up），表示**父节点的刚性坐标系**（rotation + translation，**无 scale**）
-    // 这避免了祖先 scale 把数字放大成 mm 单位的情况——origin 始终是「世界米距离 + 父节点姿态对齐」。
-    // 父节点位移 / 旋转 → originWorld 自动跟着；父节点 scale 不影响 origin。
-    const originLocalRigid = new THREE.Vector3(
+    // ── origin：关节父级 local (UI Z-up) → 世界 ──
+    const originInJP = new THREE.Vector3(
       def.origin?.x ?? 0,
-      def.origin?.z ?? 0,  // UI Z → Three.js Y (vertical)
+      def.origin?.z ?? 0,  // UI Z → Three.js Y
       def.origin?.y ?? 0,  // UI Y → Three.js Z
     );
+    let originWorld;
+    if (jointParent) {
+      jointParent.updateMatrixWorld(true);
+      originWorld = jointParent.localToWorld(originInJP.clone());
+    } else {
+      originWorld = originInJP.clone(); // 无关节父级，origin 当世界坐标
+    }
 
-    const parent = childObj.parent;
-    if (!parent) return;
-    parent.updateMatrixWorld(true);
-    // 用 parent 的刚性变换（quat + position）把 origin 转世界，不乘 scale
-    const parentWorldQuat = parent.getWorldQuaternion(new THREE.Quaternion());
-    const parentWorldPos = parent.getWorldPosition(new THREE.Vector3());
-    const originWorld = originLocalRigid.clone().applyQuaternion(parentWorldQuat).add(parentWorldPos);
+    // ── 从 base 恢复 child 的零点世界位置（通过关节父级转换）──
+    let baseWorldPos, baseWorldQuat;
+    if (jointParent) {
+      const baseLocalPos = new THREE.Vector3(base.tx, base.ty, base.tz);
+      baseWorldPos = jointParent.localToWorld(baseLocalPos.clone());
+      const jpWorldQuat = jointParent.getWorldQuaternion(new THREE.Quaternion());
+      const baseLocalQuat = new THREE.Quaternion().setFromEuler(
+        new THREE.Euler(base.rx, base.ry, base.rz),
+      );
+      baseWorldQuat = jpWorldQuat.clone().multiply(baseLocalQuat);
+    } else {
+      // 无关节父级，base 当场景树 local → 世界
+      sceneParent.updateMatrixWorld(true);
+      baseWorldPos = sceneParent.localToWorld(new THREE.Vector3(base.tx, base.ty, base.tz));
+      baseWorldQuat = new THREE.Quaternion().setFromEuler(
+        new THREE.Euler(base.rx, base.ry, base.rz),
+      );
+    }
+
+    // ── 按 type 应用 currentValue ──
+    let newWorldPos, newWorldQuat;
 
     if (def.type === 'revolute') {
-      // 在世界空间绕 originWorld 旋转 currentValue 度。
-      // origin 跟随父节点：父节点抬升 → originWorld 自动跟着抬升 → 旋转中心一直对
       const rad = (def.currentValue * Math.PI) / 180;
       const worldAxis = mapUiAxisToWorld(def.axis);
       const worldAxisVec = worldAxis === 'x' ? new THREE.Vector3(1, 0, 0)
         : worldAxis === 'y' ? new THREE.Vector3(0, 1, 0)
         : new THREE.Vector3(0, 0, 1);
-      // 世界轴旋转 quaternion
       const deltaQuat = new THREE.Quaternion().setFromAxisAngle(worldAxisVec, rad);
 
-      // 1) 先把 child 放回关节零点姿态（parent-local）
-      if (base) {
-        childObj.position.set(base.tx, base.ty, base.tz);
-        childObj.rotation.set(base.rx, base.ry, base.rz);
-      }
-
-      // 2) 读取零点姿态下的世界 transform
-      //    getWorldPosition/Quaternion 会向上递归 updateWorldMatrix，确保准确
-      const baseWorldPos = childObj.getWorldPosition(new THREE.Vector3());
-      const baseWorldQuat = childObj.getWorldQuaternion(new THREE.Quaternion());
-
-      // 3) 绕 originWorld 旋转 deltaQuat：newPos = origin + deltaQuat * (basePos - origin)
+      // 绕 originWorld 旋转
       const offset = baseWorldPos.clone().sub(originWorld);
       const rotatedOffset = offset.applyQuaternion(deltaQuat);
-      const newWorldPos = originWorld.clone().add(rotatedOffset);
-      const newWorldQuat = deltaQuat.clone().multiply(baseWorldQuat);
-
-      // 4) 世界 transform 转回 parent-local，写入 child
-      childObj.position.copy(parent.worldToLocal(newWorldPos.clone()));
-      const parentWorldQuatInv = parent.getWorldQuaternion(new THREE.Quaternion()).invert();
-      childObj.quaternion.copy(parentWorldQuatInv.multiply(newWorldQuat));
+      newWorldPos = originWorld.clone().add(rotatedOffset);
+      newWorldQuat = deltaQuat.clone().multiply(baseWorldQuat);
     } else if (def.type === 'prismatic') {
-      // Prismatic：沿关节的世界轴方向平移 currentValue 单位。
-      // 必须在世界空间计算（父节点有旋转时局部轴 ≠ 世界轴）。
       const worldAxis = mapUiAxisToWorld(def.axis);
       const worldAxisVec = worldAxis === 'x' ? new THREE.Vector3(1, 0, 0)
         : worldAxis === 'y' ? new THREE.Vector3(0, 1, 0)
         : new THREE.Vector3(0, 0, 1);
 
-      // 1) 先把 child 放回关节零点（parent-local）
-      if (base) {
-        childObj.position.set(base.tx, base.ty, base.tz);
-      }
-      // 2) 读取零点姿态下的世界位置
-      const baseWorldPos = childObj.getWorldPosition(new THREE.Vector3());
-      // 3) 沿世界轴方向加上 currentValue 位移
-      const targetWorldPos = baseWorldPos.add(worldAxisVec.multiplyScalar(def.currentValue));
-      // 4) 转回 parent-local 写入
-      childObj.position.copy(parent.worldToLocal(targetWorldPos));
+      newWorldPos = baseWorldPos.clone().add(worldAxisVec.multiplyScalar(def.currentValue));
+      newWorldQuat = baseWorldQuat.clone();
+    } else {
+      return;
     }
+
+    // ── 世界 → 场景树 parent local → 写入 child ──
+    sceneParent.updateMatrixWorld(true);
+    childObj.position.copy(sceneParent.worldToLocal(newWorldPos.clone()));
+    const sceneParentQuatInv = sceneParent.getWorldQuaternion(new THREE.Quaternion()).invert();
+    childObj.quaternion.copy(sceneParentQuatInv.multiply(newWorldQuat));
   }
 
   /**
-   * Apply all joint drives. Called from render loop or after value changes.
-   * 关键：按场景树深度排序，**父级先驱动**，子级后驱动。
-   * 这样子关节读 parent.matrixWorld 时父亲已经处于本帧的最终位置，
-   * 子关节的旋转中心 / 平移参考都基于最新的父姿态，避免父子级联错乱。
+   * 驱动所有关节。按**关节定义链**拓扑排序（不是场景树深度）。
+   *
+   * 拓扑排序规则：如果 jointA 的 childId === jointB 的 parentId，
+   * 则 jointA 先驱动。这样 jointB 求解时，jointA 的 child（即 jointB 的 parent）
+   * 已经处于本帧的最终位置。
+   *
+   * 效果：场景树平级的节点也能正确级联（例如门架和叉齿平级，但叉齿的关节 parent 是门架）。
    */
   applyAllJointDrives(root) {
     if (!root) return;
-    // 收集 nodeId → 深度 的映射
-    const depthById = new Map();
-    const walk = (obj, depth) => {
-      depthById.set(obj.uuid, depth);
-      (obj.children || []).forEach((c) => walk(c, depth + 1));
-    };
-    walk(root, 0);
-    // 按深度升序（浅的先）排序
-    const sorted = [...this.jointDefinitions.values()].sort((a, b) => {
-      const da = depthById.get(a.childId) ?? 9999;
-      const db = depthById.get(b.childId) ?? 9999;
-      return da - db;
+
+    // 建立 nodeMap 缓存（避免每个 joint 都 traverse 一遍）
+    const nodeMap = new Map();
+    root.traverse((obj) => nodeMap.set(obj.uuid, obj));
+    this._nodeMap = nodeMap;
+
+    // 拓扑排序：parentId 指向另一个 jointDef 的 childId → 被指向的先驱动
+    const defs = [...this.jointDefinitions.values()];
+    const childIdSet = new Set(defs.map((d) => d.childId));
+    // 入度计数
+    const inDegree = new Map();
+    defs.forEach((d) => inDegree.set(d.childId, 0));
+    defs.forEach((d) => {
+      if (d.parentId && childIdSet.has(d.parentId)) {
+        inDegree.set(d.childId, (inDegree.get(d.childId) || 0) + 1);
+      }
     });
+    // Kahn's algorithm
+    const queue = defs.filter((d) => (inDegree.get(d.childId) || 0) === 0);
+    const sorted = [];
+    while (queue.length) {
+      const cur = queue.shift();
+      sorted.push(cur);
+      // 找所有以 cur.childId 为 parentId 的关节
+      defs.forEach((d) => {
+        if (d.parentId === cur.childId) {
+          inDegree.set(d.childId, (inDegree.get(d.childId) || 0) - 1);
+          if (inDegree.get(d.childId) <= 0) queue.push(d);
+        }
+      });
+    }
+    // 如果有环（不太可能），把剩余的也加上
+    defs.forEach((d) => {
+      if (!sorted.includes(d)) sorted.push(d);
+    });
+
     sorted.forEach((def) => {
       this.applyJointDrive(def.childId, root);
     });
+
+    this._nodeMap = null; // 释放缓存
   }
 
   // ══════════════════════════════════════════════════════════════

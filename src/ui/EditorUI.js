@@ -723,6 +723,16 @@ export class EditorUI {
     const isFixed = type === 'fixed';
     const isNone = type === 'none';
     const showDrive = !isFixed && !isNone;
+    const currentParentId = currentDef?.parentId || '';
+
+    // 从 handlers 获取可选的 parent 节点列表（所有可编辑对象，排除自己）
+    const parentOptions = handlers?.getParentOptions?.() || [];
+
+    // 生成 parent 下拉选项
+    const parentOptionsHtml = parentOptions
+      .filter((opt) => opt.id !== nodeId) // 排除自己
+      .map((opt) => `<option value="${opt.id}" ${opt.id === currentParentId ? 'selected' : ''}>${opt.name}</option>`)
+      .join('');
 
     panel.innerHTML = `
       <div class="joint-config-header">
@@ -737,6 +747,14 @@ export class EditorUI {
           <option value="fixed" ${type === 'fixed' ? 'selected' : ''}>固定 (Fixed)</option>
         </select>
       </label>
+      <div class="jc-parent-group" style="${isNone ? 'display:none' : ''}">
+        <label>关节父级（运动跟随谁）
+          <select class="jc-parent">
+            <option value="">（无 / 世界）</option>
+            ${parentOptionsHtml}
+          </select>
+        </label>
+      </div>
       <div class="jc-axis-group" style="${isFixed || isNone ? 'display:none' : ''}">
         <label>轴向
           <select class="jc-axis">
@@ -782,6 +800,8 @@ export class EditorUI {
     this.jointConfigPanel = panel;
 
     const typeSelect = panel.querySelector('.jc-type');
+    const parentSelect = panel.querySelector('.jc-parent');
+    const parentGroup = panel.querySelector('.jc-parent-group');
     const axisSelect = panel.querySelector('.jc-axis');
     const minInput = panel.querySelector('.jc-min');
     const maxInput = panel.querySelector('.jc-max');
@@ -802,6 +822,7 @@ export class EditorUI {
       axisGroup.style.display = showAxis ? '' : 'none';
       originGroup.style.display = showAxis ? '' : 'none';
       driveGroup.style.display = showAxis ? '' : 'none';
+      if (parentGroup) parentGroup.style.display = newType === 'none' ? 'none' : '';
     };
 
     const getOrigin = () => ({
@@ -817,12 +838,22 @@ export class EditorUI {
         type: newType,
         axis: axisSelect.value,
         origin: getOrigin(),
+        parentId: parentSelect?.value || null,
         limits: {
           min: Number(minInput.value) || -180,
           max: Number(maxInput.value) || 180,
         },
       });
     };
+
+    // parent 下拉变化时也 emit
+    if (parentSelect) {
+      parentSelect.addEventListener('change', () => {
+        // 切换 parent 后需要重新捕获 baseTransform
+        handlers?.onParentChanged?.(parentSelect.value || null);
+        emitChange();
+      });
+    }
 
     // Update slider range when limits change
     const syncSliderRange = () => {

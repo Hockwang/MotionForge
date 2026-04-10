@@ -148,26 +148,16 @@ function buildSceneTree(root) {
 }
 
 /**
- * 在对象被 reparent 后，重新捕获其关节零点姿态
- * 因为 jointDef.baseTransform 存储的是 parent-local 坐标，
- * 换父节点后旧值不再适用，需要用新父节点下的 local 值覆盖。
- * 如果对象本身没有关节定义则跳过。
+ * 在对象被 reparent（场景树层级变化）后，清空其关节零点让下一帧懒捕获
+ * v5 架构：baseTransform 相对于**关节父级**（不是场景树 parent），
+ * 但场景树 parent 变了会影响 worldToLocal 的计算路径，需要重新捕获。
  * @param {THREE.Object3D} obj - 被 reparent 的对象
  */
 function rebindJointBaseTransform(obj) {
   if (!obj) return;
   const def = keyframeManager.getJointDef(obj.uuid);
-  if (!def || !def.baseTransform) return;
-  keyframeManager.setJointDef(obj.uuid, {
-    baseTransform: {
-      tx: obj.position.x,
-      ty: obj.position.y,
-      tz: obj.position.z,
-      rx: obj.rotation.x,
-      ry: obj.rotation.y,
-      rz: obj.rotation.z,
-    },
-  });
+  if (!def) return;
+  def.baseTransform = null; // 让 applyJointDrive 在下一帧懒捕获
 }
 
 function refreshObjectTree() {
@@ -177,39 +167,47 @@ function refreshObjectTree() {
     onJointTagClick: (node, event) => {
       const rect = event.target.getBoundingClientRect();
       const currentDef = keyframeManager.getJointDef(node.id);
-      const parentId = node.object?.parent?.uuid || null;
+
+      // 辅助：根据关节父级 ID 获取对应 THREE 对象
+      const getJointParentObj = (parentId) => parentId ? getSceneNodeById(parentId) : null;
+
+      // 辅助：把世界坐标转成关节父级的 local（UI Z-up）
+      const worldToJointParentLocal = (worldPoint, jpId) => {
+        const jp = getJointParentObj(jpId);
+        if (!jp) return worldToUiVector3(worldPoint); // 无关节父级，直接用世界
+        jp.updateMatrixWorld(true);
+        const local = jp.worldToLocal(worldPoint.clone());
+        return worldToUiVector3(local);
+      };
+
       ui.showJointConfigPanel(node.id, node.name, currentDef, rect, {
+        // 提供可选 parent 列表（所有可编辑对象）
+        getParentOptions: () => editableObjects.map((obj) => ({
+          id: obj.uuid,
+          name: obj.name || obj.uuid,
+        })),
+
         onChange: (patch) => {
           pushUndoSnapshot();
-          // ── 首次创建关节时捕获零点姿态 ──
-          // baseTransform：记录对象当前 local 姿态作为零点，applyJointDrive(currentValue=0)
-          //               把对象设回该姿态，视觉上不动；之后拖 Joint Value 才产生运动。
-          // origin（URDF 风格）：parent-local 空间，默认 (0,0,0)。这意味着旋转中心在
-          //                      父节点的局部原点。如果用了 onInsertGroup 插了父级 group，
-          //                      newGroup 的 (0,0,0) 就是子对象原本的连接点，正好。
-          //                      用户可用「子对象底部/中心」按钮改为其他 parent-local 位置。
           const existingDef = keyframeManager.getJointDef(node.id);
+          // parentId 现在来自 patch（用户在下拉框里选的），不再自动用场景树 parent
+          const resolvedParentId = patch.parentId !== undefined ? (patch.parentId || null) : (existingDef?.parentId || null);
+          // 首次创建或 parent 改变时，baseTransform 需要重新捕获（设为 null 触发懒捕获）
+          const parentChanged = existingDef && existingDef.parentId !== resolvedParentId;
+          const needsBaseReset = !existingDef || !existingDef.baseTransform || parentChanged;
           const bindPatch = {};
-          if ((!existingDef || !existingDef.baseTransform) && node.object) {
-            const obj = node.object;
-            bindPatch.baseTransform = {
-              tx: obj.position.x,
-              ty: obj.position.y,
-              tz: obj.position.z,
-              rx: obj.rotation.x,
-              ry: obj.rotation.y,
-              rz: obj.rotation.z,
-            };
-            // 默认 origin = parent-local (0,0,0)
-            if (!patch.origin && !existingDef?.origin) {
-              bindPatch.origin = { x: 0, y: 0, z: 0 };
-            }
+          if (needsBaseReset) {
+            bindPatch.baseTransform = null; // 让 applyJointDrive 懒捕获
+          }
+          // 默认 origin = (0,0,0) in joint parent local
+          if (!patch.origin && !existingDef?.origin) {
+            bindPatch.origin = { x: 0, y: 0, z: 0 };
           }
           keyframeManager.setJointDef(node.id, {
             ...patch,
             ...bindPatch,
             name: node.name || node.id,
-            parentId,
+            parentId: resolvedParentId,
             childId: node.id,
           });
           keyframeManager.applyAllJointDrives(sceneManager.sceneRoot);
@@ -217,46 +215,41 @@ function refreshObjectTree() {
           syncJointGizmo();
           syncJointOriginMarker(node.id);
         },
+
+        // parent 改变时重新捕获 baseTransform
+        onParentChanged: (newParentId) => {
+          const existingDef = keyframeManager.getJointDef(node.id);
+          if (existingDef) {
+            existingDef.baseTransform = null; // 强制懒捕获
+          }
+        },
+
         onValueChange: (value) => {
           keyframeManager.setJointValue(node.id, value);
-          keyframeManager.applyJointDrive(node.id, sceneManager.sceneRoot);
+          keyframeManager.applyJointDrive(node.id, sceneManager.sceneRoot, true);
         },
+
         onOriginFromBbox: (callback) => {
-          // 把世界点转成 parent 的「刚性坐标系」（rotation + translation，无 scale）
-          // 不能用 parent.worldToLocal——它会乘 parent.matrixWorld^-1 包含 scale 1/0.001=1000，
-          // 数字会爆炸。这里只用 quat 和 position，确保数字保持世界米单位。
           const childObj = node.object;
           if (!childObj) return;
-          const parent = childObj.parent;
-          if (!parent) return;
+          const def = keyframeManager.getJointDef(node.id);
           const box = new THREE.Box3().setFromObject(childObj);
           if (box.isEmpty()) return;
           const center = box.getCenter(new THREE.Vector3());
           const worldBottom = new THREE.Vector3(center.x, box.min.y, center.z);
-          parent.updateMatrixWorld(true);
-          const parentQuat = parent.getWorldQuaternion(new THREE.Quaternion());
-          const parentPos = parent.getWorldPosition(new THREE.Vector3());
-          // worldPoint - parentPos → 用父旋转的逆 → parent-rigid frame
-          const offset = worldBottom.clone().sub(parentPos);
-          const local = offset.applyQuaternion(parentQuat.clone().invert());
-          const uiOrigin = worldToUiVector3(local);
+          const uiOrigin = worldToJointParentLocal(worldBottom, def?.parentId);
           callback(uiOrigin.x, uiOrigin.y, uiOrigin.z);
           syncJointOriginMarker(node.id);
         },
+
         onOriginFromCenter: (callback) => {
           const childObj = node.object;
           if (!childObj) return;
-          const parent = childObj.parent;
-          if (!parent) return;
+          const def = keyframeManager.getJointDef(node.id);
           const box = new THREE.Box3().setFromObject(childObj);
           if (box.isEmpty()) return;
           const worldCenter = box.getCenter(new THREE.Vector3());
-          parent.updateMatrixWorld(true);
-          const parentQuat = parent.getWorldQuaternion(new THREE.Quaternion());
-          const parentPos = parent.getWorldPosition(new THREE.Vector3());
-          const offset = worldCenter.clone().sub(parentPos);
-          const local = offset.applyQuaternion(parentQuat.clone().invert());
-          const uiOrigin = worldToUiVector3(local);
+          const uiOrigin = worldToJointParentLocal(worldCenter, def?.parentId);
           callback(uiOrigin.x, uiOrigin.y, uiOrigin.z);
           syncJointOriginMarker(node.id);
         },
@@ -407,23 +400,21 @@ function syncJointOriginMarker(nodeId) {
   if (!id) return;
   const def = keyframeManager.getJointDef(id);
   if (!def || def.type === 'none' || def.type === 'fixed') return;
-  // origin 是 parent 的「刚性坐标系」（rotation + translation，无 scale）
-  // 转世界：parentPos + parentQuat * originLocal
-  const childObj = getSceneNodeById(id);
-  if (!childObj) return;
-  const parent = childObj.parent;
-  if (!parent) return;
-  parent.updateMatrixWorld(true);
-  // UI Z-up → Three.js Y-up
+  // origin 在**关节父级**的 local 空间（UI Z-up），不是场景树 parent
   const localOrigin = uiToWorldVector3(
     def.origin?.x ?? 0,
     def.origin?.y ?? 0,
     def.origin?.z ?? 0,
   );
-  const parentQuat = parent.getWorldQuaternion(new THREE.Quaternion());
-  const parentPos = parent.getWorldPosition(new THREE.Vector3());
-  const worldOrigin = localOrigin.applyQuaternion(parentQuat).add(parentPos);
-  sceneManager.setPivotMarker(worldOrigin);
+  const jointParent = def.parentId ? getSceneNodeById(def.parentId) : null;
+  if (jointParent) {
+    jointParent.updateMatrixWorld(true);
+    const worldOrigin = jointParent.localToWorld(localOrigin.clone());
+    sceneManager.setPivotMarker(worldOrigin);
+  } else {
+    // 无关节父级 → origin 当世界坐标
+    sceneManager.setPivotMarker(localOrigin);
+  }
 }
 
 /**

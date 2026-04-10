@@ -8,7 +8,7 @@ export class SceneManager {
     this.sceneRoot = null;
 
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0x111827);
+    this.scene.background = new THREE.Color(0x585858);
 
     this.camera = new THREE.PerspectiveCamera(60, 1, 0.1, 1000);
     this.camera.position.set(5, 4, 6);
@@ -38,7 +38,7 @@ export class SceneManager {
   }
 
   addHelpers() {
-    const grid = new THREE.GridHelper(20, 20, 0x374151, 0x1f2937);
+    const grid = new THREE.GridHelper(20, 20, 'rgba(255,255,255,0.25)', 'rgba(255,255,255,0.10)');
     grid.position.y = 0;
     this.scene.add(grid);
   }
