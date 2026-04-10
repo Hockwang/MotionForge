@@ -181,13 +181,16 @@ export class KeyframeManager {
    * prismatic translates child along axis. Fixed does nothing.
    * @param {string} nodeId - uuid of the child node
    * @param {THREE.Object3D} root - scene root for traversal
+   * @param {boolean} [force=false] - 若为 true，忽略 gizmo 拖动守卫（用于拖动时覆盖
+   *        TransformControls 的 local 写入，让 fork 每帧都处于"绕 def.origin 旋转"的正确姿态）
    */
-  applyJointDrive(nodeId, root) {
+  applyJointDrive(nodeId, root, force = false) {
     const def = this.jointDefinitions.get(nodeId);
     if (!def || def.type === 'none' || def.type === 'fixed') return;
 
     // Skip if gizmo is actively dragging this node (avoid double-write)
-    if (this._gizmoDraggingNodeId === nodeId) return;
+    // 除非调用方传入 force=true（gizmo onChange 回调会这样做）
+    if (!force && this._gizmoDraggingNodeId === nodeId) return;
 
     let childObj = null;
     root.traverse((obj) => { if (obj.uuid === nodeId) childObj = obj; });

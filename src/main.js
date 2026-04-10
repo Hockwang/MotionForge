@@ -386,8 +386,12 @@ function syncJointGizmo() {
   sceneManager.showJointGizmo(selected, mode, def.axis, (deltaValue) => {
     const newValue = baseValue + deltaValue;
     keyframeManager.setJointValue(selected.uuid, newValue);
-    // Don't call applyJointDrive here — gizmo is already moving the object.
-    // Just update the UI slider.
+    // 关键：强制调用 applyJointDrive 覆盖 TransformControls 的 local 写入
+    // 让 fork 每一帧都处于「绕 def.origin 旋转 currentValue 度」的正确姿态
+    // 不这样做的话，TransformControls 只会绕 fork 自身 pivot 旋转，视觉上错位，
+    // 拖动结束才 snap 到正确位置 → 表现为"离散跳变"
+    keyframeManager.applyJointDrive(selected.uuid, sceneManager.sceneRoot, true);
+    // 更新关节配置面板的滑条
     if (ui.activeJointConfigNodeId === selected.uuid && ui.jointConfigPanel) {
       const slider = ui.jointConfigPanel.querySelector('.jc-value-slider');
       const numInput = ui.jointConfigPanel.querySelector('.jc-value-number');
