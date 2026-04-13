@@ -554,7 +554,16 @@ async function handleImportPackage(file) {
     const root = await assetLoader.loadFromFile(modelFile, (status) => {
       ui.setLoadStatus(`${modelFileName}：${status}`);
     });
+    // v5 修复：导出时已归零关节 + GLB 存的是自然状态，alignObjectToGround 正常运行即可。
+    // （之前用 skipAlign:true 是因为 GLB 烘焙了已驱动的 transform + 对齐偏移，现在不需要了）
     sceneManager.setSceneRoot(root);
+
+    // v5 修复：GLTFExporter 会把根节点改名为 "AuxScene"，恢复为原始文件名
+    const originalFileName = manifest.source?.file_name || modelFileName;
+    if (root.name !== originalFileName) {
+      root.name = originalFileName;
+    }
+
     editableObjects = collectEditableObjects(root);
     sceneTreeNodes = buildSceneTree(root);
     keyframeManager.reset();
@@ -566,7 +575,7 @@ async function handleImportPackage(file) {
     });
 
     sourceInfo = {
-      fileName: manifest.source?.file_name || modelFileName,
+      fileName: originalFileName,
       format: manifest.source?.format || 'glb',
       rawFile: modelFile,
     };
@@ -625,7 +634,17 @@ async function handleImportPackage(file) {
           childObj = objectsByPath.get(d.scene_path) || null;
         }
         const nodeId = childObj?.uuid || d.child_id || d.id;
-        const parentObj = childObj?.parent;
+        // ── v5 修复：用 parent_name 按名字解析关节父级 ──
+        // 之前用 childObj.parent（总是 scene parent / 无名包装），会丢失链式关系。
+        // 现在优先按 parent_name 在 objectsByName 里查找实际逻辑父级。
+        let resolvedParentObj = null;
+        if (d.parent_name) {
+          resolvedParentObj = objectsByName.get(d.parent_name) || null;
+        }
+        if (!resolvedParentObj) {
+          // 兜底：scene parent（无名包装），保持独立关节可用
+          resolvedParentObj = childObj?.parent || null;
+        }
         // v < 3：origin 是世界坐标，新代码当 parent-local 解读会错位 → 强制 reset
         // currentValue 也 reset 为 0，避免一加载就处于奇怪的姿态
         const useOrigin = needsOriginReset
@@ -638,11 +657,12 @@ async function handleImportPackage(file) {
           axis: d.axis || 'y',
           origin: useOrigin,
           limits: { min: d.limits?.min ?? -180, max: d.limits?.max ?? 180 },
-          parentId: parentObj?.uuid || d.parent_id || null,
+          parentId: resolvedParentObj?.uuid || null,
           childId: nodeId,
           currentValue: useCurrentValue,
-          // v < 3 同样 reset baseTransform，让新代码懒捕获，匹配新模型当前 local 姿态
-          baseTransform: needsOriginReset ? null : (d.base_transform || null),
+          // v5 修复：清空 baseTransform，让 applyJointDrive 懒捕获重建。
+          // 导出时 GLB 是零位态，懒捕获从零位态建立正确的 base。
+          baseTransform: null,
         });
       });
     }
@@ -1336,20 +1356,45 @@ ui.exportPackageBtn.addEventListener('click', async () => {
   }
 
   try {
+    // ── 导出前：方案A 归零（保留 baseTransform，只设 value=0）──
+    // GLTFExporter 会烘焙当前节点 transform。保留 base + value=0 让现有 base
+    // 正确还原零位，这样 GLB 存的是真正的零位态。
+    // 注意：不能清空 base！否则懒捕获会从当前驱动态重新捕获 → GLB 仍存驱动态。
+    const savedValues = [];
+    jointDefs.forEach((def) => {
+      savedValues.push({ id: def.id, currentValue: def.currentValue });
+      def.currentValue = 0;
+    });
+    keyframeManager.applyAllJointDrives(sceneManager.sceneRoot);
+
     const { manifest } = await packageExporter.exportZip({
       sourceFileName: sourceInfo.fileName,
       sourceFormat: sourceInfo.format,
-      // v4: 传 sceneRoot 让 GLTFExporter 序列化当前场景树（含 onInsertGroup 修改）
       sceneRoot: sceneManager.sceneRoot,
       jointDefinitions: jointDefs.map((d) => {
-        const obj = getSceneNodeById(d.childId);
-        return { ...d, scenePath: obj ? getScenePath(obj) : null };
+        const saved = savedValues.find((s) => s.id === d.id);
+        const childObj = getSceneNodeById(d.childId);
+        // 解析关节父级的名字，用于导入时按名字重建链式关系
+        const parentObj = d.parentId ? getSceneNodeById(d.parentId) : null;
+        return {
+          ...d,
+          currentValue: saved?.currentValue ?? d.currentValue,
+          scenePath: childObj ? getScenePath(childObj) : null,
+          parentName: parentObj?.name || null,
+        };
       }),
       clips,
-      // PKF 数据（参数化关键帧公式）
       pkfParameters: keyframeManager.getAllPkfParameters(),
       pkfSteps: keyframeManager.getAllPkfSteps(),
     });
+
+    // ── 导出后：恢复关节驱动值 ──
+    savedValues.forEach((saved) => {
+      const def = keyframeManager.getJointDef(saved.id);
+      if (def) def.currentValue = saved.currentValue;
+    });
+    keyframeManager.applyAllJointDrives(sceneManager.sceneRoot);
+
     ui.exportOutput.textContent = `已导出结果包 ZIP。\n${JSON.stringify(manifest, null, 2)}`;
   } catch (error) {
     ui.exportOutput.textContent = `导出 ZIP 失败：${error.message}`;
@@ -1367,6 +1412,7 @@ window.addEventListener('keydown', (event) => {
 // 调试钩子：浏览器控制台可用 __mf 访问内部状态
 // __mf.getJointDefs() 返回当前所有关节定义的快照副本
 window.__mf = {
+  THREE,
   sceneManager,
   keyframeManager,
   selectionManager,

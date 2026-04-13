@@ -16,17 +16,32 @@ import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js';
 
 export class ResultPackageExporter {
   /**
-   * 用 GLTFExporter 把当前的 sceneRoot 序列化成 GLB ArrayBuffer
-   * 这一步是 v4 的核心：包含运行时插入的 group / reparent 修改，
-   * 而不是用户最初加载的原始 GLB 文件。
-   * @param {THREE.Object3D} sceneRoot
+   * 用 GLTFExporter 把当前场景序列化成 GLB ArrayBuffer
+   *
+   * 关键：不直接导出 sceneRoot（THREE.Scene），而是导出其第一个有意义的子节点
+   * （模型的实际根 Group）。原因：
+   *   - GLTFExporter 对 Scene 类型节点的处理和 GLTFLoader 不一致
+   *   - GLTFLoader 总是在外面包一层新 Scene → roundtrip 多出一层嵌套 → 层级变了
+   *   - 只导出 Group 子节点 → GLTFLoader 导入后 gltf.scene.children[0] 就是原始结构
+   *
+   * @param {THREE.Object3D} sceneRoot - sceneManager.sceneRoot（通常是 THREE.Scene）
    * @returns {Promise<ArrayBuffer>}
    */
   serializeSceneToGlb(sceneRoot) {
+    // 收集 sceneRoot 下所有有意义的子节点（跳过灯光/相机/Helper）
+    // 不直接导出 sceneRoot（THREE.Scene），避免 GLTFExporter/GLTFLoader 的 Scene roundtrip 不一致
+    // GLTFExporter 支持传入数组：所有子节点作为 GLB 的顶层节点
+    // 导入后 gltf.scene.children 就是这些节点，结构与原始一致
+    const exportTargets = (sceneRoot.children || []).filter(
+      (c) => !c.isLight && !c.isCamera && !c.type?.includes('Helper'),
+    );
+    // 如果只有一个子节点，直接传对象；多个传数组
+    const target = exportTargets.length === 1 ? exportTargets[0] : exportTargets;
+
     return new Promise((resolve, reject) => {
       const exporter = new GLTFExporter();
       exporter.parse(
-        sceneRoot,
+        target,
         (result) => {
           if (result instanceof ArrayBuffer) {
             resolve(result);
@@ -112,6 +127,7 @@ export class ResultPackageExporter {
         origin: { x: d.origin?.x ?? 0, y: d.origin?.y ?? 0, z: d.origin?.z ?? 0 },
         limits: { min: d.limits?.min ?? -180, max: d.limits?.max ?? 180 },
         parent_id: d.parentId,
+        parent_name: d.parentName || null,
         child_id: d.childId,
         current_value: d.currentValue ?? 0,
         base_transform: d.baseTransform || null,

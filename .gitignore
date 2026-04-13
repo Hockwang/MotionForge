@@ -24,3 +24,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# 导出的结果包 ZIP（大二进制，不进版本控制）
+zip/

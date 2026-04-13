@@ -77,11 +77,19 @@ export class SceneManager {
     this.pivotMarker.visible = false;
   }
 
-  setSceneRoot(root) {
+  /**
+   * 设置场景根节点
+   * @param {THREE.Object3D} root
+   * @param {Object} [options]
+   * @param {boolean} [options.skipAlign=false] - 跳过 alignObjectToGround（导入已对齐的 ZIP 时使用）
+   */
+  setSceneRoot(root, options = {}) {
     if (this.sceneRoot) {
       this.scene.remove(this.sceneRoot);
     }
-    this.alignObjectToGround(root);
+    if (!options.skipAlign) {
+      this.alignObjectToGround(root);
+    }
     this.sceneRoot = root;
     this.scene.add(root);
     this.fitCameraToObject(root);
