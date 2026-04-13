@@ -189,15 +189,51 @@ function refreshObjectTree() {
 
         onChange: (patch) => {
           pushUndoSnapshot();
+          const childObj = node.object;
           const existingDef = keyframeManager.getJointDef(node.id);
-          // parentId 现在来自 patch（用户在下拉框里选的），不再自动用场景树 parent
           const resolvedParentId = patch.parentId !== undefined ? (patch.parentId || null) : (existingDef?.parentId || null);
-          // 首次创建或 parent 改变时，baseTransform 需要重新捕获（设为 null 触发懒捕获）
           const parentChanged = existingDef && existingDef.parentId !== resolvedParentId;
-          const needsBaseReset = !existingDef || !existingDef.baseTransform || parentChanged;
+          const isFirstCreate = !existingDef || !existingDef.baseTransform;
+
+          // ── 在任何修改之前，记录 child 当前的世界位置和旋转（用于调试检查）──
+          let preWorldPos = null;
+          let preWorldQuat = null;
+          if (childObj) {
+            childObj.updateMatrixWorld(true);
+            preWorldPos = childObj.getWorldPosition(new THREE.Vector3()).clone();
+            preWorldQuat = childObj.getWorldQuaternion(new THREE.Quaternion()).clone();
+          }
+
+          // ── 计算 baseTransform ──
           const bindPatch = {};
-          if (needsBaseReset) {
-            bindPatch.baseTransform = null; // 让 applyJointDrive 懒捕获
+          if (isFirstCreate || parentChanged) {
+            // 不再用懒捕获——立即从 child 当前世界位置算出相对于**新关节父级**的 local
+            // 同时 reset currentValue=0，保证 joint 应用后 child 世界位置不变
+            if (childObj) {
+              childObj.updateMatrixWorld(true);
+              const cwp = childObj.getWorldPosition(new THREE.Vector3());
+              const cwq = childObj.getWorldQuaternion(new THREE.Quaternion());
+              const jp = resolvedParentId ? getSceneNodeById(resolvedParentId) : null;
+              if (jp) {
+                jp.updateMatrixWorld(true);
+                const posInJP = jp.worldToLocal(cwp.clone());
+                const jpQuatInv = jp.getWorldQuaternion(new THREE.Quaternion()).invert();
+                const quatInJP = jpQuatInv.multiply(cwq);
+                // 用四元数存旋转，避免 Euler 万向锁
+                bindPatch.baseTransform = {
+                  tx: posInJP.x, ty: posInJP.y, tz: posInJP.z,
+                  qx: quatInJP.x, qy: quatInJP.y, qz: quatInJP.z, qw: quatInJP.w,
+                };
+              } else {
+                // 无关节父级 → 用场景树 local（四元数）
+                bindPatch.baseTransform = {
+                  tx: childObj.position.x, ty: childObj.position.y, tz: childObj.position.z,
+                  qx: childObj.quaternion.x, qy: childObj.quaternion.y,
+                  qz: childObj.quaternion.z, qw: childObj.quaternion.w,
+                };
+              }
+              bindPatch.currentValue = 0; // reset，保证 value=0 时 child 不动
+            }
           }
           // 默认 origin = (0,0,0) in joint parent local
           if (!patch.origin && !existingDef?.origin) {
@@ -211,18 +247,31 @@ function refreshObjectTree() {
             childId: node.id,
           });
           keyframeManager.applyAllJointDrives(sceneManager.sceneRoot);
+
+          // ── 开发期安全检查：操作后世界位置/旋转是否偏移 ──
+          if (childObj && preWorldPos && preWorldQuat) {
+            childObj.updateMatrixWorld(true);
+            const postWorldPos = childObj.getWorldPosition(new THREE.Vector3());
+            const postWorldQuat = childObj.getWorldQuaternion(new THREE.Quaternion());
+            const posDrift = preWorldPos.distanceTo(postWorldPos);
+            const quatDot = Math.abs(preWorldQuat.dot(postWorldQuat));
+            const rotDrift = Math.acos(Math.min(quatDot, 1.0)) * 2 * (180 / Math.PI);
+            if (posDrift > 0.01 || rotDrift > 1.0) {
+              console.warn(
+                `[Joint] ⚠ 设置关节后 ${node.name} 偏移！pos=${posDrift.toFixed(4)} rot=${rotDrift.toFixed(1)}°`,
+                `\n  pos: (${preWorldPos.x.toFixed(4)},${preWorldPos.y.toFixed(4)},${preWorldPos.z.toFixed(4)}) → (${postWorldPos.x.toFixed(4)},${postWorldPos.y.toFixed(4)},${postWorldPos.z.toFixed(4)})`,
+                `\n  parentId: ${resolvedParentId}, isFirstCreate: ${isFirstCreate}, parentChanged: ${parentChanged}`,
+              );
+            }
+          }
+
           refreshObjectTree();
           syncJointGizmo();
           syncJointOriginMarker(node.id);
         },
 
-        // parent 改变时重新捕获 baseTransform
-        onParentChanged: (newParentId) => {
-          const existingDef = keyframeManager.getJointDef(node.id);
-          if (existingDef) {
-            existingDef.baseTransform = null; // 强制懒捕获
-          }
-        },
+        // parent 下拉变化（emitChange 紧跟其后，onChange 里已处理 baseTransform 重算）
+        onParentChanged: () => {},
 
         onValueChange: (value) => {
           keyframeManager.setJointValue(node.id, value);

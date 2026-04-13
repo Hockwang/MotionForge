@@ -65,30 +65,50 @@ export class SelectionManager {
   }
 
   applyHighlight(object) {
-    if (!object?.isMesh || !object.material) return;
-
-    const material = object.material;
-    const emissive = material.emissive;
-    if (!emissive) return;
-
-    this.originalMaterialState.set(object.uuid, emissive.getHex());
-    emissive.setHex(0x22d3ee);
-    if ('emissiveIntensity' in material) {
-      material.emissiveIntensity = 0.55;
-    }
+    if (!object) return;
+    // 只高亮该节点自身的 Mesh（如果它是 Mesh），或其直接子 Mesh（如果它是 Group）
+    // 不递归更深层级，避免选中父节点时整棵子树都变色
+    const meshes = this._getHighlightMeshes(object);
+    meshes.forEach((mesh) => {
+      // 共享 material 问题：clone 一份独占的 material，避免改 emissive 影响其他对象
+      if (!mesh.userData._ownMaterial) {
+        mesh.material = mesh.material.clone();
+        mesh.userData._ownMaterial = true;
+      }
+      const emissive = mesh.material.emissive;
+      if (!emissive) return;
+      this.originalMaterialState.set(mesh.uuid, emissive.getHex());
+      emissive.setHex(0x22d3ee);
+      if ('emissiveIntensity' in mesh.material) {
+        mesh.material.emissiveIntensity = 0.55;
+      }
+    });
   }
 
   clearHighlight(object) {
-    if (!object?.isMesh || !object.material) return;
+    if (!object) return;
+    const meshes = this._getHighlightMeshes(object);
+    meshes.forEach((mesh) => {
+      const original = this.originalMaterialState.get(mesh.uuid);
+      const emissive = mesh.material?.emissive;
+      if (!emissive) return;
+      emissive.setHex(original ?? 0x000000);
+      if ('emissiveIntensity' in mesh.material) {
+        mesh.material.emissiveIntensity = 0.2;
+      }
+    });
+  }
 
-    const original = this.originalMaterialState.get(object.uuid);
-    const emissive = object.material.emissive;
-    if (!emissive) return;
-
-    emissive.setHex(original ?? 0x000000);
-    if ('emissiveIntensity' in object.material) {
-      object.material.emissiveIntensity = 0.2;
-    }
+  /**
+   * 获取应该被高亮的 Mesh 列表
+   * - 如果 object 本身是 Mesh → 只返回它自己
+   * - 如果 object 是 Group/Object3D → 返回其直接子 Mesh（不递归）
+   */
+  _getHighlightMeshes(object) {
+    if (!object) return [];
+    if (object.isMesh) return [object];
+    // Group/Object3D：只取直接子 Mesh
+    return (object.children || []).filter((c) => c.isMesh);
   }
 
   emit() {

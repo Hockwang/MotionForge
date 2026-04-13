@@ -131,15 +131,26 @@ export class KeyframeManager {
     if (typeof patch.childId !== 'undefined') def.childId = patch.childId;
     if (typeof patch.currentValue !== 'undefined') def.currentValue = normalizeValue(patch.currentValue, 0);
     // 仅在 patch 显式传入时更新 baseTransform，避免后续修改类型/轴时覆盖零点
+    // 支持两种旋转格式：qx/qy/qz/qw（四元数，推荐）或 rx/ry/rz（Euler，兼容旧数据）
     if (patch.baseTransform) {
+      const bt = patch.baseTransform;
       def.baseTransform = {
-        tx: normalizeValue(patch.baseTransform.tx, 0),
-        ty: normalizeValue(patch.baseTransform.ty, 0),
-        tz: normalizeValue(patch.baseTransform.tz, 0),
-        rx: normalizeValue(patch.baseTransform.rx, 0),
-        ry: normalizeValue(patch.baseTransform.ry, 0),
-        rz: normalizeValue(patch.baseTransform.rz, 0),
+        tx: normalizeValue(bt.tx, 0),
+        ty: normalizeValue(bt.ty, 0),
+        tz: normalizeValue(bt.tz, 0),
       };
+      if (bt.qw !== undefined) {
+        // 四元数（无万向锁）
+        def.baseTransform.qx = normalizeValue(bt.qx, 0);
+        def.baseTransform.qy = normalizeValue(bt.qy, 0);
+        def.baseTransform.qz = normalizeValue(bt.qz, 0);
+        def.baseTransform.qw = normalizeValue(bt.qw, 1);
+      } else {
+        // Euler 兼容（旧数据）
+        def.baseTransform.rx = normalizeValue(bt.rx, 0);
+        def.baseTransform.ry = normalizeValue(bt.ry, 0);
+        def.baseTransform.rz = normalizeValue(bt.rz, 0);
+      }
     }
 
     if (def.type === 'none') {
@@ -205,7 +216,12 @@ export class KeyframeManager {
     if (!force && this._gizmoDraggingNodeId === nodeId) return;
 
     // ── 找对象 ──
-    const nodeMap = this._nodeMap;
+    // _nodeMap 由 applyAllJointDrives 建立缓存；直接调用时（gizmo/slider）自建临时 map
+    let nodeMap = this._nodeMap;
+    if (!nodeMap && root) {
+      nodeMap = new Map();
+      root.traverse((obj) => nodeMap.set(obj.uuid, obj));
+    }
     const childObj = nodeMap?.get(nodeId) || null;
     if (!childObj) return;
     const jointParent = def.parentId ? (nodeMap.get(def.parentId) || null) : null;
@@ -213,6 +229,8 @@ export class KeyframeManager {
     if (!sceneParent) return;
 
     // ── 懒捕获 baseTransform（相对于关节父级）──
+    // 旋转用四元数（qx/qy/qz/qw）而不是 Euler（rx/ry/rz）——避免万向锁丢失信息。
+    // 典型触发：Euler ry≈π/2 时 Quaternion→Euler→Quaternion 来回转换会偏 57°+。
     if (!def.baseTransform) {
       if (jointParent) {
         jointParent.updateMatrixWorld(true);
@@ -222,16 +240,16 @@ export class KeyframeManager {
         const jpWorldQuatInv = jointParent.getWorldQuaternion(new THREE.Quaternion()).invert();
         const childInJP = jointParent.worldToLocal(childWorldPos.clone());
         const childQuatInJP = jpWorldQuatInv.multiply(childWorldQuat);
-        const euler = new THREE.Euler().setFromQuaternion(childQuatInJP, 'XYZ');
         def.baseTransform = {
           tx: childInJP.x, ty: childInJP.y, tz: childInJP.z,
-          rx: euler.x, ry: euler.y, rz: euler.z,
+          qx: childQuatInJP.x, qy: childQuatInJP.y, qz: childQuatInJP.z, qw: childQuatInJP.w,
         };
       } else {
-        // 没有关节父级，用场景树 local 兜底
+        // 没有关节父级，用场景树 local 兜底（四元数）
         def.baseTransform = {
           tx: childObj.position.x, ty: childObj.position.y, tz: childObj.position.z,
-          rx: childObj.rotation.x, ry: childObj.rotation.y, rz: childObj.rotation.z,
+          qx: childObj.quaternion.x, qy: childObj.quaternion.y,
+          qz: childObj.quaternion.z, qw: childObj.quaternion.w,
         };
       }
     }
@@ -251,23 +269,24 @@ export class KeyframeManager {
       originWorld = originInJP.clone(); // 无关节父级，origin 当世界坐标
     }
 
-    // ── 从 base 恢复 child 的零点世界位置（通过关节父级转换）──
+    // ── 从 base 恢复 child 的零点世界位置/旋转（通过关节父级转换）──
+    // 旋转从 baseTransform 的四元数（qx/qy/qz/qw）读取，避免 Euler 万向锁
+    const baseLocalQuat = (base.qw !== undefined)
+      ? new THREE.Quaternion(base.qx, base.qy, base.qz, base.qw)
+      : new THREE.Quaternion().setFromEuler(new THREE.Euler(base.rx ?? 0, base.ry ?? 0, base.rz ?? 0)); // 兼容旧数据
+
     let baseWorldPos, baseWorldQuat;
     if (jointParent) {
       const baseLocalPos = new THREE.Vector3(base.tx, base.ty, base.tz);
       baseWorldPos = jointParent.localToWorld(baseLocalPos.clone());
       const jpWorldQuat = jointParent.getWorldQuaternion(new THREE.Quaternion());
-      const baseLocalQuat = new THREE.Quaternion().setFromEuler(
-        new THREE.Euler(base.rx, base.ry, base.rz),
-      );
       baseWorldQuat = jpWorldQuat.clone().multiply(baseLocalQuat);
     } else {
       // 无关节父级，base 当场景树 local → 世界
       sceneParent.updateMatrixWorld(true);
       baseWorldPos = sceneParent.localToWorld(new THREE.Vector3(base.tx, base.ty, base.tz));
-      baseWorldQuat = new THREE.Quaternion().setFromEuler(
-        new THREE.Euler(base.rx, base.ry, base.rz),
-      );
+      const spWorldQuat = sceneParent.getWorldQuaternion(new THREE.Quaternion());
+      baseWorldQuat = spWorldQuat.multiply(baseLocalQuat);
     }
 
     // ── 按 type 应用 currentValue ──
@@ -298,11 +317,33 @@ export class KeyframeManager {
       return;
     }
 
+    // ── 帧级调试（开发期保留）：记录写入前 ──
+    const _dbgPosBefore = childObj.getWorldPosition(new THREE.Vector3()).clone();
+    const _dbgQuatBefore = childObj.getWorldQuaternion(new THREE.Quaternion()).clone();
+
     // ── 世界 → 场景树 parent local → 写入 child ──
     sceneParent.updateMatrixWorld(true);
     childObj.position.copy(sceneParent.worldToLocal(newWorldPos.clone()));
     const sceneParentQuatInv = sceneParent.getWorldQuaternion(new THREE.Quaternion()).invert();
     childObj.quaternion.copy(sceneParentQuatInv.multiply(newWorldQuat));
+
+    // ── 帧级调试：value=0 时检查偏移，每个关节只报一次 ──
+    if (def.currentValue === 0 && !def._driftWarned) {
+      childObj.updateMatrixWorld(true);
+      const _dbgPosAfter = childObj.getWorldPosition(new THREE.Vector3());
+      const _dbgQuatAfter = childObj.getWorldQuaternion(new THREE.Quaternion());
+      const _dbgPosDrift = _dbgPosBefore.distanceTo(_dbgPosAfter);
+      const _dbgQuatDot = Math.abs(_dbgQuatBefore.dot(_dbgQuatAfter));
+      const _dbgRotDrift = Math.acos(Math.min(_dbgQuatDot, 1.0)) * 2 * (180 / Math.PI);
+      if (_dbgPosDrift > 0.01 || _dbgRotDrift > 1.0) {
+        def._driftWarned = true;
+        console.warn(
+          `[applyJointDrive] ⚠ ${def.name} value=0 偏移！pos=${_dbgPosDrift.toFixed(4)} rot=${_dbgRotDrift.toFixed(1)}°`,
+          `\n  jointParent: ${jointParent?.name || '(无)'}  sceneParent: ${sceneParent?.name || '(无)'}`,
+          `\n  base:`, JSON.stringify(base),
+        );
+      }
+    }
   }
 
   /**

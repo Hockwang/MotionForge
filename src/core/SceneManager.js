@@ -38,7 +38,8 @@ export class SceneManager {
   }
 
   addHelpers() {
-    const grid = new THREE.GridHelper(20, 20, 'rgba(255,255,255,0.25)', 'rgba(255,255,255,0.10)');
+    // THREE.Color 不支持 alpha，用预算好的实色（背景 #585858 上的视觉效果等价于半透明灰）
+    const grid = new THREE.GridHelper(20, 20, 0x6a6a6a, 0x626262);
     grid.position.y = 0;
     this.scene.add(grid);
   }
