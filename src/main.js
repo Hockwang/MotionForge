@@ -268,6 +268,7 @@ function refreshObjectTree() {
           refreshObjectTree();
           syncJointGizmo();
           syncJointOriginMarker(node.id);
+          refreshAiJointChips();
         },
 
         // parent 下拉变化（emitChange 紧跟其后，onChange 里已处理 baseTransform 重算）
@@ -809,6 +810,7 @@ async function handleImportPackage(file) {
     refreshObjectTree();
     refreshPkfParamsUI();  // 刷新 PKF 参数 UI
     refreshPkfStepsUI();   // 刷新 PKF 步骤 UI
+    refreshAiJointChips(); // 刷新 AI 面板的关节 chips
   } catch (error) {
     ui.setLoadStatus(`导入资产包失败：${error.message}`);
   }
@@ -1176,6 +1178,11 @@ refreshPkfParamsUI();
  * 刷新右侧面板的 PKF 步骤列表
  * 从 keyframeManager 获取最新步骤和关节定义，传给 UI 渲染
  */
+/** 刷新 AI 面板的关节 chips（跟随 jointDefs 变化） */
+function refreshAiJointChips() {
+  ui.renderAiJointChips(keyframeManager.getAllJointDefs());
+}
+
 function refreshPkfStepsUI() {
   const steps = keyframeManager.getAllPkfSteps();
   const jointDefs = keyframeManager.getAllJointDefs();
@@ -1455,4 +1462,5 @@ window.__mf = {
 ui.setTimelineRange(10);
 ui.updateTimelineLabel(0, 10);
 refreshSelectionUI();
+refreshAiJointChips();
 requestAnimationFrame(loop);

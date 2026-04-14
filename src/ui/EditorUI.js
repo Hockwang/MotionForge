@@ -29,6 +29,7 @@ export class EditorUI {
     this.aiGenerateBtn = this.appRoot.querySelector('#ai-generate-btn');
     this.aiResultOutput = this.appRoot.querySelector('#ai-result-output');
     this.aiApplyBtn = this.appRoot.querySelector('#ai-apply-btn');
+    this.aiJointChips = this.appRoot.querySelector('#ai-joint-chips');
     // ── PKF 参数区域 DOM 引用 ──
     this.pkfParamList = this.appRoot.querySelector('#pkf-param-list');
     this.pkfAddParamBtn = this.appRoot.querySelector('#pkf-add-param-btn');
@@ -113,8 +114,14 @@ export class EditorUI {
 
           <hr />
           <h2>AI 动作生成</h2>
+          <details id="ai-joint-chips-wrap" class="ai-joint-chips-wrap" open>
+            <summary>可用关节（点击插入到输入框）</summary>
+            <div id="ai-joint-chips" class="ai-joint-chips">
+              <span class="hint">（还没有配置关节）</span>
+            </div>
+          </details>
           <label>自然语言描述
-            <textarea id="ai-prompt-input" rows="3" placeholder="例如：叉车货叉抬升300毫米，然后旋转90度"></textarea>
+            <textarea id="ai-prompt-input" rows="3" placeholder="例如：@叉齿 抬升 0.3 米，或 叉齿抬升 0.3 米"></textarea>
           </label>
           <button id="ai-generate-btn" type="button">AI 生成动作</button>
           <pre id="ai-result-output" class="export-output" style="max-height:120px;overflow:auto"></pre>
@@ -410,6 +417,51 @@ export class EditorUI {
    * 渲染 PKF 参数列表
    * 每个参数显示为一张可编辑的卡片，包含 id、类型、单位、默认值、描述，以及删除按钮。
    * @param {Array<Object>} parameters - 参数对象数组（来自 keyframeManager.getAllPkfParameters()）
+   * 渲染 AI 面板上方的关节 chips（可点击插入到 prompt）
+   * @param {Array<{name,type,axis,role}>} jointDefs - 当前所有 revolute/prismatic 关节定义
+   */
+  renderAiJointChips(jointDefs) {
+    if (!this.aiJointChips) return;
+    this.aiJointChips.innerHTML = '';
+    const usableDefs = (jointDefs || []).filter((d) => d.type === 'revolute' || d.type === 'prismatic');
+    if (!usableDefs.length) {
+      const hint = document.createElement('span');
+      hint.className = 'hint';
+      hint.textContent = '（还没有配置关节）';
+      this.aiJointChips.appendChild(hint);
+      return;
+    }
+    usableDefs.forEach((d) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'ai-joint-chip';
+      // 按钮文字：name 为主，role 作为副标题显示
+      const roleLabel = d.role ? ` · ${d.role}` : '';
+      btn.textContent = `${d.name}${roleLabel}`;
+      btn.title = `点击插入 @${d.name} 到输入框`;
+      btn.addEventListener('click', () => {
+        this._insertIntoAiPrompt(`@${d.name} `);
+      });
+      this.aiJointChips.appendChild(btn);
+    });
+  }
+
+  /** 把文本插入到 ai-prompt-input 的光标位置（如无光标则追加到末尾） */
+  _insertIntoAiPrompt(text) {
+    const ta = this.aiPromptInput;
+    if (!ta) return;
+    const start = ta.selectionStart ?? ta.value.length;
+    const end = ta.selectionEnd ?? ta.value.length;
+    const before = ta.value.slice(0, start);
+    const after = ta.value.slice(end);
+    ta.value = before + text + after;
+    // 重新聚焦 + 光标放在插入文本之后
+    ta.focus();
+    const cursor = start + text.length;
+    ta.setSelectionRange(cursor, cursor);
+  }
+
+  /**
    * @param {Object} handlers - 事件回调
    * @param {Function} handlers.onUpdate  - (id, patch) => void  修改参数字段
    * @param {Function} handlers.onDelete  - (id) => void         删除参数

@@ -610,3 +610,45 @@ hr {
       'timeline timeline';
   }
 }
+
+/* ── AI 关节 chips 面板 ── */
+.ai-joint-chips-wrap {
+  margin: 4px 0 8px;
+  padding: 0;
+  background: #0f172a;
+  border: 1px solid #1f2937;
+  border-radius: 4px;
+}
+.ai-joint-chips-wrap > summary {
+  cursor: pointer;
+  padding: 6px 8px;
+  font-size: 12px;
+  color: #9ca3af;
+  user-select: none;
+}
+.ai-joint-chips-wrap > summary:hover {
+  color: #e5e7eb;
+}
+.ai-joint-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 6px 8px 8px;
+}
+.ai-joint-chip {
+  padding: 3px 8px;
+  font-size: 11px;
+  background: #1f2937;
+  color: #e5e7eb;
+  border: 1px solid #374151;
+  border-radius: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.ai-joint-chip:hover {
+  background: #374151;
+  border-color: #4b5563;
+}
+.ai-joint-chip:active {
+  background: #4b5563;
+}
