@@ -239,7 +239,20 @@ const PKF_SYSTEM_PROMPT = `你是一个工业设备参数化运动规划助手�
   ]
 }
 
-**重要**：示例里的关节名（cAR201/mast_lift/fork_tilt）仅为参考，**你必须使用用户当前提供的关节列表里的实际关节名**。参考示例学习的是：公式如何引用参数、多步骤如何编排、并行/串行时序如何安排。`;
+**重要**：示例里的关节名（cAR201/mast_lift/fork_tilt）仅为参考，**你必须使用用户当前提供的关节列表里的实际关节名**。参考示例学习的是：公式如何引用参数、多步骤如何编排、并行/串行时序如何安排。
+
+**关节角色（role）优先匹配规则**：
+- 用户提供的每个关节可能带 \`role\` 字段（语义角色，如"车体前进"、"门架升降"、"叉齿侧移"）
+- 解析用户描述时**优先按 role 匹配**关节意图，不要仅凭 type/axis 推测
+  - 例：用户说"前进 2 米" → 找 role="车体前进" 的关节
+  - 例：用户说"叉齿侧移 0.5 米" → 找 role="叉齿侧移" 的关节
+- 如果用户的动作意图在当前模型里**没有对应 role 的关节**，**不要硬套到其他关节**。直接输出错误：
+
+\`\`\`json
+{ "error": "当前模型没有'<语义>'角色的关节，无法执行此动作", "available_roles": ["列出当前模型已有的 role"] }
+\`\`\`
+
+只有 role 完全匹配（或用户描述明确指定了关节名）才生成 PKF。`;
 
 app.post('/api/generate-pkf', async (req, res) => {
   const { prompt, joints } = req.body || {};
@@ -253,10 +266,16 @@ app.post('/api/generate-pkf', async (req, res) => {
   }
   try {
     // 把关节定义精简后拼到 user message 里
-    const jointsSummary = (joints || []).map((j) =>
-      `- ${j.name}: type=${j.type}, axis=${j.axis}`
-    ).join('\n');
-    const userMessage = `可用关节:\n${jointsSummary || '（无）'}\n\n用户指令: ${prompt}`;
+    // role 字段（如有）会显示给 AI，让它按语义匹配而非靠 axis 猜
+    const jointsSummary = (joints || []).map((j) => {
+      const roleStr = j.role ? `, role="${j.role}"` : '';
+      return `- ${j.name}: type=${j.type}, axis=${j.axis}${roleStr}`;
+    }).join('\n');
+    const availableRoles = (joints || []).map((j) => j.role).filter(Boolean);
+    const rolesNote = availableRoles.length
+      ? `\n当前模型已有的角色：${availableRoles.join('、')}`
+      : '\n（注意：当前模型未给关节标注 role，请仅凭 type/axis 推测，不准确时返回 error）';
+    const userMessage = `可用关节:\n${jointsSummary || '（无）'}${rolesNote}\n\n用户指令: ${prompt}`;
 
     const response = await fetch(`${AI_BASE_URL}/v1/chat/completions`, {
       method: 'POST',
@@ -280,6 +299,7 @@ app.post('/api/generate-pkf', async (req, res) => {
     }
     const data = await response.json();
     const content = data.choices?.[0]?.message?.content || '';
+    console.log('\n[PKF] ═══ AI 原始返回 ═══\n' + content + '\n═══════════════════\n');
     // 提取 JSON 块
     const match = content.match(/\{[\s\S]*\}/);
     if (!match) {
@@ -287,6 +307,14 @@ app.post('/api/generate-pkf', async (req, res) => {
       return;
     }
     const parsed = JSON.parse(match[0]);
+    // AI 显式拒绝（动作意图与可用 role 不匹配）
+    if (parsed.error) {
+      res.status(422).json({
+        error: parsed.error,
+        available_roles: parsed.available_roles || [],
+      });
+      return;
+    }
     // 基础校验
     if (!Array.isArray(parsed.parameters) || !Array.isArray(parsed.steps)) {
       res.status(422).json({ error: 'AI 返回 JSON 缺少 parameters 或 steps 数组', raw_response: content });

@@ -478,6 +478,22 @@ console.log('emissive:', c?.material?.emissive);
 
 ### 阶段八：AI PKF 生成
 
+#### #29 AI 按轴向硬猜导致选错关节
+- **症状**：用户输入"整辆车前进 3 米"，AI 把 `_CS198`（叉齿侧移机构）当成"前进"硬套，结果叉齿飞出去、车体不动
+- **根因**：AI 只能看到关节的 `{name, type, axis}`，没有语义信息。三向叉车模型本就没有"车体前进"关节，AI 看 `_CS198` 是唯一 prismatic x → 误判为前进
+- **修复**：给关节定义加 `role` 字段（语义角色标签）
+  - 数据层：[KeyframeManager.js](src/core/KeyframeManager.js) joint def 加 role 字段，`setJointDef` / `serializeState` / `restoreState` 都传递
+  - UI：[EditorUI.js](src/ui/EditorUI.js) `showJointConfigPanel` 加下拉（车体前进/车体转向/门架升降/叉齿前伸/叉齿侧移/叉齿旋转/夹爪开合/臂段旋转）+ "其他"自定义文本框
+  - 应用：[main.js](src/main.js) `onJointTagClick` onChange 透传 role；`requestAiGeneratePkf` 把 role 附加到 joints 列表
+  - 后端：[conversion-service.js](tools/conversion-service.js) user message 里展示 `role="..."`，并列出"当前模型已有的角色"；system prompt 追加"按 role 优先匹配，匹配不上输出 `{error, available_roles}`"
+  - 后端收到 `parsed.error` → 返回 422 + reason
+  - 持久化：导出 `joints.json` 显式带 `role`，导入 `handleImportPackage` 显式恢复 role
+- **效果**：
+  - 三向车配好 role 后，"叉齿侧移 0.5 米" 能正确匹配 `_CS198`
+  - "整辆车前进 3 米" 因为没有 role="车体前进" 的关节，AI 拒绝并提示可用角色
+- **路径规划（不在本轮）**：
+  - 方案 A（关键帧导出 PKF 喂 AI 学新动作模式）：等多关节协同复杂动作出现时再加
+
 #### #28 AI 从零写 PKF 公式不稳定
 - **症状**：AI 生成的 `value_start`/`value_end` 公式经常写错，动画错位或不动；复杂动作协调差；调 prompt 边际收益低
 - **根因**：LLM 不擅长从零生成精确的数学表达式 + 多 step 编排

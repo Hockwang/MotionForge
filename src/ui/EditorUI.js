@@ -724,6 +724,19 @@ export class EditorUI {
     const isNone = type === 'none';
     const showDrive = !isFixed && !isNone;
     const currentParentId = currentDef?.parentId || '';
+    const currentRole = currentDef?.role || '';
+
+    // 预定义 role 词汇表（动作语义标签）— 供 AI 按意图匹配关节
+    // 用户也可以选"其他"手写自定义 role
+    const PREDEFINED_ROLES = [
+      '车体前进', '车体转向', '门架升降',
+      '叉齿前伸', '叉齿侧移', '叉齿旋转',
+      '夹爪开合', '臂段旋转',
+    ];
+    const isCustomRole = currentRole && !PREDEFINED_ROLES.includes(currentRole);
+    const roleOptionsHtml = PREDEFINED_ROLES
+      .map((r) => `<option value="${r}" ${r === currentRole ? 'selected' : ''}>${r}</option>`)
+      .join('');
 
     // 从 handlers 获取可选的 parent 节点列表（所有可编辑对象，排除自己）
     const parentOptions = handlers?.getParentOptions?.() || [];
@@ -754,6 +767,18 @@ export class EditorUI {
             ${parentOptionsHtml}
           </select>
         </label>
+      </div>
+      <div class="jc-role-group" style="${isNone ? 'display:none' : ''}">
+        <label>关节角色（AI 按语义匹配）
+          <select class="jc-role">
+            <option value="" ${currentRole === '' ? 'selected' : ''}>（未设置）</option>
+            ${roleOptionsHtml}
+            <option value="__custom__" ${isCustomRole ? 'selected' : ''}>其他 (自定义)</option>
+          </select>
+        </label>
+        <input class="jc-role-custom" type="text" placeholder="自定义角色名，如 液压杆伸缩"
+               value="${isCustomRole ? currentRole : ''}"
+               style="${isCustomRole ? '' : 'display:none'}; width: 100%; margin-top: 4px;" />
       </div>
       <div class="jc-axis-group" style="${isFixed || isNone ? 'display:none' : ''}">
         <label>轴向
@@ -802,6 +827,9 @@ export class EditorUI {
     const typeSelect = panel.querySelector('.jc-type');
     const parentSelect = panel.querySelector('.jc-parent');
     const parentGroup = panel.querySelector('.jc-parent-group');
+    const roleSelect = panel.querySelector('.jc-role');
+    const roleCustomInput = panel.querySelector('.jc-role-custom');
+    const roleGroup = panel.querySelector('.jc-role-group');
     const axisSelect = panel.querySelector('.jc-axis');
     const minInput = panel.querySelector('.jc-min');
     const maxInput = panel.querySelector('.jc-max');
@@ -823,6 +851,16 @@ export class EditorUI {
       originGroup.style.display = showAxis ? '' : 'none';
       driveGroup.style.display = showAxis ? '' : 'none';
       if (parentGroup) parentGroup.style.display = newType === 'none' ? 'none' : '';
+      if (roleGroup) roleGroup.style.display = newType === 'none' ? 'none' : '';
+    };
+
+    // 读取当前选中的 role（如果选了"其他"就读文本框，否则读下拉值）
+    const readRole = () => {
+      if (!roleSelect) return '';
+      if (roleSelect.value === '__custom__') {
+        return (roleCustomInput?.value || '').trim();
+      }
+      return roleSelect.value;
     };
 
     const getOrigin = () => ({
@@ -839,12 +877,29 @@ export class EditorUI {
         axis: axisSelect.value,
         origin: getOrigin(),
         parentId: parentSelect?.value || null,
+        role: readRole(),
         limits: {
           min: Number(minInput.value) || -180,
           max: Number(maxInput.value) || 180,
         },
       });
     };
+
+    // role 下拉 / 自定义输入联动
+    if (roleSelect) {
+      roleSelect.addEventListener('change', () => {
+        const showCustom = roleSelect.value === '__custom__';
+        if (roleCustomInput) {
+          roleCustomInput.style.display = showCustom ? '' : 'none';
+          if (showCustom) roleCustomInput.focus();
+        }
+        emitChange();
+      });
+    }
+    if (roleCustomInput) {
+      roleCustomInput.addEventListener('input', emitChange);
+      roleCustomInput.addEventListener('change', emitChange);
+    }
 
     // parent 下拉变化时也 emit
     if (parentSelect) {

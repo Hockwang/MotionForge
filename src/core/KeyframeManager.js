@@ -108,6 +108,7 @@ export class KeyframeManager {
       name: '',
       type: 'none',       // none | revolute | prismatic | fixed
       axis: 'y',           // x | y | z (UI convention)
+      role: '',            // 语义角色标签（车体前进/门架升降等），AI 按此匹配意图
       origin: { x: 0, y: 0, z: 0 }, // 关节原点（世界空间，UI Z-up 约定）——revolute 的旋转中心
       limits: { min: -180, max: 180 },
       parentId: null,
@@ -116,6 +117,7 @@ export class KeyframeManager {
       baseTransform: null, // 关节零点姿态，由首次创建关节时捕获
     };
     if (typeof patch.name !== 'undefined') def.name = String(patch.name);
+    if (typeof patch.role !== 'undefined') def.role = String(patch.role);
     if (patch.type) def.type = patch.type;
     if (patch.axis) def.axis = patch.axis;
     if (patch.origin) {
@@ -717,6 +719,7 @@ export class KeyframeManager {
         name: d.name,
         type: d.type,
         axis: d.axis,
+        role: d.role || '',
         origin: { x: d.origin?.x ?? 0, y: d.origin?.y ?? 0, z: d.origin?.z ?? 0 },
         limits: { min: d.limits.min, max: d.limits.max },
         parentId: d.parentId,
@@ -757,6 +760,7 @@ export class KeyframeManager {
         name: d.name || '',
         type: d.type || 'none',
         axis: d.axis || 'y',
+        role: d.role || '',
         origin: { x: d.origin?.x ?? 0, y: d.origin?.y ?? 0, z: d.origin?.z ?? 0 },
         limits: { min: d.limits?.min ?? -180, max: d.limits?.max ?? 180 },
         parentId: d.parentId ?? null,

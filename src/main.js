@@ -655,6 +655,7 @@ async function handleImportPackage(file) {
           name: d.name || '',
           type: d.type || 'none',
           axis: d.axis || 'y',
+          role: d.role || '', // 语义角色（v6+ 字段，老 ZIP 没有时为空）
           origin: useOrigin,
           limits: { min: d.limits?.min ?? -180, max: d.limits?.max ?? 180 },
           parentId: resolvedParentObj?.uuid || null,
@@ -951,9 +952,10 @@ let pendingAiPkf = null;
  */
 async function requestAiGeneratePkf(prompt) {
   // 把当前关节定义精简后传给后端
+  // role 字段（语义角色）让 AI 按意图匹配，不靠 axis 硬猜
   const joints = keyframeManager.getAllJointDefs()
     .filter((d) => d.type === 'revolute' || d.type === 'prismatic')
-    .map((d) => ({ name: d.name, type: d.type, axis: d.axis }));
+    .map((d) => ({ name: d.name, type: d.type, axis: d.axis, role: d.role || '' }));
 
   const response = await fetch(`${AI_SERVICE_URL}/api/generate-pkf`, {
     method: 'POST',

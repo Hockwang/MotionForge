@@ -124,6 +124,7 @@ export class ResultPackageExporter {
         scene_path: d.scenePath || null,
         type: d.type,
         axis: d.axis,
+        role: d.role || '', // v6+：语义角色标签（车体前进/门架升降等），AI 按此匹配意图
         origin: { x: d.origin?.x ?? 0, y: d.origin?.y ?? 0, z: d.origin?.z ?? 0 },
         limits: { min: d.limits?.min ?? -180, max: d.limits?.max ?? 180 },
         parent_id: d.parentId,
