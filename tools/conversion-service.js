@@ -202,7 +202,44 @@ const PKF_SYSTEM_PROMPT = `你是一个工业设备参数化运动规划助手�
 - 多个关节可以在同一时间段同时运动（并行 step）
 - 顺序动作用不同的 t_start/t_end 区间表达
 - 默认 easing 为 linear
-- 参数 id 用英文小写 + 下划线命名`;
+- 参数 id 用英文小写 + 下划线命名
+
+**学习下面的完整示例**（叉车取货动作 — 前进 → 下降 → 插入 → 抬升）：
+
+示例输入：
+- 关节列表：cAR201(prismatic, axis=x)，mast_lift(prismatic, axis=z)，fork_tilt(revolute, axis=z)
+- 用户描述：叉车前进 2 米取货，货物高度 0.5 米，抬升 0.3 米
+
+示例输出：
+{
+  "parameters": [
+    { "id": "pickup_point_x", "type": "number", "unit": "m", "desc": "取货点前进距离", "default": 2.0 },
+    { "id": "cargo_height", "type": "number", "unit": "m", "desc": "货物底部高度", "default": 0.5 },
+    { "id": "insert_depth", "type": "number", "unit": "m", "desc": "叉齿插入深度", "default": 0.8 },
+    { "id": "lift_clearance", "type": "number", "unit": "m", "desc": "抬升安全高度", "default": 0.3 },
+    { "id": "safe_distance", "type": "number", "unit": "m", "desc": "接近安全停距", "default": 0.1 }
+  ],
+  "steps": [
+    { "joint": "cAR201", "channel": "translate", "axis": "x",
+      "t_start": 0.0, "t_end": 2.0,
+      "value_start": "0", "value_end": "pickup_point_x - safe_distance",
+      "easing": "ease-in-out" },
+    { "joint": "mast_lift", "channel": "translate", "axis": "z",
+      "t_start": 2.0, "t_end": 3.5,
+      "value_start": "0", "value_end": "cargo_height",
+      "easing": "ease-in-out" },
+    { "joint": "cAR201", "channel": "translate", "axis": "x",
+      "t_start": 3.5, "t_end": 4.5,
+      "value_start": "pickup_point_x - safe_distance", "value_end": "pickup_point_x + insert_depth",
+      "easing": "ease-in" },
+    { "joint": "mast_lift", "channel": "translate", "axis": "z",
+      "t_start": 4.5, "t_end": 6.0,
+      "value_start": "cargo_height", "value_end": "cargo_height + lift_clearance",
+      "easing": "ease-out" }
+  ]
+}
+
+**重要**：示例里的关节名（cAR201/mast_lift/fork_tilt）仅为参考，**你必须使用用户当前提供的关节列表里的实际关节名**。参考示例学习的是：公式如何引用参数、多步骤如何编排、并行/串行时序如何安排。`;
 
 app.post('/api/generate-pkf', async (req, res) => {
   const { prompt, joints } = req.body || {};

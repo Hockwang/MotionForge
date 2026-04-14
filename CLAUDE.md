@@ -476,6 +476,25 @@ console.log('emissive:', c?.material?.emissive);
 
 ---
 
+### 阶段八：AI PKF 生成
+
+#### #28 AI 从零写 PKF 公式不稳定
+- **症状**：AI 生成的 `value_start`/`value_end` 公式经常写错，动画错位或不动；复杂动作协调差；调 prompt 边际收益低
+- **根因**：LLM 不擅长从零生成精确的数学表达式 + 多 step 编排
+- **修复**：**few-shot 示例方案**
+  - 在 [tools/conversion-service.js](tools/conversion-service.js) 的 `PKF_SYSTEM_PROMPT` 里内嵌一个完整的 pickup 示例（parameters + steps + 公式 + 时序编排）
+  - 示例包含：公式引用参数（`pickup_point_x - safe_distance`）、多步串行（前进→下降→插入→抬升）、ease-in/ease-out 等
+  - AI 不再从零写，照着示例模仿格式；关节名从用户当前模型列表里挑
+  - 后处理保留：joint 名模糊匹配 + channel/type 不匹配时自动换成正确 type 的关节
+- **路径规划**：
+  - 初期（1-3 个模式）：都放在 system prompt 里当 few-shot
+  - 后期（≥4 个模式）：拆成 `templates/*.json`，AI 只看摘要选模板，后端读完整模板填参
+- **注意事项**：
+  - 之前尝试过"模板库 + role 映射"方案（独立 JSON 文件 + AI 选模板 + 关节映射层），过度设计，已回滚
+  - 保持 stage A（few-shot）的关键：模板数量上来之前不要引入额外的基础设施
+
+---
+
 ## 核心经验教训
 
 1. **懒捕获 base 的时机很重要**：必须在"所有父级关节都是零位"的状态下捕获，不能在驱动态下捕获

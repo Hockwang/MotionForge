@@ -192,6 +192,7 @@ export class SceneManager {
     this._gizmoStartWorldQuat = object.getWorldQuaternion(new THREE.Quaternion());
     this._gizmoWorldAxis = worldAxis;
     this._gizmoMode = mode;
+    this._gizmoLastAngle = undefined; // 每次新拖拽重置解缠状态
 
     // Remove old listener if any
     if (this._gizmoChangeHandler) {
@@ -219,7 +220,18 @@ export class SceneManager {
         const vecPart = new THREE.Vector3(deltaWorldQuat.x, deltaWorldQuat.y, deltaWorldQuat.z);
         const sinHalf = vecPart.dot(axisVec);
         const cosHalf = deltaWorldQuat.w;
-        const angle = 2 * Math.atan2(sinHalf, cosHalf);
+        let angle = 2 * Math.atan2(sinHalf, cosHalf);
+
+        // ── 解缠：避免四元数符号翻转（q 和 -q 同义）导致角度跳变 2π ──
+        // TransformControls 拖动到大角度时，current quaternion 可能被归一化到"最短路径"表示，
+        // 导致 deltaWorldQuat.w 突然变号 → 提取的 angle 跳变 ±2π（360°）。
+        // 保持 angle 与上一帧连续：差值超过 π 就加减 2π 补偿。
+        if (this._gizmoLastAngle !== undefined) {
+          while (angle - this._gizmoLastAngle > Math.PI) angle -= 2 * Math.PI;
+          while (angle - this._gizmoLastAngle < -Math.PI) angle += 2 * Math.PI;
+        }
+        this._gizmoLastAngle = angle;
+
         const degrees = (angle * 180) / Math.PI;
         this.jointGizmoOnChange(degrees);
       } else if (this._gizmoMode === 'translate') {
