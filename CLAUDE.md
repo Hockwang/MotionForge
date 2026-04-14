@@ -1,24 +1,74 @@
-# MotionForge — Claude 协作说明
+# MotionForge — Claude 协作手册
+
+> 本文档是 AI 协作的**单一入口**，融合了项目背景、架构约束、协作规则、诊断工具、bug 修复历史。以后展开工作只看这一份。
+>
+> 其他文档分工：
+> - [README.md](README.md) — 运行方式和目录结构（面向开发者）
+> - [REQUIREMENTS.md](REQUIREMENTS.md) — 需求文档（面向 PM）
+> - [plans/joint-definition-plan.md](plans/joint-definition-plan.md) — 早期设计存档
+
+---
+
+## 目录
+
+- [项目背景](#项目背景)
+- [核心架构约束（不可随意改动）](#核心架构约束不可随意改动)
+- [协作规则](#协作规则)
+- [调试惯例](#调试惯例)
+- [诊断脚本指南](#诊断脚本指南)
+- [Bug 修复历史](#bug-修复历史)
+- [核心经验教训](#核心经验教训)
+- [附：单行快速检查命令](#附单行快速检查命令)
+
+---
 
 ## 项目背景
 
 MotionForge 是 Web 端 3D 模型处理工具，输出标准化的运动资产包（ZIP：manifest / joints / motion / pkf / model.glb）。技术栈：Three.js + Vite。
 
-核心系统：
+### 核心系统
+
 - **FK 关节系统**（URDF 风格，四元数 baseTransform，拓扑排序）
 - **全局关键帧**（项目级 clips，捕获所有关节 value）
 - **PKF 参数化公式**（parameters + steps，支持 AI 生成）
 - **GLB ZIP Roundtrip**（schema v4，GLTFExporter 序列化当前场景）
 
-详见 [docs/BUGFIX-LOG.md](docs/BUGFIX-LOG.md) 了解历史演进和踩过的坑。
+### 关键文件
+
+```
+src/
+  core/
+    AssetLoader.js           # 资产加载分发
+    SceneManager.js          # Three.js 场景 / Gizmo
+    SelectionManager.js      # 选中与高亮
+    KeyframeManager.js       # 关节定义 + 全局关键帧 + FK 求解器 + PKF
+    ResultPackageExporter.js # ZIP 结果包导出
+  ui/
+    EditorUI.js              # 编辑器布局与 UI
+  main.js                    # 应用编排（含导入导出流程）
+```
+
+---
+
+## 核心架构约束（不可随意改动）
+
+以下设计决定**都是踩过坑换来的**，改动前必须先阅读对应 bug 编号：
+
+1. **`baseTransform` 存四元数**（qx/qy/qz/qw），**不要**改回 Euler — 万向锁（见 [#7](#7-万向锁gimbal-lock旋转丢失-57)）
+2. **origin 是 parent-local** 空间（URDF 风格），**不是**世界坐标（见 [#5](#5-gizmo-旋转围绕错误中心)）
+3. **关节链驱动用拓扑排序**，不依赖场景树层级（见 [#8](#8-拓扑排序关节链驱动顺序错误), [#10](#10-fk-求解器依赖场景树层级)）
+4. **跨 roundtrip 的标识用 name**（joint name / parent_name），**不要**依赖 UUID（见 [#18](#18-parentid-在导入后被错误覆盖), [#19](#19-pkf-joint_def_id-跨导入失效)）
+5. **导出 GLB 前必须归零**关节 + 清除选中（避免 emissive 烘焙 / double-apply）（见 [#17](#17-导入后零件高亮不消失), [#20](#20-double-apply导出的-glb-烘焙了驱动态)）
+6. **导入后必须两阶段应用**关节（先全零化懒捕获 base，再恢复 value）（见 [#22](#22-链式关节导入后整体下沉)）
+7. **懒捕获 base 在 parent=零位时**发生，任何时刻父级驱动态下捕获都是错的（见 [#22](#22-链式关节导入后整体下沉)）
 
 ---
 
 ## 协作规则
 
-### 每次修复 bug 或做重要改动，必须更新日志
+### 每次修复 bug 或做重要改动，必须更新本文档
 
-完成任何 bug 修复、架构调整、behavior 改动后，**必须**在 [docs/BUGFIX-LOG.md](docs/BUGFIX-LOG.md) 追加一条记录，格式：
+完成任何 bug 修复、架构调整、behavior 改动后，**必须**在 [Bug 修复历史](#bug-修复历史) 章节追加一条记录，格式：
 
 ```markdown
 ### #编号 简短标题
@@ -29,19 +79,19 @@ MotionForge 是 Web 端 3D 模型处理工具，输出标准化的运动资产�
 - **修复**：改了什么（文件 + 关键变更）
 ```
 
-编号延续 BUGFIX-LOG.md 最后一条继续递增。
+编号延续最后一条继续递增。
 
 ### 新增诊断脚本，必须同步更新指南
 
-在 [tests/](tests/) 新增 `diag-*.js` 脚本后，**必须**同步更新 [tests/DIAGNOSTICS.md](tests/DIAGNOSTICS.md)：
+在 [tests/](tests/) 新增 `diag-*.js` 脚本后，必须同步更新 [诊断脚本指南](#诊断脚本指南) 章节：
 - 加到脚本索引表
-- 如果对应新的 bug 场景，追加一个"场景 N"章节
+- 如果对应新的 bug 场景，追加一个"场景 N"子章节
 
 ### 提交习惯
 
 - 重要节点 commit 时 message 带上版本标识（如 `v8`、`v9`）
-- `zip/` 已在 `.gitignore`，不要误 commit 导出产物
-- 大二进制文件（模型、ZIP）一律不入 git
+- `zip/` 已在 `.gitignore`，**不要**误 commit 导出产物
+- 大二进制文件（模型、ZIP）一律不入 git（见 [#27](#27-git-push-失败corrupt-loose-object)）
 
 ---
 
@@ -49,50 +99,427 @@ MotionForge 是 Web 端 3D 模型处理工具，输出标准化的运动资产�
 
 ### `window.__mf` 钩子
 
-`main.js` 底部注册，Console 随时可用：
+`main.js` 底部注册，浏览器 Console 随时可用：
 
 ```js
-__mf.THREE              // THREE 命名空间
-__mf.sceneManager       // SceneManager 实例
-__mf.keyframeManager    // KeyframeManager 实例
-__mf.selectionManager   // SelectionManager 实例
-__mf.editableObjects()  // 当前可编辑对象列表
-__mf.getJointDefs()     // 所有关节定义快照
+__mf.THREE              // THREE 命名空间（脚本用它构造 Vector3/Quaternion）
+__mf.sceneManager       // SceneManager 实例（sceneRoot / scene / camera / jointGizmo）
+__mf.keyframeManager    // KeyframeManager（jointDefinitions / globalClips / applyAllJointDrives / evaluateAllAt）
+__mf.selectionManager   // SelectionManager（selectedObject / clearSelection / selectObject）
+__mf.editableObjects()  // 当前可编辑对象列表（不含无名 Object3D 包装）
+__mf.getJointDefs()     // 所有关节定义的快照
 ```
 
 ### 诊断脚本优先
 
-遇到难定位的 bug，**先写诊断脚本再改代码**。盲改容易引入新 bug。已有脚本见 [tests/DIAGNOSTICS.md](tests/DIAGNOSTICS.md)。
+遇到难定位的 bug，**先写诊断脚本再改代码**。盲改容易引入新 bug。已有脚本见下节。
 
 ---
 
-## 代码风格
+## 诊断脚本指南
 
-- 中文注释、关键函数写文档，解释"为什么"而不是"做什么"
-- 关键算法逐行注释（参考 [src/core/KeyframeManager.js](src/core/KeyframeManager.js) 里 `applyJointDrive` 的写法）
-- 模块顶部写简短 block 注释说明该模块职责
+本目录包含 5 个浏览器 Console 诊断脚本，用于定位关节系统、导出导入 roundtrip、动画播放相关问题。
+
+### 通用用法
+
+1. 启动 MotionForge (`npm run dev`)，加载模型
+2. 按 **F12** 打开 DevTools → **Console**
+3. 打开对应 `tests/diag-*.js` 文件，**全选复制**脚本内容
+4. 粘贴到 Console，回车 → 看到 `✅ ... 已加载`
+5. 按脚本说明调用 `__diagX.xxx()` 方法
+
+所有脚本都通过 `window.__mf` 访问内部状态，只读诊断不修改源代码。
+
+### 脚本索引
+
+| 脚本 | 诊断范围 | 触发命令 |
+|------|---------|---------|
+| [tests/diag-export-roundtrip.js](tests/diag-export-roundtrip.js) | 导出前/导入后的场景树、关节、动画结构差异 | `__diagRT.snapshot/diff` |
+| [tests/diag-roundtrip-transform.js](tests/diag-roundtrip-transform.js) | 节点世界 transform 在 roundtrip 前后的精确差异 | `__diagT.phaseA/B/C/compare` |
+| [tests/diag-joint-integrity.js](tests/diag-joint-integrity.js) | 关节定义的 parentId/childId 引用完整性 | `__diagJ.check()` |
+| [tests/diag-zero-pose.js](tests/diag-zero-pose.js) | 对比不同"归零策略"的效果 | `__diagZ.testZeroPose/testNaturalPose` |
+| [tests/diag-animation.js](tests/diag-animation.js) | 动画播放过程中各时间点的关节状态 | `__diagA.scanClip/at/keyframes` |
 
 ---
 
-## 核心架构约束
+### 场景 1：导入后模型变形 / 下沉 / 位置错乱
 
-以下设计决定不要随意改动（都是踩过坑换来的）：
+**可能原因**
+- GLB roundtrip 层级丢失或根节点被重命名（如 `三向车.glb` → `AuxScene`）
+- `alignObjectToGround` 双重对齐或未对齐，导致整体 Y 方向偏移
+- 关节 `baseTransform` 在错误时机捕获，造成 double-apply
 
-1. **`baseTransform` 存四元数**（qx/qy/qz/qw），**不要**改回 Euler — 万向锁
-2. **origin 是 parent-local** 空间（URDF 风格），**不是**世界坐标
-3. **关节链驱动用拓扑排序**，不依赖场景树层级
-4. **跨 roundtrip 的标识用 name**（joint name / parent_name），**不要**依赖 UUID
-5. **导出 GLB 前必须归零** 关节 + 清除选中（避免 emissive 烘焙 / double-apply）
-6. **导入后必须两阶段应用** 关节（先全零化懒捕获 base，再恢复 value）
-7. **懒捕获 base 在 parent=零位时** 发生，任何时刻父级驱动态下捕获都是错的
+**检测流程**
+
+```js
+// 1. 导出前运行：
+__diagT.phaseA()                      // 快照"驱动态"+"零位态"
+
+// 2. 正常导出 ZIP → 导入 ZIP
+
+// 3. 导入后立即运行：
+__diagT.phaseB()                      // 快照导入态
+__diagT.phaseC()                      // 把关节全部归零，快照导入零位态
+__diagT.compare()                     // 输出 4 组对比 + 自动结论
+```
+
+**结论对照表**
+
+| 导入态 ≈ 驱动态？ | 导入零位 ≈ 原始零位？ | 结论 |
+|---|---|---|
+| Yes | Yes | GLB 忠实 + double-apply |
+| Yes | No | GLB 忠实 + 零位有偏差 |
+| No | Yes | 导入流程改变了 transform |
+| No | No | GLB 序列化/反序列化有损 |
+
+---
+
+### 场景 2：关节父级引用丢失 / 零件断开 / 链式关节失效
+
+**典型症状**
+- 导入后 `_CS19110 飞出去`
+- `_CS198 不跟随运动`
+- 关节父级在左侧面板消失
+
+**可能原因**
+- 导入时 `parentId` 被错误地覆盖为 `childObj.parent.uuid`（无名 Object3D 包装），而不是按 `parent_name` 解析原始逻辑父级
+- `childId`/`parentId` 在 GLB roundtrip 后 UUID 变化，引用断裂
+
+**检测流程**
+
+```js
+__diagJ.check()
+```
+
+**关注输出**
+- **① 场景树结构**：看 `insertedGroup` 是否还在、层级是否正常
+- **③ 关节定义完整性**：
+  - `parentId === sceneParent? true` + 父级是无名 `Object3D` → **parentId 被错误解析（bug）**
+  - `parentId === sceneParent? false` → parentId 指向真实逻辑父级（正确）
+- **④ 关节链分析**：有无链式关系（`A ← 依赖 → B`）
+
+---
+
+### 场景 3：导入后播放动画组件整体下沉 / 链式关节错位
+
+**可能原因**
+- 导入时 `applyAllJointDrives` 直接用 JSON 里的 `currentValue`（非零）触发拓扑排序
+- 父级 joint 先驱动 → 子级 lazy capture 的 base 是父级**驱动态**下的相对位置
+- 动画把父级改回零位后，子级相对下沉父级位移量
+
+**检测流程**
+
+```js
+__diagA.keyframes()     // 查看关键帧原始数据
+__diagA.scanClip()      // 扫描 clip 多个时间点
+__diagA.at(2.5)         // 查看指定时间点
+```
+
+**关注输出**
+- **🔍 检测：哪些节点 Y 方向下降？**：如果多个零件的 Y 变化范围相同 → 整体下沉，说明链式关节 base 错位
+- drift warning 里的 `jointParent: XXX` 显示实际链式关系
+
+**修复方向** — 导入时两阶段应用关节（已实现）：
+1. 先把所有 `currentValue = 0`
+2. `applyAllJointDrives` → 所有关节在零位懒捕获 base
+3. 恢复真实 `currentValue`
+4. 再 `applyAllJointDrives` → 正常驱动
+
+---
+
+### 场景 4：Gizmo 拖动旋转突然跳变 360°
+
+**原因** — 四元数双重覆盖：`q` 和 `-q` 表示同一旋转，但 `2 * atan2(sinHalf, cosHalf)` 提取的角度会跳 ±2π。TransformControls 大角度时可能把 current quaternion 归一化到"最短路径"表示，触发符号翻转。
+
+**检测方法** — 不需要专门脚本，直接拖动观察。
+
+**修复方向**（已在 [SceneManager.js](src/core/SceneManager.js) 修复）：角度解缠，保持相邻帧 angle 差值 ≤ π，超过就加减 2π 补偿：
+
+```js
+if (this._gizmoLastAngle !== undefined) {
+  while (angle - this._gizmoLastAngle > Math.PI) angle -= 2 * Math.PI;
+  while (angle - this._gizmoLastAngle < -Math.PI) angle += 2 * Math.PI;
+}
+this._gizmoLastAngle = angle;
+```
+
+每次新拖拽时重置 `_gizmoLastAngle = undefined`。
+
+---
+
+### 场景 5：判断"归零策略"是否正确
+
+**用途** — 修改导出流程时，验证 `applyJointDrive(value=0)` 是否真的能把模型还原到自然零位。
+
+**检测流程**
+
+```js
+__diagZ.snapshot("before")
+__diagZ.testNaturalPose()
+__diagZ.testZeroPose()
+__diagZ.snapshot("zeroKeepBase")
+__diagZ.restore()
+__diagZ.testZeroPoseClearBase()
+__diagZ.snapshot("zeroClearBase")
+__diagZ.restore()
+__diagZ.compare()
+```
+
+**结论对照**
+- **方案A (`before` 和 `zeroKeepBase` 只差有 value 的关节)**：归零生效 ✅
+- **方案B (和 `before` 完全一致)**：清空 base → 懒捕获从**驱动态**重建 → 没归零 ❌
+
+---
+
+### 场景 6：模型某片零件一直发光高亮
+
+**原因** — `SelectionManager` 高亮机制 clone material 并修改 `emissive`。导出前没清除选中 → GLTFExporter 把带 emissive 的 material 烘焙进 GLB。
+
+**快速检测**
+
+```js
+let c = null;
+__mf.sceneManager.sceneRoot.traverse(o => { if (o.name === '_CS19110') c = o; });
+console.log('emissive:', c?.material?.emissive);
+// 如果 emissive 不是 (0, 0, 0) 就是被烘焙进去了
+```
+
+**修复方向**（已实现）— 导出前 `selectionManager.clearSelection()`，导出后 `selectionManager.selectObject(savedSelection)`。
+
+---
+
+## Bug 修复历史
+
+按时间顺序记录开发过程中遇到的问题、根因分析和修复方案。
+
+### 阶段一：关节系统 v1 基础
+
+#### #1 Gizmo 拖动时视口卡死
+- **症状**：选中对象后 gizmo 出现，但拖动时整个视口冻结，鼠标事件无响应
+- **排查**：OrbitControls 和 TransformControls 都在监听 pointer 事件
+- **根因**：SelectionManager 和 jointMarker 的 capture listener 劫持了事件
+- **修复**：鼠标 hover 到 gizmo handle 时跳过场景选择 `if (this.sceneManager.jointGizmo?.axis) return;`
+
+#### #2 配置关节后对象瞬间"飞走"
+- **症状**：刚给对象加上关节，对象就从原位置跳到另一个位置
+- **根因**：`baseTransform` 缺失，`applyJointDrive` 把 value=0 当成"需要还原到未定义的零位"
+- **修复**：`applyJointDrive` 里加**懒捕获**—— base 为 null 时，从当前 world 状态反算并存储；onChange 里也立刻捕获一次
+
+#### #3 reparent（insertGroup）后对象飞走
+- **症状**：把对象插入新 group 做父级包装后，对象再次飞走
+- **根因**：baseTransform 是相对**旧父级**捕获的，换父级后坐标系不同
+- **修复**：`rebindJointBaseTransform(obj)` 在任何 reparent 后清空 `def.baseTransform = null`，让下一帧懒捕获重建
+
+#### #4 Gizmo 平移（prismatic）瞬间弹回
+- **症状**：拖动 prismatic gizmo 时对象跟随一段后"弹回"原位
+- **根因**：delta 用 `object.position`（局部空间）计算，当父节点有旋转时，世界 Y 方向的拖拽在局部空间会分散到 XYZ
+- **修复**：Gizmo delta 和 `applyJointDrive` 的 prismatic 都改用**世界空间**计算，投影到关节的世界轴方向
+
+#### #5 Gizmo 旋转围绕错误中心
+- **症状**：绕 origin 旋转变成绕对象自身 pivot 旋转
+- **根因**：origin 存的是世界坐标，代码按 parent-local 解读
+- **修复**：改为 **URDF 风格**—— origin 存**关节父级 local** 空间。父节点动，origin 自动跟
+
+#### #6 Gizmo 旋转离散跳变
+- **症状**：rotate gizmo 拖动时对象不是平滑旋转，而是跳跃式离散变化
+- **根因**：TransformControls 围绕对象 pivot 旋转，不是围绕 def.origin
+- **修复**：onChange 回调里 `applyJointDrive(force=true)` 强制用自己的 origin-based 旋转公式重写 transform
+
+#### #7 万向锁（Gimbal Lock）旋转丢失 57°
+- **症状**：某些关节旋转到 ~90° 时 Euler 分解失真，实际旋转少 57°+
+- **根因**：`baseTransform` 用 Euler (rx, ry, rz) 存储，`Quaternion → Euler → Quaternion` 在 Y ≈ π/2 附近有奇点
+- **修复**：`baseTransform` 改存**四元数** (qx, qy, qz, qw)，全程避免 Euler 转换
+
+#### #8 拓扑排序：关节链驱动顺序错误
+- **症状**：父关节和子关节同时驱动，但渲染先后顺序错，导致子关节计算用的是父关节旧状态
+- **根因**：按场景树深度排序，但关节链可能跨越兄弟节点（e.g. 门架和叉齿平级）
+- **修复**：`applyAllJointDrives` 改用 **Kahn's 拓扑排序**，按 `jointA.childId === jointB.parentId` 关系决定顺序
+
+---
+
+### 阶段二：架构重构
+
+#### #9 per-object 关键帧混乱
+- **症状**：用户选中对象 A 添加关键帧，切到对象 B 再添加，两个 clip 互相看不见
+- **根因**：关键帧是 per-object 的
+- **修复**：重构为**全局关键帧** —— 项目级 `globalClips`，每个 keyframe 字典捕获**所有**关节当前 value
+
+#### #10 FK 求解器依赖场景树层级
+- **症状**：场景树 reparent 后，关节链驱动关系就断了
+- **根因**：`applyJointDrive` 用 `childObj.parent` 作为"关节父级"
+- **修复**：关节定义独立存 `parentId`，应用时 `nodeMap.get(def.parentId)` 查找——与场景树层级解耦
+
+#### #11 旧关节点系统残留
+- **症状**：~300 行浮动面板、红/黄球 gizmo、jointPoints 数组等旧代码杂乱
+- **修复**：全部删除，保留 FK 关节定义单一数据源
+
+---
+
+### 阶段三：导出 / 导入 Roundtrip
+
+#### #12 ZIP 导出后再导入模型变形
+- **症状**：模型层级被压扁、零件位置错乱
+- **排查**：`diag-export-roundtrip.js` 对比导出前后场景树
+- **根因**：GLTFExporter 对 `THREE.Scene` 节点的处理和 GLTFLoader 不一致，Loader 总是在外面包一层新 Scene
+- **修复**：导出时不传 Scene，传 `sceneRoot.children` 数组
+
+#### #13 导入后节点数量少 4 个（19 vs 23）
+- **症状**：插入的 group 丢失
+- **根因**：第一次修 #12 时只导出 `children[0]`，漏掉其他兄弟
+- **修复**：导出 **ALL** 有意义子节点（过滤掉灯光/相机/Helper）
+
+#### #14 导入后模型整体下沉 1.65 单位
+- **症状**：模型陷进网格下面
+- **排查**：`diag-roundtrip-transform.js` phaseA/B/C 对比
+- **根因**：`alignObjectToGround` 把 Scene.position.y 调整了 1.65，这个偏移被烘焙进 GLB 子节点；导入时 `skipAlign: true` 不再调整
+- **修复**：移除 `skipAlign`，让 `alignObjectToGround` 正常运行。配合 #20 的零位导出，不会再有双重对齐
+
+#### #15 导入后根节点被重命名为 "AuxScene"
+- **症状**：左侧场景树顶层节点名字变了
+- **根因**：GLTFExporter 不保留原始 Scene 的名字
+- **修复**：导入后 `root.name = manifest.source.file_name` 恢复
+
+#### #16 导入后场景树所有节点整体偏移
+- **症状**：所有节点（含没关节的）都有相同偏移
+- **根因**：同 #14（对齐偏移被烘焙）
+- **修复**：同 #14
+
+#### #17 导入后零件高亮不消失
+- **症状**：一个零件一直发蓝绿色光
+- **排查**：`c.material.emissive` 是蓝绿色（高亮色）
+- **根因**：SelectionManager 高亮 clone material 并改 emissive，导出时带高亮 → GLTFExporter 烘焙进 GLB
+- **修复**：导出前 `selectionManager.clearSelection()`，导出后恢复
+
+#### #18 `parentId` 在导入后被错误覆盖
+- **症状**：导入后链式关节变独立 —— _CS19110 不跟随 _CS198 运动
+- **排查**：`diag-joint-integrity.js` 显示 `parentId === sceneParent`（无名包装）
+- **根因**：导入代码 `parentId: parentObj?.uuid || d.parent_id || null`，其中 `parentObj = childObj?.parent`，总是取 scene parent（无名包装），覆盖了保存的逻辑父级
+- **修复**：
+  - 导出时 joints.json 新增 `parent_name` 字段
+  - 导入时按 `parent_name` 在 `objectsByName` 里查找逻辑父级
+  - 找不到再兜底到 `childObj.parent`
+
+#### #19 PKF `joint_def_id` 跨导入失效
+- **症状**：导入后 PKF 步骤找不到对应关节
+- **根因**：PKF step 存的是运行时 UUID，roundtrip 后 UUID 全变
+- **修复**：PKF step 只存 `joint`（关节**名字**），导入时按名字解析回当前 UUID
+
+---
+
+### 阶段四：归零策略
+
+#### #20 Double-apply：导出的 GLB 烘焙了驱动态
+- **症状**：非零 value 的关节导入后位置不对，视觉上叠加了两次驱动
+- **排查**：对比 stored base vs 导入后的 should_be
+- **根因**：GLTFExporter 烘焙的是**当前驱动后**的 transform，导入后 applyJointDrive 又基于这个 transform 再施加一次 value → double-apply
+- **修复方向**：导出前先归零
+
+#### #21 第一版零位导出失败（清空 base + value=0）
+- **症状**：导入后仍然有漂移，诊断发现 GLB 里的 transform 不是零位
+- **排查**：`diag-zero-pose.js` 对比方案 A（保留 base）和方案 B（清空 base）
+- **根因**：清空 `baseTransform` 后 `applyAllJointDrives` 懒捕获从**当前驱动态**重建 base → GLB 仍然存驱动态
+- **修复**：改为**方案 A** —— 只设 `currentValue=0`，**保留**现有 base。现有 base + value=0 → 正确还原到零位
+
+#### #22 链式关节导入后整体下沉
+- **症状**：动画播放时所有链式关节零件整体下沉相同距离（例如都下降 1.52 单位）
+- **排查**：`diag-animation.js` 扫描 clip 发现 4 个节点 Y 变化范围都等于 `KF0 - KF1` 的 _____10 位移量
+- **根因**：导入时直接用 JSON 里的 `currentValue`（非零）触发 `applyAllJointDrives`。拓扑排序先驱动父级 → 父级移动 → 子级懒捕获 base 时捕获的是**父级已驱动态下**的相对位置。动画把父级改回零位后，子级相对下沉父级的位移量
+- **修复**：导入时**两阶段应用**：
+  1. 先把所有 `currentValue = 0`
+  2. `applyAllJointDrives` → 所有关节在零位懒捕获 base
+  3. 恢复真实 `currentValue`
+  4. 再 `applyAllJointDrives` → 正常驱动
+
+---
+
+### 阶段五：Gizmo 交互
+
+#### #23 旋转 gizmo 大角度跳变 360°
+- **症状**：逆时针拖动叉齿到某个角度后继续拖，角度瞬间跳变 360°
+- **根因**：**四元数双重覆盖**。`q` 和 `-q` 代表同一旋转，TransformControls 大角度时会把 current quaternion 归一化到"最短路径"表示，触发符号翻转。提取的 `2 * atan2(sinHalf, cosHalf)` 因此跳 ±2π
+- **修复**：角度**解缠** —— 保持相邻帧 angle 差值 ≤ π，超过就加减 2π 补偿。每次新拖拽重置 `_gizmoLastAngle`
+
+---
+
+### 阶段六：其他细节
+
+#### #24 GridHelper 颜色警告
+- **症状**：Console 一直打印 `THREE.Color does not support alpha` 警告
+- **根因**：`GridHelper` 不支持 rgba 颜色
+- **修复**：换成预算好的实色 hex（`0x6a6a6a` / `0x626262`，在 `#585858` 背景上视觉等效半透明灰）
+
+#### #25 材质高亮影响其他对象
+- **症状**：一个对象被选中，所有共享同一材质的对象也都发光
+- **根因**：SelectionManager 直接修改 `material.emissive`，material 是共享引用
+- **修复**：修改前 `material.clone()`，只改这个对象自己的拷贝
+
+#### #26 "从关键帧生成"功能失效
+- **症状**：全局关键帧重构后，旧的"从选中对象的 channel 生成"函数还在读取 per-object clips
+- **修复**：重写该函数用全局 keyframes + joint_values
+
+---
+
+### 阶段七：git 仓库维护
+
+#### #27 git push 失败（corrupt loose object）
+- **症状**：`git push` 报 `inflate: data stream error (incorrect data check)` + `corrupt loose object`
+- **排查**：`git fsck` 显示损坏的 blob 属于某个 `.zip` 导出包
+- **根因**：大二进制 ZIP 被 commit 到 git，对象压缩写入时损坏（常见于磁盘/杀毒软件干扰）
+- **修复**：
+  - 删除损坏的 `.git/objects/xx/xxxxx` 文件
+  - `git reset --soft` 撤回 commit（保留源代码改动）
+  - `zip/` 加入 `.gitignore`
+  - `git rm --cached -r zip/` 把已提交的 ZIP 移除暂存
+  - 重新 commit（只含源代码）
+  - `git reflog expire --expire=now --all && git gc --prune=now` 清理悬挂引用
+  - 验证 `git fsck` 干净后 push
+
+---
+
+## 核心经验教训
+
+1. **懒捕获 base 的时机很重要**：必须在"所有父级关节都是零位"的状态下捕获，不能在驱动态下捕获
+2. **GLTFExporter/Loader 不是无损 roundtrip**：Scene 会变成 AuxScene、无名节点保留但身份变了、节点名可能丢失后缀
+3. **四元数 vs Euler**：涉及旋转的状态一律用四元数存，Euler 只做 UI 展示
+4. **跨导入稳定的标识符**：UUID 是运行时的，导出到 JSON 要用**名字**或**路径**，导入时重新解析成当前 UUID
+5. **double-apply 的根因几乎都是"状态被烘焙在两个地方"**：GLB 里烘焙了 transform + 关节 def 里又有 value → 施加两次
+6. **链式关节的 base 有顺序依赖**：父级 base 先确定，子级 base 才能正确捕获
+7. **大二进制文件别进 git**：导出产物、模型文件都应该 `.gitignore`
+8. **写诊断脚本比瞎改代码强**：多数 bug 是通过先写诊断脚本定位根因再改代码解决的，节省大量反复试错
+
+---
+
+## 附：单行快速检查命令
+
+除了完整诊断脚本，以下单行 Console 命令也常用：
+
+```js
+// 查看所有关节定义（含 parentId/childId）
+__mf.getJointDefs().map(d => ({ name: d.name, parentId: d.parentId?.slice(0,8), childId: d.childId?.slice(0,8), value: d.currentValue }))
+
+// 检查 parentId 是否能在场景树找到
+__mf.getJointDefs().map(d => { let found = null; __mf.sceneManager.sceneRoot.traverse(o => { if(o.uuid === d.parentId) found = o.name || o.type; }); return d.name + ': ' + (found || '❌'); })
+
+// 检查 parentId 是否等于 scene parent（应 false 表示正确的链式关节）
+__mf.getJointDefs().map(d => { let c = null; __mf.sceneManager.sceneRoot.traverse(o => { if(o.uuid === d.childId) c = o; }); return d.name + ': parentId===sceneParent? ' + (d.parentId === c?.parent?.uuid); })
+
+// 对比关节的 stored base 和当前 should_be（不一致说明 base 过时）
+__mf.getJointDefs().map(d => { let jp = null, c = null; __mf.sceneManager.sceneRoot.traverse(o => { if(o.uuid === d.parentId) jp = o; if(o.uuid === d.childId) c = o; }); if(!jp||!c) return d.name+': NOT FOUND'; jp.updateMatrixWorld(true); c.updateMatrixWorld(true); const cwp = c.getWorldPosition(new __mf.THREE.Vector3()); const correct = jp.worldToLocal(cwp.clone()); return d.name + ': stored=(' + d.baseTransform.tx.toFixed(2) + ',' + d.baseTransform.ty.toFixed(2) + ',' + d.baseTransform.tz.toFixed(2) + ') should_be=(' + correct.x.toFixed(2) + ',' + correct.y.toFixed(2) + ',' + correct.z.toFixed(2) + ')'; })
+
+// 查看 child 的当前 local position
+__mf.getJointDefs().map(d => { let c = null; __mf.sceneManager.sceneRoot.traverse(o => { if(o.uuid === d.childId) c = o; }); return d.name + ': pos=(' + c?.position.x.toFixed(2) + ',' + c?.position.y.toFixed(2) + ',' + c?.position.z.toFixed(2) + ')'; })
+
+// 快速检查高亮是否被烘焙进材质
+let c = null; __mf.sceneManager.sceneRoot.traverse(o => { if (o.name === '_CS19110') c = o; }); console.log('emissive:', c?.material?.emissive);
+```
 
 ---
 
 ## 当前版本
 
-最新 commit：`e847818` — 新增诊断脚本指南 tests/DIAGNOSTICS.md
+最新 commit：`f55f549` — 新增 BUGFIX-LOG 和 CLAUDE.md 协作说明
 
 最近 v8 修复：
-- 链式关节导入后整体下沉（两阶段应用）
-- 导出前清除选中（避免高亮 emissive 烘焙）
-- Gizmo 旋转角度解缠（避免 360° 跳变）
+- 链式关节导入后整体下沉（两阶段应用）— [#22](#22-链式关节导入后整体下沉)
+- 导出前清除选中（避免高亮 emissive 烘焙）— [#17](#17-导入后零件高亮不消失)
+- Gizmo 旋转角度解缠（避免 360° 跳变）— [#23](#23-旋转-gizmo-大角度跳变-360)
