@@ -769,6 +769,27 @@ async function handleImportPackage(file) {
     }
 
     selectionManager.clearSelection();
+
+    // ── v5 修复：两阶段应用关节，保证链式关节的 base 在零位捕获 ──
+    // 问题：如果父级 joint 的 currentValue 非零，拓扑排序会先驱动父级 → 父级移动
+    //       → 子级 lazy capture 捕获的是"父级驱动态"下的相对位置（错误 base）
+    //       → 播放动画时父级回零位，子级相对下沉
+    // 解决：先把所有 value 清零 → applyDrives 让所有 joint 在零位懒捕获 base
+    //      → 再恢复真实 value → 正常驱动
+    const savedImportValues = keyframeManager.getAllJointDefs().map((d) => ({
+      id: d.id,
+      value: d.currentValue,
+    }));
+    savedImportValues.forEach((s) => {
+      const d = keyframeManager.jointDefinitions.get(s.id);
+      if (d) d.currentValue = 0;
+    });
+    keyframeManager.applyAllJointDrives(sceneManager.sceneRoot);
+    savedImportValues.forEach((s) => {
+      const d = keyframeManager.jointDefinitions.get(s.id);
+      if (d) d.currentValue = s.value;
+    });
+
     keyframeManager.evaluateAllAt(0, sceneManager.sceneRoot);
     keyframeManager.applyAllJointDrives(sceneManager.sceneRoot);
 
@@ -1356,6 +1377,12 @@ ui.exportPackageBtn.addEventListener('click', async () => {
   }
 
   try {
+    // ── 导出前：清除选中状态 ──
+    // SelectionManager 高亮机制会 clone material 并修改 emissive。
+    // 不清除 → GLTFExporter 烘焙带 emissive 的 material 进 GLB → 导入后模型一直发光。
+    const savedSelection = selectionManager.selectedObject;
+    selectionManager.clearSelection();
+
     // ── 导出前：方案A 归零（保留 baseTransform，只设 value=0）──
     // GLTFExporter 会烘焙当前节点 transform。保留 base + value=0 让现有 base
     // 正确还原零位，这样 GLB 存的是真正的零位态。
@@ -1388,12 +1415,15 @@ ui.exportPackageBtn.addEventListener('click', async () => {
       pkfSteps: keyframeManager.getAllPkfSteps(),
     });
 
-    // ── 导出后：恢复关节驱动值 ──
+    // ── 导出后：恢复关节驱动值 + 恢复选中状态 ──
     savedValues.forEach((saved) => {
       const def = keyframeManager.getJointDef(saved.id);
       if (def) def.currentValue = saved.currentValue;
     });
     keyframeManager.applyAllJointDrives(sceneManager.sceneRoot);
+    if (savedSelection) {
+      selectionManager.selectObject(savedSelection);
+    }
 
     ui.exportOutput.textContent = `已导出结果包 ZIP。\n${JSON.stringify(manifest, null, 2)}`;
   } catch (error) {
