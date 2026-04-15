@@ -825,19 +825,49 @@ async function handleImportPackage(file) {
  *
  * @param {number} t - 当前时间（秒）
  */
+// PKF 错误"已警告"集合：避免播放时每帧 60 次刷屏
+// key 形式：`${step_id}|${reason}` — reason 变了或换步骤会重新警告一次
+const _pkfWarnedKeys = new Set();
 function applyPkfAtTime(t) {
-  const results = keyframeManager.evaluatePkfAt(t);
-  // 建立 name → def 的索引（fallback 用）
+  // 建立 name → def 的索引
   const defByName = new Map();
   keyframeManager.jointDefinitions.forEach((d) => {
     if (d.name) defByName.set(d.name, d);
   });
+
+  // 循环播放修复：每帧先把所有 PKF 触及的关节重置为 0
+  // 原因：evaluatePkfAt 对未开始的步骤不输出 result（joint 未触及），
+  //      如果不重置，循环回到 t=0 时未开始的关节仍保留上一轮末态 → 视觉"卡顿 + 瞬回"
+  // 之后 results.forEach 按步骤时间顺序覆写：active 的按插值，completed 的保持 value_end
+  keyframeManager.pkfSteps.forEach((step) => {
+    let def = step.joint_def_id ? keyframeManager.jointDefinitions.get(step.joint_def_id) : null;
+    if (!def && step.joint) def = defByName.get(step.joint);
+    if (def) def.currentValue = 0;
+  });
+
+  const results = keyframeManager.evaluatePkfAt(t);
   results.forEach((r) => {
-    if (r.error) return;
+    // 公式求值出错：白名单拒绝、参数缺失等 → 警告并跳过
+    if (r.error) {
+      const key = `${r.step_id}|formula:${r.error}`;
+      if (!_pkfWarnedKeys.has(key)) {
+        _pkfWarnedKeys.add(key);
+        console.warn(`[PKF] 步骤 "${r.joint || r.step_id}" 公式求值失败：${r.error}`);
+      }
+      return;
+    }
     // 先按 uuid 查，失败再按名字
     let def = r.joint_def_id ? keyframeManager.jointDefinitions.get(r.joint_def_id) : null;
     if (!def && r.joint) def = defByName.get(r.joint);
-    if (!def) return;
+    // 关节查找失败：joint 名拼错、关节被删、AI 输出截断（#10 收紧后会落到这里）
+    if (!def) {
+      const key = `${r.step_id}|missing:${r.joint}`;
+      if (!_pkfWarnedKeys.has(key)) {
+        _pkfWarnedKeys.add(key);
+        console.warn(`[PKF] 步骤找不到关节 "${r.joint}"（step_id=${r.step_id}），该步骤将被跳过`);
+      }
+      return;
+    }
     def.currentValue = r.value;
   });
 }
@@ -929,6 +959,21 @@ ui.timeInput.addEventListener('input', () => {
 });
 
 ui.playBtn.addEventListener('click', () => {
+  // 切到"开始播放"时：如果当前时间已到/接近末尾，回到 0 重放一遍
+  // 避免出现"先从中间位置播后半段，再环回 0 播前半段"的观感
+  if (!isPlaying) {
+    const duration = getCurrentDuration();
+    if (keyframeManager.currentTime >= duration - 1e-3) {
+      keyframeManager.currentTime = 0;
+      if (pkfPlaybackMode) {
+        applyPkfAtTime(0);
+      } else {
+        keyframeManager.evaluateAllAt(0, sceneManager.sceneRoot);
+      }
+      ui.setTime(0);
+      ui.updateTimelineLabel(0, duration);
+    }
+  }
   isPlaying = !isPlaying;
   ui.setPlayState(isPlaying);
 });
@@ -1408,13 +1453,15 @@ ui.exportPackageBtn.addEventListener('click', async () => {
       sourceFormat: sourceInfo.format,
       sceneRoot: sceneManager.sceneRoot,
       jointDefinitions: jointDefs.map((d) => {
-        const saved = savedValues.find((s) => s.id === d.id);
         const childObj = getSceneNodeById(d.childId);
         // 解析关节父级的名字，用于导入时按名字重建链式关系
         const parentObj = d.parentId ? getSceneNodeById(d.parentId) : null;
         return {
           ...d,
-          currentValue: saved?.currentValue ?? d.currentValue,
+          // 导出时 currentValue 写 0：GLB 已存零位，joints.json 也对齐到零位
+          // 防止"从 PKF 末端导出 → 导入后直接停在末端姿态"的 bug
+          // 动画数据在 motion.json（关键帧）和 pkf.json（公式）里，不受影响
+          currentValue: 0,
           scenePath: childObj ? getScenePath(childObj) : null,
           parentName: parentObj?.name || null,
         };
@@ -1441,6 +1488,14 @@ ui.exportPackageBtn.addEventListener('click', async () => {
 });
 
 window.addEventListener('resize', () => sceneManager.resize());
+
+// 禁用 Ctrl+滚轮的页面缩放：左右面板没有 wheel 监听 → 走浏览器默认行为
+// → 整个 CSS Grid 被缩放，"左右面板间隔越来越远"。全局吞掉即可，3D 视口已有自己的滚轮处理。
+// passive: false 必须显式声明，否则 Chrome 忽略 preventDefault。
+window.addEventListener('wheel', (event) => {
+  if (event.ctrlKey) event.preventDefault();
+}, { passive: false });
+
 window.addEventListener('keydown', (event) => {
   const isUndo = (event.ctrlKey || event.metaKey) && !event.shiftKey && event.key.toLowerCase() === 'z';
   if (!isUndo) return;

@@ -904,16 +904,23 @@ export class KeyframeManager {
     const paramValues = { ...this.buildDefaultParamValues(), ...paramOverrides };
     const results = [];
 
-    this.pkfSteps.forEach((step) => {
-      // 跳过时间范围外的步骤
-      if (t < step.t_start || t > step.t_end) return;
+    // 按 t_start 排序：多个步骤驱动同一关节时，时间晚的覆盖时间早的
+    const sortedSteps = [...this.pkfSteps].sort((a, b) => a.t_start - b.t_start);
 
-      // 计算时间进度 [0, 1]
+    sortedSteps.forEach((step) => {
+      // 未开始的步骤不输出结果（由 applyPkfAtTime 统一重置为 0）
+      if (t < step.t_start) return;
+
+      // 计算时间进度 [0, 1]，完成后保持在 1（hold at value_end）
+      // 这样循环内部步骤完成后关节不会飘，循环结束时关节保持在动画末态
       const duration = step.t_end - step.t_start;
-      let progress = duration > 0 ? (t - step.t_start) / duration : 1;
-
-      // 应用缓动函数
-      progress = this._applyEasing(progress, step.easing);
+      let progress;
+      if (t >= step.t_end) {
+        progress = 1;
+      } else {
+        progress = duration > 0 ? (t - step.t_start) / duration : 1;
+        progress = this._applyEasing(progress, step.easing);
+      }
 
       // 求值起止公式
       const startResult = this.evaluatePkfFormula(step.value_start, paramValues);

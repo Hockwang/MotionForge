@@ -867,7 +867,7 @@ export class EditorUI {
       </div>
     `;
 
-    // Position near the anchor element
+    // Position near the anchor element（先设一个初值，下面再夹紧到视口）
     if (anchorRect) {
       panel.style.left = `${anchorRect.right + 8}px`;
       panel.style.top = `${anchorRect.top}px`;
@@ -875,6 +875,27 @@ export class EditorUI {
 
     document.body.appendChild(panel);
     this.jointConfigPanel = panel;
+
+    // 夹紧到视口范围内：当锚点靠近底部/右侧时，panel 不能溢出屏幕
+    // 必须在 appendChild 后测量，因为未挂到 DOM 时高度为 0
+    if (anchorRect) {
+      const margin = 8;
+      const rect = panel.getBoundingClientRect();
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      let left = anchorRect.right + margin;
+      let top = anchorRect.top;
+      // 右溢出：改放到锚点左侧
+      if (left + rect.width > vw - margin) {
+        left = Math.max(margin, anchorRect.left - rect.width - margin);
+      }
+      // 底溢出：上移直到底边贴视口，仍不够则顶边贴视口（面板太高时露出顶部）
+      if (top + rect.height > vh - margin) {
+        top = Math.max(margin, vh - rect.height - margin);
+      }
+      panel.style.left = `${left}px`;
+      panel.style.top = `${top}px`;
+    }
 
     const typeSelect = panel.querySelector('.jc-type');
     const parentSelect = panel.querySelector('.jc-parent');

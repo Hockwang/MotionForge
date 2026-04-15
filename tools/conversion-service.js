@@ -321,16 +321,30 @@ app.post('/api/generate-pkf', async (req, res) => {
       return;
     }
     // ── 后处理1：修正 LLM 可能截断或拼错的 joint 名字 ──
+    // 收紧匹配规则：避免 AI 输出截断名（如 "_CS"）误命中多关节 "_CS198"/"_CS19110"
+    //   1) 精确匹配（含大小写不敏感）优先
+    //   2) 子串匹配仅在 step.joint 长度 > 3 且场景里**唯一**命中时才生效
+    //   3) 多命中或太短 → 保持原值，由后续步骤报错（"找不到关节"），而不是静默猜
     const inputJoints = joints || [];
     const inputJointNames = inputJoints.map((j) => j.name);
     if (inputJointNames.length) {
       parsed.steps.forEach((step) => {
         if (!step.joint) return;
         if (inputJointNames.includes(step.joint)) return;
-        const fuzzy = inputJointNames.find(
-          (n) => n.includes(step.joint) || step.joint.includes(n),
-        );
-        if (fuzzy) step.joint = fuzzy;
+        // 大小写不敏感精确匹配
+        const ciExact = inputJointNames.find((n) => n.toLowerCase() === step.joint.toLowerCase());
+        if (ciExact) { step.joint = ciExact; return; }
+        // 子串匹配只在长度 > 3 时尝试，且要求唯一命中
+        if (step.joint.length > 3) {
+          const matches = inputJointNames.filter(
+            (n) => n.includes(step.joint) || step.joint.includes(n),
+          );
+          if (matches.length === 1) {
+            step.joint = matches[0];
+          } else if (matches.length > 1) {
+            console.warn(`[PKF] joint "${step.joint}" 模糊匹配命中多个关节（${matches.join(', ')}），保持原值由前端报错`);
+          }
+        }
       });
     }
     // ── 后处理2：修正 channel/type 不匹配 ──
