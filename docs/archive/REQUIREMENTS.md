@@ -1,4 +1,22 @@
-# MotionForge 需求文档（开发辅助版）
+> 📦 **历史文档（March 2026）**
+>
+> 本文档写于项目早期（schema v0.1.0 时代），记录最初的需求构想和 M1-M4 roadmap。
+>
+> **当前状态**：
+> - 大部分 M1-M3 需求已实现（FK 关节、全局关键帧、schema v4 ZIP 导出）
+> - "AI 打关节"独立成为研究方向，见 [AI-RIGGING-README.md](../../AI-RIGGING-README.md)
+> - 部分命名/字段已变（如 `motion_type` → `type`，`manifest/joints/motion/pkf` 新结构）
+>
+> **当前真实的架构和功能见**：
+> - [README.md](../../README.md) — 能力清单 + 运行方式
+> - [FLOW.md](../../FLOW.md) — 端到端流程
+> - [CLAUDE.md](../../CLAUDE.md) — 架构约束 + 29 条 bug 历史
+>
+> 本文档保留作历史参考，**不再维护**。
+
+---
+
+# MotionForge 需求文档（早期版本，历史参考）
 
 ## 1. 文档目的
 

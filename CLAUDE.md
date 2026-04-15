@@ -1,11 +1,28 @@
 # MotionForge — Claude 协作手册
 
-> 本文档是 AI 协作的**单一入口**，融合了项目背景、架构约束、协作规则、诊断工具、bug 修复历史。以后展开工作只看这一份。
+> 本文档是 AI 协作的**架构权威入口**，融合了架构约束、协作规则、诊断工具、bug 修复历史。所有关于"怎么改代码"的决策都回到这里。
 >
-> 其他文档分工：
-> - [README.md](README.md) — 运行方式和目录结构（面向开发者）
-> - [REQUIREMENTS.md](REQUIREMENTS.md) — 需求文档（面向 PM）
-> - [plans/joint-definition-plan.md](plans/joint-definition-plan.md) — 早期设计存档
+> ## 项目文档矩阵
+>
+> **按角色找入口**：
+>
+> | 你是谁 / 想做什么 | 先读 |
+> |---|---|
+> | 新人 / 新 chat 接入项目 | [README.md](README.md)（3 分钟知道项目是什么） |
+> | 看完整产品能力和操作流程 | [FLOW.md](FLOW.md) |
+> | **改代码 / 定位 bug / 理解架构** | 本文档（CLAUDE.md） |
+> | 了解 AI 打关节研究方向 | [AI-RIGGING-README.md](AI-RIGGING-README.md) |
+> | 了解当前技术债 | [DEBT.md](DEBT.md) |
+>
+> **AI 打关节研究专题（长期课题）**：
+> - [AI-RIGGING-README.md](AI-RIGGING-README.md) — 2 分钟总览
+> - [HANDOFF.md](docs/ai-rigging/HANDOFF.md) — 给研究方的完整 context 包
+> - [RESEARCH-LOG.md](docs/ai-rigging/RESEARCH-LOG.md) — 决策演进记录
+> - [AI-RIGGING-PLAN.md](docs/archive/AI-RIGGING-PLAN.md) — 早期草稿（部分已废弃，保留回溯）
+>
+> **历史文档（不再维护）**：
+> - [REQUIREMENTS.md](docs/archive/REQUIREMENTS.md) — 最初需求（March 2026）
+> - [joint-definition-plan.md](docs/archive/joint-definition-plan.md) — 早期关节系统设计（已实现）
 
 ---
 
@@ -473,6 +490,34 @@ console.log('emissive:', c?.material?.emissive);
   - 重新 commit（只含源代码）
   - `git reflog expire --expire=now --all && git gc --prune=now` 清理悬挂引用
   - 验证 `git fsck` 干净后 push
+
+---
+
+### 阶段九：导出导入 + PKF 循环闭环修复（v12）
+
+#### #31 PKF 循环播放时关节卡在末态 2 秒后瞬跳回原点
+- **症状**：PKF 驱动播放一遍正常，循环到第二遍时，关节（尤其 `三向车.glb`）在末态停留 2-5 秒，然后瞬间跳回 0，再开始动画
+- **排查**：看 `applyPkfAtTime` + `evaluatePkfAt` 行为：
+  - 旧逻辑：`if (t < step.t_start || t > step.t_end) return;` 完成的 step 和未到的 step 都跳过，`currentValue` 保持上次写入值
+  - 模拟循环：t 从 duration（如 10）wrap 回 0，`三向车.glb` 的 step 是 t=[5.5, 8]，在 t=0 时不触发 → 关节保留 y=3（上次末态）→ 到 t=5.5 时 step 激活，progress=0 → 值瞬间变 0
+- **根因**：两处合成：
+  1. `evaluatePkfAt` 对已完成 step 不输出结果 → 完成后的关节值无人维护
+  2. `applyPkfAtTime` 不重置关节 → 上一轮的末态持续到下一轮某个 step 激活
+- **修复**：
+  1. [KeyframeManager.js evaluatePkfAt](src/core/KeyframeManager.js#L903)：`t >= t_end` 时 progress=1（hold at value_end），不再 return；按 t_start 排序确保多步驱动同关节时时间晚的覆盖早的
+  2. [main.js applyPkfAtTime](src/main.js#L828)：每帧先把所有 PKF 触及的关节 `currentValue = 0`，再应用 results
+- **效果**：循环第二遍回到 t=0，所有关节干净归零再重新开始动画，无卡顿无瞬跳
+
+#### #30 导出 joints.json 保存了驱动态 currentValue → 导入后停在末态
+- **症状**：从 PKF 播放末态点导出 ZIP，导入后模型直接显示动画末态（门架抬着、叉齿转着），不是自然零位
+- **排查**：看 `exportPackageBtn` 处理逻辑：
+  - GLB 确实在零位序列化（savedValues 保存后 `currentValue=0` + `applyAllJointDrives`）
+  - **但** joints.json 的 currentValue 又写回了 `saved.currentValue`（用户点导出时的驱动值）
+  - 导入时两阶段应用：零位捕获 base → 恢复真实 value → `evaluateAllAt(0)`
+  - 如果没有关键帧（纯 PKF 工作流），`evaluateAllAt(0)` 提前 return → currentValue 保持 JSON 里的驱动值 → 视觉上停在末态
+- **根因**：导出写 joints.json 时把 "GLB 已归零" 和 "joints.json 值" 两个一致性约束破坏了
+- **修复**：[main.js](src/main.js#L1440) 导出时 joints.json 的 currentValue 写死 0（GLB 零位 + joints.json 零位一致）。动画数据在 motion.json 关键帧和 pkf.json 公式里，不受影响
+- **经验教训**：GLB 里烘焙的 transform 和 JSON 里的关节值**必须语义一致**，不能一边零位一边驱动态，否则导入后会出现"视觉上和数据层不一致"
 
 ---
 

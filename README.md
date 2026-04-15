@@ -1,161 +1,126 @@
-# MotionForge（Validation Prototype）
+# MotionForge
 
-一个轻量级 Web 原型，用于验证工业 3D 资产外部动作编辑流程：
+Web 端 3D 动作编辑器（Three.js + Vite），用自然语言或关键帧驱动模型做动画，导出标准化运动包。
 
-`asset -> lightweight external motion editing -> structured result package`
+**当前版本**：v11 演示稳定版（2026-04-15）
 
-本项目是工作流验证工具，不是完整工业仿真产品。
+---
 
-## 运行方式
+## 📖 文档导航
+
+**第一次进项目？按顺序读**：
+
+| 你想做什么 | 先读这个 |
+|---|---|
+| 快速上手运行项目 | 继续往下读（本文件） |
+| 了解完整产品能力和端到端流程 | [FLOW.md](FLOW.md) |
+| 了解架构约束、历史 bug、避坑指南 | [CLAUDE.md](CLAUDE.md) |
+| 了解 AI 打关节研究方向（长期课题） | [AI-RIGGING-README.md](AI-RIGGING-README.md) |
+| 了解当前技术债 | [DEBT.md](DEBT.md) |
+
+**历史文档**（了解演进过程）：
+- [REQUIREMENTS.md](docs/archive/REQUIREMENTS.md) — 最初需求文档（March，部分已实现）
+- [joint-definition-plan.md](docs/archive/joint-definition-plan.md) — 早期关节系统设计（已实现）
+
+---
+
+## 🚀 运行方式
 
 ```bash
 npm install
 npm run dev
 ```
 
-默认启动后访问终端显示的本地地址（通常是 `http://localhost:5173`）。
+默认访问 `http://localhost:5173`。
 
 ### 一键启动（Windows）
 
-- 双击项目根目录 `start-motionforge.bat`
-- 首次会自动安装依赖，随后启动并自动打开浏览器
-- 如果希望自动转换 `.usd/.fbx`，请使用 `start-motionforge-with-converter.bat`（会同时启动转换服务）
-- 也可直接执行：
+- 双击 `start-motionforge.bat`（只启动前端）
+- 双击 `start-motionforge-with-converter.bat`（同时启动 USD/FBX 转换服务）
+- 或命令行：`npm start`
+
+### USD/FBX 自动转换（可选）
+
+需要本地安装 Blender（验证路径 `C:\Program Files\Blender Foundation\Blender 5.1\blender.exe`）。
 
 ```bash
-npm start
+npm run converter    # 启动 Blender 转换服务
 ```
 
-### 自动转换 USD/FBX（本地 Blender 服务）
+启动后上传 `.usd/.usda/.usdc/.fbx` 会自动转 GLB。可用 `VITE_CONVERTER_URL` 覆盖默认地址。
 
-1. 安装 Blender（已验证路径示例：`C:\Program Files\Blender Foundation\Blender 5.1\blender.exe`）
-2. 启动转换服务（任选其一）：
+### AI 生成 PKF（可选）
 
-```bash
-npm run converter
-```
+Converter 服务同时承载 AI 后端（端口 8091）。设置环境变量：
+- `AI_BASE_URL`：AI 服务地址（默认接入 Gemini）
+- `AI_MODEL`：模型名（默认 `gemini-3-flash-thinking`）
 
-或双击：
+---
 
-```text
-start-motionforge-with-converter.bat
-```
+## 🧩 核心能力
 
-3. 启动前端后直接上传 `.usd/.usda/.usdc/.fbx`，前端会自动调用服务转换为 `.glb` 并显示
+**输入**：GLB / GLTF / USDZ（本地）/ USD / FBX（经转换服务）
 
-> 可通过环境变量覆盖默认服务地址：`VITE_CONVERTER_URL`（默认 `http://localhost:8090`）
+**编辑**：
+- FK 关节系统（revolute / prismatic / fixed，URDF 风格，四元数 baseTransform）
+- 全局关键帧（项目级 clips，每帧捕获所有关节 value）
+- PKF 参数化公式（parameters + steps，支持 AI 自然语言生成）
+- 关节 role 语义标签（供 AI 按意图匹配）
 
-## 本次新增能力（MVP Extension）
+**输出**：ZIP 运动包（schema v4）
+- `manifest.json` — 元信息 + 文件索引
+- `joints.json` — FK 关节定义（含 role / parent_name）
+- `motion.json` — 全局关键帧 clips
+- `pkf.json` — 参数化公式（可选）
+- `model.glb` — GLTFExporter 序列化后的场景
 
-- 动作语义编辑（按对象-片段）
-  - `motion_type`: `translate` / `rotate`
-  - `axis`: `x` / `y` / `z`
-  - `clip_name`
-  - `min_value` / `max_value`（可选）
-  - `duration`
-- 单对象多片段（multi clips）
-  - 创建片段
-  - 切换当前片段
-  - 在当前片段下添加关键帧
-- 结构化导出
-  - 导出当前对象结构化 `motion JSON`
-  - 导出结果包 `ZIP`（`manifest.json` + `motion.json` + `asset-metadata.json`）
+完整流程图见 [FLOW.md](FLOW.md)。
 
-## 结果包格式
+---
 
-`manifest.json` 最小结构示例：
-
-```json
-{
-  "package_version": "0.1.0",
-  "editor_name": "MotionForge",
-  "source_file_name": "asset.usd",
-  "source_format": "usd",
-  "exported_objects": [
-    { "object_id": "uuid", "object_name": "arm", "clip_count": 2 }
-  ],
-  "available_clips": ["open", "close"]
-}
-```
-
-`motion.json` 最小结构示例：
-
-```json
-{
-  "schema_version": 1,
-  "exported_at": "2026-03-31T00:00:00.000Z",
-  "objects": [
-    {
-      "object_id": "uuid",
-      "object_name": "arm",
-      "clips": [
-        {
-          "clip_name": "open",
-          "motion_type": "rotate",
-          "axis": "y",
-          "duration": 2.0,
-          "min_value": -20,
-          "max_value": 45,
-          "keyframes": [
-            {
-              "time": 0.0,
-              "value": 0.0,
-              "transform": {
-                "tx": 0,
-                "ty": 0,
-                "tz": 0,
-                "rx": 0,
-                "ry": 0,
-                "rz": 0
-              }
-            }
-          ]
-        }
-      ],
-      "semantics_version": 1
-    }
-  ]
-}
-```
-
-## 当前 MVP 范围
-
-- 资产加载：
-  - 本地直载：`.usdz` / `.glb` / `.gltf`
-  - 自动转换后加载：`.usd` / `.usda` / `.usdc` / `.fbx`（需本地转换服务）
-- 场景编辑：对象列表 + 视口点击选择 + 高亮
-- 变换编辑：当前对象 `X 平移`、`Y 旋转`
-- 关键帧：时间轴拖动、播放/暂停、线性插值
-- 语义与片段：每对象多片段及语义参数编辑
-- 导出：结构化 JSON + 结果包 ZIP
-
-## 目录结构
+## 📁 目录结构
 
 ```text
 src/
   core/
     AssetLoader.js           # 资产加载分发（含 USD 扩展点）
-    SceneManager.js          # Three.js 场景、相机、渲染与控制
-    SelectionManager.js      # 选中与高亮逻辑
-    KeyframeManager.js       # 多对象/多片段关键帧与语义模型
+    SceneManager.js          # Three.js 场景 / 相机 / Gizmo
+    SelectionManager.js      # 选中与高亮
+    KeyframeManager.js       # 关节定义 + 全局关键帧 + FK 求解器 + PKF
     ResultPackageExporter.js # ZIP 结果包导出
   ui/
-    EditorUI.js              # 编辑器布局与 UI 更新
+    EditorUI.js              # 编辑器布局与 UI
   main.js                    # 应用编排入口
-  style.css                  # 最小布局样式
+  style.css                  # 布局样式
+tools/
+  conversion-service.js      # Blender 转换服务 + AI 生 PKF 后端
+  convert_usd_to_glb.py      # USD → GLB 转换脚本
+tests/
+  diag-*.js                  # 5 个浏览器 Console 诊断脚本（见 FLOW.md）
 ```
 
-## 已知限制
+---
 
-- `USD` 真实几何显示依赖本地转换服务和 Blender；未启动服务时无法自动转换
-- 复杂材质在不同工具链（Omniverse -> Blender -> glTF）间可能有保真损失
-- 变换编辑 UI 仍保持轻量（当前提供 X 平移、Y 高度、Y 旋转）
-- 时间轴为基础实现，不包含曲线编辑、撤销/重做、复杂轨道管理
-- 不包含 USD 回写与 rig/joint authoring
+## ⚠️ 已知限制
 
-## 未来扩展方向
+- USD 真实几何显示依赖本地转换服务和 Blender
+- 复杂材质跨工具链（Omniverse → Blender → glTF）可能有保真损失
+- 时间轴不支持曲线编辑（只有线性插值）
+- AI 打关节**尚未接入**（研究阶段，见 [AI-RIGGING-README.md](AI-RIGGING-README.md)）
 
-- 接入真实 USD 资产管线（本地转换服务或远端服务）
-- 引入真实 joint semantics（替代纯 mesh transform 语义）
-- 增强结果包到内部系统映射层（ID 映射、命名规范、校验规则）
-- 扩展多对象协同片段、片段复用与版本化
+---
+
+## 🛠️ 调试钩子
+
+浏览器 Console 可用：
+
+```js
+__mf.THREE              // THREE 命名空间
+__mf.sceneManager       // SceneManager 实例
+__mf.keyframeManager    // KeyframeManager
+__mf.selectionManager   // SelectionManager
+__mf.getJointDefs()     // 关节定义快照
+__mf.editableObjects()  // 可编辑对象列表
+```
+
+遇到 bug → 先看 [FLOW.md 第 2 节故障定位表](FLOW.md)，再看对应诊断脚本。
