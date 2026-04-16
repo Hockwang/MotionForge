@@ -1430,18 +1430,15 @@ ui.exportPackageBtn.addEventListener('click', async () => {
     return;
   }
 
+  // ── 导出前：保存状态，归零 + 清选中 ──
+  const savedSelection = selectionManager.selectedObject;
+  const savedValues = [];
   try {
-    // ── 导出前：清除选中状态 ──
-    // SelectionManager 高亮机制会 clone material 并修改 emissive。
-    // 不清除 → GLTFExporter 烘焙带 emissive 的 material 进 GLB → 导入后模型一直发光。
-    const savedSelection = selectionManager.selectedObject;
+    // 清除选中（防止 emissive 烘焙进 GLB）
     selectionManager.clearSelection();
 
-    // ── 导出前：方案A 归零（保留 baseTransform，只设 value=0）──
-    // GLTFExporter 会烘焙当前节点 transform。保留 base + value=0 让现有 base
-    // 正确还原零位，这样 GLB 存的是真正的零位态。
-    // 注意：不能清空 base！否则懒捕获会从当前驱动态重新捕获 → GLB 仍存驱动态。
-    const savedValues = [];
+    // 方案A 归零：保留 baseTransform，只设 value=0
+    // GLTFExporter 烘焙当前 transform → 必须是零位态
     jointDefs.forEach((def) => {
       savedValues.push({ id: def.id, currentValue: def.currentValue });
       def.currentValue = 0;
@@ -1454,13 +1451,9 @@ ui.exportPackageBtn.addEventListener('click', async () => {
       sceneRoot: sceneManager.sceneRoot,
       jointDefinitions: jointDefs.map((d) => {
         const childObj = getSceneNodeById(d.childId);
-        // 解析关节父级的名字，用于导入时按名字重建链式关系
         const parentObj = d.parentId ? getSceneNodeById(d.parentId) : null;
         return {
           ...d,
-          // 导出时 currentValue 写 0：GLB 已存零位，joints.json 也对齐到零位
-          // 防止"从 PKF 末端导出 → 导入后直接停在末端姿态"的 bug
-          // 动画数据在 motion.json（关键帧）和 pkf.json（公式）里，不受影响
           currentValue: 0,
           scenePath: childObj ? getScenePath(childObj) : null,
           parentName: parentObj?.name || null,
@@ -1471,7 +1464,12 @@ ui.exportPackageBtn.addEventListener('click', async () => {
       pkfSteps: keyframeManager.getAllPkfSteps(),
     });
 
-    // ── 导出后：恢复关节驱动值 + 恢复选中状态 ──
+    ui.exportOutput.textContent = `已导出结果包 ZIP。\n${JSON.stringify(manifest, null, 2)}`;
+  } catch (error) {
+    ui.exportOutput.textContent = `导出 ZIP 失败：${error.message}`;
+  } finally {
+    // ── 不管成功失败，一定恢复关节值 + 选中状态 ──
+    // 没有 finally 的话，GLTFExporter 抛异常会卡在"全关节零位 + 无选中"状态
     savedValues.forEach((saved) => {
       const def = keyframeManager.getJointDef(saved.id);
       if (def) def.currentValue = saved.currentValue;
@@ -1480,10 +1478,6 @@ ui.exportPackageBtn.addEventListener('click', async () => {
     if (savedSelection) {
       selectionManager.selectObject(savedSelection);
     }
-
-    ui.exportOutput.textContent = `已导出结果包 ZIP。\n${JSON.stringify(manifest, null, 2)}`;
-  } catch (error) {
-    ui.exportOutput.textContent = `导出 ZIP 失败：${error.message}`;
   }
 });
 

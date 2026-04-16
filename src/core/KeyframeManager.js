@@ -129,7 +129,29 @@ export class KeyframeManager {
       if (typeof patch.limits.min !== 'undefined') def.limits.min = normalizeValue(patch.limits.min, def.limits.min);
       if (typeof patch.limits.max !== 'undefined') def.limits.max = normalizeValue(patch.limits.max, def.limits.max);
     }
-    if (typeof patch.parentId !== 'undefined') def.parentId = patch.parentId;
+    if (typeof patch.parentId !== 'undefined') {
+      // 环检测：从 patch.parentId 沿链向上走，如果走回到 nodeId 自己 → 形成循环 → 拒绝
+      // 例：A→B→C，现在想设 A 的 parent 为 C → 走链 C→B→A → 碰到 A → 环！
+      // 没有环检测的话 Kahn's 拓扑排序会静默丢弃环内关节，用户看到"关节不动"但不知道为什么
+      if (patch.parentId) {
+        let hasCycle = false;
+        let cursor = patch.parentId;
+        const visited = new Set([nodeId]); // 包含自己（自引用也是环）
+        while (cursor) {
+          if (visited.has(cursor)) { hasCycle = true; break; }
+          visited.add(cursor);
+          const parentDef = this.jointDefinitions.get(cursor);
+          cursor = parentDef?.parentId || null;
+        }
+        if (hasCycle) {
+          console.warn(`[setJointDef] 拒绝设置 parentId：${def.name || nodeId} → ${patch.parentId} 会形成循环依赖`);
+        } else {
+          def.parentId = patch.parentId;
+        }
+      } else {
+        def.parentId = patch.parentId; // 设为 null（无父级 / 世界）始终允许
+      }
+    }
     if (typeof patch.childId !== 'undefined') def.childId = patch.childId;
     if (typeof patch.currentValue !== 'undefined') def.currentValue = normalizeValue(patch.currentValue, 0);
     // 仅在 patch 显式传入时更新 baseTransform，避免后续修改类型/轴时覆盖零点
