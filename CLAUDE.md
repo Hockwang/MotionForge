@@ -521,6 +521,16 @@ console.log('emissive:', c?.material?.emissive);
 - **修复**：[main.js](src/main.js#L1440) 导出时 joints.json 的 currentValue 写死 0（GLB 零位 + joints.json 零位一致）。动画数据在 motion.json 关键帧和 pkf.json 公式里，不受影响
 - **经验教训**：GLB 里烘焙的 transform 和 JSON 里的关节值**必须语义一致**，不能一边零位一边驱动态，否则导入后会出现"视觉上和数据层不一致"
 
+#### #34 FBX 源 ZIP roundtrip 后根节点改名导致 parent=root 的关节找不到父级
+- **症状**：FBX 源加载后场景根名叫 "Scene"。如果用户把关节的 parent 设为场景根，导出 ZIP 再导入后，该关节被兜底到错误的 scene graph parent（通常是子级 AGV 或无名包装），视觉上表现为"关节丢失 / 左侧顶部名字改变"
+- **排查**：`__mf.sceneManager.sceneRoot.name` 导入前是 "Scene"，导入后变成 `.fbx` 文件名（如 `shuangchaxiaoqianyi.fbx`）；joints.json 里 `parent_name: "Scene"` 在 objectsByName 里找不到
+- **根因**：[main.js](src/main.js) 里有段代码 `root.name = manifest.source.file_name`，用文件名强制覆盖根节点名。原来叫 "Scene" 的根在新场景里被改名 → `objectsByName.get("Scene")` 失败 → 兜底到 childObj.parent（scene graph parent，和 joint parent 语义不同）
+- **修复**：
+  - [ResultPackageExporter.js](src/core/ResultPackageExporter.js)：`manifest.source` 新增 `root_name` 字段，保存导出时的根节点名
+  - [main.js handleImportPackage](src/main.js#L564)：恢复根节点名时优先用 `root_name`，兜底到 `file_name`
+- **向后兼容**：旧 ZIP 没 `root_name` 字段 → 走 fallback 到文件名（和之前行为一致，旧 bug 还在但不崩）；新 ZIP 正确恢复
+- **经验教训**：**跨 roundtrip 的标识符必须端到端保存**。只靠"猜测名字"（用文件名代替根名）会在源格式变化时失败。每新增一种源格式（GLB/USD/FBX），根节点的命名约定都可能不同
+
 #### #32 导出 ZIP 异常时卡在零位状态
 - **症状**：导出时如果 GLTFExporter 抛异常（模型太大 / 材质跨域等），模型卡在"全关节归零 + 无选中"，看起来动画配置丢了
 - **根因**：恢复 currentValue 和选中状态的代码在 try 块内 `await exportZip()` 之后，异常跳到 catch → 恢复代码不执行

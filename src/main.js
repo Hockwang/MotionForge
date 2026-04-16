@@ -559,10 +559,13 @@ async function handleImportPackage(file) {
     // （之前用 skipAlign:true 是因为 GLB 烘焙了已驱动的 transform + 对齐偏移，现在不需要了）
     sceneManager.setSceneRoot(root);
 
-    // v5 修复：GLTFExporter 会把根节点改名为 "AuxScene"，恢复为原始文件名
+    // v5 修复：GLTFExporter 会把根节点改名为 "AuxScene"，恢复为原始名字
+    // 优先用导出时保存的 root_name（如 FBX 源的 "Scene"）→ 保证 parent_name="Scene"
+    // 的关节 roundtrip 后能找到父级。旧 ZIP 没有 root_name → 兜底到文件名
     const originalFileName = manifest.source?.file_name || modelFileName;
-    if (root.name !== originalFileName) {
-      root.name = originalFileName;
+    const originalRootName = manifest.source?.root_name || originalFileName;
+    if (root.name !== originalRootName) {
+      root.name = originalRootName;
     }
 
     editableObjects = collectEditableObjects(root);

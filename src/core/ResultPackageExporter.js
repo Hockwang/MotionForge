@@ -100,6 +100,11 @@ export class ResultPackageExporter {
       source: {
         file_name: sourceFileName || 'unknown',
         format: sourceFormat || 'unknown',
+        // v5：保存原始场景根节点名（如 FBX 源的 "Scene"），导入时恢复用
+        // 修复"parent=root 的关节在 roundtrip 后 parent_name 查不到"的 bug：
+        // GLTFExporter/Loader 会把 root.name 改成 AuxScene，之前代码用 file_name
+        // 覆盖，导致原来叫 "Scene" 的根在新场景里找不到 → joint.parent_name 失效
+        root_name: sceneRoot?.name || null,
         up_axis: 'Z',
         units_in_meters: 1.0,
         fps: 30,

@@ -13,6 +13,7 @@
 | #10 | AI 模糊匹配过宽 → 精确优先 + 唯一命中 fallback | v12 |
 | #32 | 导出异常卡零位 → try/finally 恢复 | v12+ |
 | #33 | 关节链环检测缺失 → setJointDef 入口拒绝成环 | v12+ |
+| #34 | FBX 源 roundtrip 根节点改名 → manifest 保存 root_name | v12+ |
 
 ## 剩余债务（B 档）
 
