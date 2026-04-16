@@ -497,6 +497,8 @@ system prompt 里嵌一个完整的取货动作示例（parameters + steps + 公
 | AI 用 role 匹配不靠 axis 猜 | axis 相同但用途不同 | [#29](CLAUDE.md) |
 | Gizmo 角度解缠 | 四元数双重覆盖导致跳变 | [#23](CLAUDE.md) |
 | few-shot 不做模板库 | 模板数少时基础设施是浪费 | [#28](CLAUDE.md) |
+| 导出归零/恢复用 try/finally | 异常时不能卡在零位 | [#32](CLAUDE.md) |
+| 关节链 setJointDef 入口环检测 | 拓扑排序不处理环，源头堵住 | [#33](CLAUDE.md) |
 
 ---
 

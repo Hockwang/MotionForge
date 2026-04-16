@@ -1,12 +1,21 @@
 # MotionForge 债务地图
 
 > 生成日期：2026-04-15（v11 演示稳定版之后）
+> 最后更新：2026-04-16
 > 扫描范围：src/core/*、src/main.js、src/ui/EditorUI.js、tools/conversion-service.js
 > 方法：两个并行 Explore 扫描（Three.js 生命周期 + 状态同步/错误处理），去重合并
 
-## 执行建议（B 档）
+## 已修复清单
 
-**本轮要修的 10 条**（高 ROI，改动小，不碰关节核心）：见下面 P0/P1 全部。
+| # | 内容 | 修复版本 |
+|---|---|---|
+| #5 | PKF 步骤错误静默跳过 → console.warn 去重显示 | v12 |
+| #10 | AI 模糊匹配过宽 → 精确优先 + 唯一命中 fallback | v12 |
+| #32 | 导出异常卡零位 → try/finally 恢复 | v12+ |
+| #33 | 关节链环检测缺失 → setJointDef 入口拒绝成环 | v12+ |
+
+## 剩余债务（B 档）
+
 **P2 本轮跳过**，下次打磨再说。
 **不碰的**：FK 求解器、roundtrip schema、拓扑排序逻辑（被 29 个 bug 磨过，fragile 但正确）。
 

@@ -78,6 +78,8 @@ src/
 5. **导出 GLB 前必须归零**关节 + 清除选中（避免 emissive 烘焙 / double-apply）（见 [#17](#17-导入后零件高亮不消失), [#20](#20-double-apply导出的-glb-烘焙了驱动态)）
 6. **导入后必须两阶段应用**关节（先全零化懒捕获 base，再恢复 value）（见 [#22](#22-链式关节导入后整体下沉)）
 7. **懒捕获 base 在 parent=零位时**发生，任何时刻父级驱动态下捕获都是错的（见 [#22](#22-链式关节导入后整体下沉)）
+8. **导出前"临时归零 → 导出 → 恢复"必须用 try/finally**，不能把恢复放 try 尾部（见 [#32](#32-导出-zip-异常时卡在零位状态)）
+9. **关节链不允许成环**，`setJointDef` 设 parentId 时做环检测（见 [#33](#33-关节链循环依赖静默失效)）
 
 ---
 
@@ -518,6 +520,18 @@ console.log('emissive:', c?.material?.emissive);
 - **根因**：导出写 joints.json 时把 "GLB 已归零" 和 "joints.json 值" 两个一致性约束破坏了
 - **修复**：[main.js](src/main.js#L1440) 导出时 joints.json 的 currentValue 写死 0（GLB 零位 + joints.json 零位一致）。动画数据在 motion.json 关键帧和 pkf.json 公式里，不受影响
 - **经验教训**：GLB 里烘焙的 transform 和 JSON 里的关节值**必须语义一致**，不能一边零位一边驱动态，否则导入后会出现"视觉上和数据层不一致"
+
+#### #32 导出 ZIP 异常时卡在零位状态
+- **症状**：导出时如果 GLTFExporter 抛异常（模型太大 / 材质跨域等），模型卡在"全关节归零 + 无选中"，看起来动画配置丢了
+- **根因**：恢复 currentValue 和选中状态的代码在 try 块内 `await exportZip()` 之后，异常跳到 catch → 恢复代码不执行
+- **修复**：[main.js](src/main.js) 把恢复逻辑从 try 移到 `finally` 块，不管成功失败一定执行
+- **经验教训**：任何"临时改状态 → 执行操作 → 恢复状态"的流程都必须用 `try/finally`，不能放在 try 块尾部
+
+#### #33 关节链循环依赖静默失效
+- **症状**：用户把 A 的父级设成 B、B 的父级又设成 A → 两个关节都不动，无任何错误提示
+- **根因**：Kahn's 拓扑排序遇到环时队列提前清空，环内关节入度永远 > 0，静默跳过
+- **修复**：[KeyframeManager.js setJointDef](src/core/KeyframeManager.js) 设 parentId 时从目标沿链向上走，碰到自己就拒绝 + console.warn。在源头堵住，不让循环数据进入系统
+- **经验教训**：图算法（拓扑排序）的输入**必须在入口校验**（无环），不能依赖算法本身"恰好能处理"
 
 ---
 

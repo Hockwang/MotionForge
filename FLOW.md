@@ -91,6 +91,8 @@ model-YYYYMMDD-HHMMSS.glb        # GLTFExporter 序列化当前 sceneRoot
 | AI 返回公式格式错乱 | 查 `tools/conversion-service.js` prompt | - | [#28](CLAUDE.md#28-ai-从零写-pkf-公式不稳定) |
 | 导出的 GLB 层级被压扁 | [diag-export-roundtrip.js](tests/diag-export-roundtrip.js) | `__diagRT.snapshot/diff` | [#12](CLAUDE.md#12-zip-导出后再导入模型变形) [#13](CLAUDE.md#13-导入后节点数量少-4-个19-vs-23) |
 | git push 报 corrupt object | - | - | [#27](CLAUDE.md#27-git-push-失败corrupt-loose-object) |
+| 导出后模型卡在零位不恢复 | 查 console 有无 GLTFExporter 错误 | - | [#32](CLAUDE.md#32-导出-zip-异常时卡在零位状态) |
+| 某些关节配了但播放时不动 | `__mf.getJointDefs()` 检查 parentId 是否成环 | - | [#33](CLAUDE.md#33-关节链循环依赖静默失效) |
 
 ### 诊断脚本使用方式（所有脚本统一）
 1. `npm run dev` 启动，加载模型
