@@ -90,6 +90,9 @@ Web 端 3D 动作编辑器（Three.js + Vite），用自然语言或关键帧驱
 | 想看完整流程和故障排查 | [FLOW.md](FLOW.md) |
 | 想了解技术原理（FK 数学、PKF 求值、roundtrip） | [HOW-IT-WORKS.md](HOW-IT-WORKS.md) |
 | 想改代码 / 定位 bug / 理解架构 | [CLAUDE.md](CLAUDE.md) |
+| **想贡献代码**（协作规则 / commit / 文档同步） | [CONTRIBUTING.md](CONTRIBUTING.md) |
+| 想看版本历史和 breaking change | [CHANGELOG.md](CHANGELOG.md) |
+| 想对接 ZIP 输出（下游系统） | [docs/schema/v4.md](docs/schema/v4.md) |
 | 想了解 AI 打关节研究方向（长期课题） | [AI-RIGGING-README.md](AI-RIGGING-README.md) |
 | 想了解当前技术债 | [DEBT.md](DEBT.md) |
 
@@ -124,7 +127,9 @@ Web 端 3D 动作编辑器（Three.js + Vite），用自然语言或关键帧驱
 | 遇到"导入后停在末态" | [CLAUDE #30](CLAUDE.md) |
 | 遇到"旋转 90° 失真" | [CLAUDE #7 万向锁](CLAUDE.md) |
 | 想写新诊断脚本 | [CLAUDE §诊断脚本指南](CLAUDE.md) |
-| 修完 bug 要归档记录 | [CLAUDE §协作规则](CLAUDE.md) |
+| 修完 bug 要归档记录 | [CONTRIBUTING §协作规则](CONTRIBUTING.md#协作规则) |
+| 文档同步范围（改代码要改哪些文档） | [CONTRIBUTING §文档同步要求](CONTRIBUTING.md#文档同步要求) |
+| 要解析 ZIP 输出 / 对接下游 | [docs/schema/v4.md](docs/schema/v4.md) |
 | 想看还有哪些债 | [DEBT.md](DEBT.md) |
 
 **研究层面**（和 AI 打关节相关）：

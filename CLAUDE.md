@@ -85,9 +85,12 @@ src/
 
 ## 协作规则
 
-### 每次修复 bug 或做重要改动，必须更新本文档
+> 完整协作流程（commit / PR / 文档同步 / dev setup）见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+> 这里只保留**改本文档**相关的两条红线。
 
-完成任何 bug 修复、架构调整、behavior 改动后，**必须**在 [Bug 修复历史](#bug-修复历史) 章节追加一条记录，格式：
+### 1. 修 bug 必须追加 [Bug 修复历史](#bug-修复历史) 条目
+
+编号延续递增（当前最大 #35），格式：
 
 ```markdown
 ### #编号 简短标题
@@ -98,19 +101,12 @@ src/
 - **修复**：改了什么（文件 + 关键变更）
 ```
 
-编号延续最后一条继续递增。
+### 2. 新增诊断脚本必须更新 [诊断脚本指南](#诊断脚本指南)
 
-### 新增诊断脚本，必须同步更新指南
-
-在 [tests/](tests/) 新增 `diag-*.js` 脚本后，必须同步更新 [诊断脚本指南](#诊断脚本指南) 章节：
 - 加到脚本索引表
-- 如果对应新的 bug 场景，追加一个"场景 N"子章节
+- 对应新 bug 场景的追加"场景 N"子章节
 
-### 提交习惯
-
-- 重要节点 commit 时 message 带上版本标识（如 `v8`、`v9`）
-- `zip/` 已在 `.gitignore`，**不要**误 commit 导出产物
-- 大二进制文件（模型、ZIP）一律不入 git（见 [#27](#27-git-push-失败corrupt-loose-object)）
+其余规则（commit message / CHANGELOG / schema 版本 / 文档同步矩阵）见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 ---
 
