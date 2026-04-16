@@ -14,6 +14,7 @@ Web 端 3D 动作编辑器（Three.js + Vite），用自然语言或关键帧驱
 |---|---|
 | 快速上手运行项目 | 继续往下读（本文件） |
 | 了解完整产品能力和端到端流程 | [FLOW.md](FLOW.md) |
+| 了解技术原理（FK 数学、PKF 求值、roundtrip） | [HOW-IT-WORKS.md](HOW-IT-WORKS.md) |
 | 了解架构约束、历史 bug、避坑指南 | [CLAUDE.md](CLAUDE.md) |
 | 了解 AI 打关节研究方向（长期课题） | [AI-RIGGING-README.md](AI-RIGGING-README.md) |
 | 了解当前技术债 | [DEBT.md](DEBT.md) |
