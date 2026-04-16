@@ -97,6 +97,44 @@ Web 端 3D 动作编辑器（Three.js + Vite），用自然语言或关键帧驱
 - [REQUIREMENTS.md](docs/archive/REQUIREMENTS.md) — 最初需求文档（March，部分已实现）
 - [joint-definition-plan.md](docs/archive/joint-definition-plan.md) — 早期关节系统设计（已实现）
 
+### 🔎 按具体问题查文档
+
+**使用层面**（你在用编辑器时遇到）：
+
+| 遇到的问题 | 看哪里 |
+|---|---|
+| 不知道怎么开始用 | [USER-GUIDE §2-3](USER-GUIDE.md) |
+| 关节配了但模型不动 | [USER-GUIDE FAQ](USER-GUIDE.md#9-常见问题) |
+| 旋转方向反了 / 绕错中心 | [USER-GUIDE §4.3](USER-GUIDE.md) |
+| AI 生成的动作选错关节 | [USER-GUIDE FAQ · Q](USER-GUIDE.md#9-常见问题) → 检查 role 字段 |
+| 导出后再导入模型不对 | [FLOW.md 故障表](FLOW.md) |
+| 播放循环卡顿 / 瞬跳 | [CLAUDE #31](CLAUDE.md) |
+| 窗口变窄右面板消失 | 按 Ctrl+0 重置浏览器缩放 |
+| 想了解坐标约定（Y-up 还是 Z-up） | [HOW-IT-WORKS §1](HOW-IT-WORKS.md) |
+
+**开发层面**（你在改代码时遇到）：
+
+| 遇到的问题 | 看哪里 |
+|---|---|
+| 新 bug 要定位 | [FLOW §2 故障定位表](FLOW.md) → 对应诊断脚本 |
+| 要理解 FK 数学 / 公式 | [HOW-IT-WORKS §2](HOW-IT-WORKS.md) |
+| 要理解 PKF 求值管线 | [HOW-IT-WORKS §5](HOW-IT-WORKS.md) |
+| 要理解导出/导入 roundtrip | [HOW-IT-WORKS §8](HOW-IT-WORKS.md) |
+| 遇到"链式关节下沉 / 断链" | [CLAUDE #18 #22](CLAUDE.md) |
+| 遇到"导入后停在末态" | [CLAUDE #30](CLAUDE.md) |
+| 遇到"旋转 90° 失真" | [CLAUDE #7 万向锁](CLAUDE.md) |
+| 想写新诊断脚本 | [CLAUDE §诊断脚本指南](CLAUDE.md) |
+| 修完 bug 要归档记录 | [CLAUDE §协作规则](CLAUDE.md) |
+| 想看还有哪些债 | [DEBT.md](DEBT.md) |
+
+**研究层面**（和 AI 打关节相关）：
+
+| 遇到的问题 | 看哪里 |
+|---|---|
+| 想快速对齐 AI 打关节方向 | [AI-RIGGING-README.md](AI-RIGGING-README.md)（2 分钟） |
+| 要把 context 交给外部研究方 | [docs/ai-rigging/HANDOFF.md](docs/ai-rigging/HANDOFF.md) |
+| 想看观点是怎么演进的 | [docs/ai-rigging/RESEARCH-LOG.md](docs/ai-rigging/RESEARCH-LOG.md) |
+
 ---
 
 ## 🚀 运行方式
