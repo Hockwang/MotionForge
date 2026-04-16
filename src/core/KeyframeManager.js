@@ -319,28 +319,27 @@ export class KeyframeManager {
       return;
     }
 
-    // ── 帧级调试（开发期保留）：记录写入前 ──
-    const _dbgPosBefore = childObj.getWorldPosition(new THREE.Vector3()).clone();
-    const _dbgQuatBefore = childObj.getWorldQuaternion(new THREE.Quaternion()).clone();
-
     // ── 世界 → 场景树 parent local → 写入 child ──
     sceneParent.updateMatrixWorld(true);
     childObj.position.copy(sceneParent.worldToLocal(newWorldPos.clone()));
     const sceneParentQuatInv = sceneParent.getWorldQuaternion(new THREE.Quaternion()).invert();
     childObj.quaternion.copy(sceneParentQuatInv.multiply(newWorldQuat));
 
-    // ── 帧级调试：value=0 时检查偏移，每个关节只报一次 ──
+    // ── 帧级调试（开发期保留）：value=0 时验证 apply 结果是否等于 stored base ──
+    // 旧版对比 before/after，会在 "value=1→0 恢复" 这种正常操作上误报。
+    // 正确语义：value=0 时 apply 结果的世界位姿应该和 stored base 的世界位姿一致；
+    // 如果不一致，说明 base 过时 / 链路错乱 / 懒捕获时机不对——这才是真 drift。
     if (def.currentValue === 0 && !def._driftWarned) {
       childObj.updateMatrixWorld(true);
       const _dbgPosAfter = childObj.getWorldPosition(new THREE.Vector3());
       const _dbgQuatAfter = childObj.getWorldQuaternion(new THREE.Quaternion());
-      const _dbgPosDrift = _dbgPosBefore.distanceTo(_dbgPosAfter);
-      const _dbgQuatDot = Math.abs(_dbgQuatBefore.dot(_dbgQuatAfter));
+      const _dbgPosDrift = _dbgPosAfter.distanceTo(baseWorldPos);
+      const _dbgQuatDot = Math.abs(_dbgQuatAfter.dot(baseWorldQuat));
       const _dbgRotDrift = Math.acos(Math.min(_dbgQuatDot, 1.0)) * 2 * (180 / Math.PI);
       if (_dbgPosDrift > 0.01 || _dbgRotDrift > 1.0) {
         def._driftWarned = true;
         console.warn(
-          `[applyJointDrive] ⚠ ${def.name} value=0 偏移！pos=${_dbgPosDrift.toFixed(4)} rot=${_dbgRotDrift.toFixed(1)}°`,
+          `[applyJointDrive] ⚠ ${def.name} value=0 但 apply 结果偏离 stored base：pos=${_dbgPosDrift.toFixed(4)} rot=${_dbgRotDrift.toFixed(1)}°`,
           `\n  jointParent: ${jointParent?.name || '(无)'}  sceneParent: ${sceneParent?.name || '(无)'}`,
           `\n  base:`, JSON.stringify(base),
         );

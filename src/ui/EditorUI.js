@@ -781,7 +781,7 @@ export class EditorUI {
     // 预定义 role 词汇表（动作语义标签）— 供 AI 按意图匹配关节
     // 用户也可以选"其他"手写自定义 role
     const PREDEFINED_ROLES = [
-      '车体前进', '车体转向', '门架升降',
+      '车体前进', '车体转向', '门架升降', '门架横移',
       '叉齿前伸', '叉齿侧移', '叉齿旋转',
       '夹爪开合', '臂段旋转',
     ];
@@ -850,9 +850,9 @@ export class EditorUI {
       <div class="jc-origin-group" style="${showDrive ? '' : 'display:none'}">
         <div class="jc-origin-label">关节原点 (Origin)</div>
         <div class="jc-origin-row">
-          <label>X <input class="jc-origin-x" type="number" step="0.01" value="${originX}" /></label>
-          <label>Y <input class="jc-origin-y" type="number" step="0.01" value="${originY}" /></label>
-          <label>Z <input class="jc-origin-z" type="number" step="0.01" value="${originZ}" /></label>
+          <label>X <input class="jc-origin-x" type="number" step="1" value="${originX}" /></label>
+          <label>Y <input class="jc-origin-y" type="number" step="1" value="${originY}" /></label>
+          <label>Z <input class="jc-origin-z" type="number" step="1" value="${originZ}" /></label>
         </div>
         <div class="jc-origin-actions">
           <button type="button" class="jc-origin-from-bbox">子对象底部</button>
