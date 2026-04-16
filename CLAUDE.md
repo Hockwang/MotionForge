@@ -521,6 +521,13 @@ console.log('emissive:', c?.material?.emissive);
 - **修复**：[main.js](src/main.js#L1440) 导出时 joints.json 的 currentValue 写死 0（GLB 零位 + joints.json 零位一致）。动画数据在 motion.json 关键帧和 pkf.json 公式里，不受影响
 - **经验教训**：GLB 里烘焙的 transform 和 JSON 里的关节值**必须语义一致**，不能一边零位一边驱动态，否则导入后会出现"视觉上和数据层不一致"
 
+#### #35 Fixed 类型关节不跟 joint parent 动
+- **症状**：用户把 A 的 joint parent 设成 B、A 的 type 设成 fixed（想让 A 刚性跟随 B），拖动 B 的滑块时 A 不跟随
+- **排查**：看 `applyJointDrive` 第 239 行 `if (def.type === 'none' || def.type === 'fixed') return;` — fixed 类型直接 early return，连懒捕获都不走，什么都不写到 child
+- **根因**：设计时认为 "fixed = 不动 = 无需 apply"，但这只在 joint parent == scene graph parent 时成立。当两者不同时（我们整个关节系统的核心设计就是两者解耦），fixed 子级完全由 scene graph parent 决定运动 → 不跟 joint parent
+- **修复**：[KeyframeManager.js](src/core/KeyframeManager.js) `applyJointDrive` 去掉 fixed 的 early return，加 `else if (def.type === 'fixed')` 分支：`newWorldPos = baseWorldPos; newWorldQuat = baseWorldQuat;`。等价于 prismatic value=0：每帧根据 joint parent 最新世界矩阵 × base 计算 child 世界位置
+- **经验教训**：**关节类型的语义要一致**。revolute/prismatic 都是"joint parent 说了算"（URDF 风格），fixed 也应该是。早期为了省一点性能给 fixed 走快捷路径，破坏了这个一致性。现在 fixed 符合 URDF 标准：刚性连接到 joint parent，无自由度但跟随运动
+
 #### #34 FBX 源 ZIP roundtrip 后根节点改名导致 parent=root 的关节找不到父级
 - **症状**：FBX 源加载后场景根名叫 "Scene"。如果用户把关节的 parent 设为场景根，导出 ZIP 再导入后，该关节被兜底到错误的 scene graph parent（通常是子级 AGV 或无名包装），视觉上表现为"关节丢失 / 左侧顶部名字改变"
 - **排查**：`__mf.sceneManager.sceneRoot.name` 导入前是 "Scene"，导入后变成 `.fbx` 文件名（如 `shuangchaxiaoqianyi.fbx`）；joints.json 里 `parent_name: "Scene"` 在 objectsByName 里找不到

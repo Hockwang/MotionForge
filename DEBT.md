@@ -14,6 +14,7 @@
 | #32 | 导出异常卡零位 → try/finally 恢复 | v12+ |
 | #33 | 关节链环检测缺失 → setJointDef 入口拒绝成环 | v12+ |
 | #34 | FBX 源 roundtrip 根节点改名 → manifest 保存 root_name | v12+ |
+| #35 | Fixed 类型不跟 joint parent → applyJointDrive 加 fixed 分支 | v12+ |
 
 ## 剩余债务（B 档）
 

@@ -236,7 +236,7 @@ export class KeyframeManager {
    */
   applyJointDrive(nodeId, root, force = false) {
     const def = this.jointDefinitions.get(nodeId);
-    if (!def || def.type === 'none' || def.type === 'fixed') return;
+    if (!def || def.type === 'none') return;
     if (!force && this._gizmoDraggingNodeId === nodeId) return;
 
     // ── 找对象 ──
@@ -336,6 +336,11 @@ export class KeyframeManager {
         : new THREE.Vector3(0, 0, 1);
 
       newWorldPos = baseWorldPos.clone().add(worldAxisVec.multiplyScalar(def.currentValue));
+      newWorldQuat = baseWorldQuat.clone();
+    } else if (def.type === 'fixed') {
+      // 固定关节：刚性连接到关节父级，无自由度但要跟着父级动
+      // 等价于 prismatic value=0：world 位置直接用 baseWorldPos（已经包含关节父级的最新变换）
+      newWorldPos = baseWorldPos.clone();
       newWorldQuat = baseWorldQuat.clone();
     } else {
       return;

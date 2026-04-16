@@ -94,6 +94,7 @@ model-YYYYMMDD-HHMMSS.glb        # GLTFExporter 序列化当前 sceneRoot
 | 导出后模型卡在零位不恢复 | 查 console 有无 GLTFExporter 错误 | - | [#32](CLAUDE.md#32-导出-zip-异常时卡在零位状态) |
 | 某些关节配了但播放时不动 | `__mf.getJointDefs()` 检查 parentId 是否成环 | - | [#33](CLAUDE.md#33-关节链循环依赖静默失效) |
 | FBX 源 ZIP 导入后顶部名变成文件名 + 关节被错误兜底 | 检查 `__mf.sceneManager.sceneRoot.name` 是否和源文件里一致 | - | [#34](CLAUDE.md#34-fbx-源-zip-roundtrip-后根节点改名导致-parentroot-的关节找不到父级) |
+| fixed 类型子级不跟 joint parent 动 | 查 `applyJointDrive` 是否对 fixed 走 early return | - | [#35](CLAUDE.md#35-fixed-类型关节不跟-joint-parent-动) |
 
 ### 诊断脚本使用方式（所有脚本统一）
 1. `npm run dev` 启动，加载模型

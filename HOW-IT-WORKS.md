@@ -151,6 +151,15 @@ newWorldQuat = baseWorldQuat   // 不变
 
 数学含义：**沿 axis 方向平移 currentValue 距离**。origin 不参与计算。
 
+**Fixed（固定）**：
+
+```
+newWorldPos  = baseWorldPos   // 直接用 base 的世界位置
+newWorldQuat = baseWorldQuat  // 直接用 base 的世界旋转
+```
+
+数学含义：**刚性连接到 joint parent，无自由度但跟随运动**。等价于 prismatic value=0。符合 URDF 标准（见 [#35](CLAUDE.md#35-fixed-类型关节不跟-joint-parent-动)）。
+
 **Step 4：世界 → 场景树 parent local → 写入 child**
 
 ```
