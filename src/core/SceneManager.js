@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
+import { ViewHelper } from 'three/examples/jsm/helpers/ViewHelper.js';
 
 export class SceneManager {
   constructor(viewportEl) {
@@ -16,6 +17,9 @@ export class SceneManager {
     this.renderer = new THREE.WebGLRenderer({ antialias: true });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+    // 关闭 autoClear：因为 ViewHelper.render 内部会调 renderer.render，
+    // 如果 autoClear=true 会清整个画布（不只是 ViewHelper 的 viewport）→ 主场景被擦黑
+    this.renderer.autoClear = false;
     this.viewportEl.appendChild(this.renderer.domElement);
 
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
@@ -26,7 +30,16 @@ export class SceneManager {
     this.addHelpers();
     this.addPivotMarker();
     this.initJointGizmo();
+    this.initViewHelper();
     this.resize();
+  }
+
+  // ViewHelper：视口角落的坐标轴小 gizmo（Y-up 世界坐标）
+  // 用户加载不同软件导出的模型时，能直观看出当前视角方向
+  initViewHelper() {
+    this.viewHelper = new ViewHelper(this.camera, this.renderer.domElement);
+    // 移到右上角（默认是右下角）；颜色 RGB 对应 XYZ
+    this.viewHelper.location = { top: 0, right: 0, bottom: null, left: null };
   }
 
   addDefaultLights() {
@@ -128,7 +141,13 @@ export class SceneManager {
 
   render() {
     this.controls.update();
+    // 手动 clear：因为 autoClear=false（见 constructor 注释）
+    this.renderer.clear();
     this.renderer.render(this.scene, this.camera);
+    // ViewHelper 自己会处理 viewport + clearDepth，不用外部再清一次
+    if (this.viewHelper) {
+      this.viewHelper.render(this.renderer);
+    }
   }
 
   initJointGizmo() {

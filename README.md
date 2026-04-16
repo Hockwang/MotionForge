@@ -2,7 +2,80 @@
 
 Web 端 3D 动作编辑器（Three.js + Vite），用自然语言或关键帧驱动模型做动画，导出标准化运动包。
 
-**当前版本**：v11 演示稳定版（2026-04-15）
+**当前版本**：v12+（2026-04-16，35 条 bug 已修）
+
+---
+
+## 🗺️ 项目全景（一眼看清）
+
+### 系统地图
+
+```
+┌─ 编辑器（浏览器前端）──────────────────────────────────────────
+│  ├─ 资产加载            ✅ 稳定     GLB/GLTF/USDZ 直接；USD/FBX 经 Blender
+│  ├─ 场景树 + 选中        ✅ 稳定     左侧树 + 视口点选 + 高亮
+│  ├─ Gizmo 交互           ✅ 稳定     revolute 旋转 / prismatic 平移拖拽
+│  ├─ FK 关节系统          ✅ 稳定     revolute / prismatic / fixed（URDF 风格）
+│  ├─ 全局关键帧            ✅ 稳定     项目级 clips，同步捕获所有关节
+│  ├─ PKF 参数化公式       ✅ 稳定     parameters + steps + 循环闭环
+│  ├─ 视口坐标 gizmo       ✅ 稳定     右上角 Y-up 指示
+│  └─ 导出/导入 ZIP         ✅ 稳定     schema v4，两阶段应用防漂移
+│
+├─ AI 服务（Node 后端，localhost:8091）─────────────────────────
+│  ├─ Blender 转换         ✅ 稳定     USD/FBX → GLB
+│  └─ AI 生 PKF            ✅ 稳定     自然语言 → parameters + steps
+│     ├─ role 语义匹配      ✅          关节按角色匹配，不靠 axis 硬猜
+│     └─ few-shot 示例      ✅          system prompt 内嵌 pickup 示例
+│
+└─ 研究专题（不在当前代码里）──────────────────────────────────
+   ├─ AI 自动打关节         🟡 调研中   方向：LLM 判语义 + 几何算精度
+   │                                  详见 AI-RIGGING-README.md
+   └─ 人工 GT 评估体系      🟡 待标注   目标 3-5 车型 × 4 字段/关节
+```
+
+### 数据流
+
+```
+[用户]
+  │
+  ├─ 加载模型 ──→ 场景树
+  │                │
+  │                ├──[手动配]──→ 关节定义（type / axis / origin / parent / role）
+  │                │                            │
+  │                │                            ├─ FK 求解器（拓扑排序）
+  │                │                            └─ applyAllJointDrives
+  │                │                                         │
+  │                ├──[关键帧]──────────→ globalClips ───────┤
+  │                │                                         ├→ 场景渲染
+  │                └──[自然语言]──→ AI 后端 ──→ PKF ────────┘
+  │                                               │
+  └─ 导出 ZIP ←──── schema v4 ←──────────────────┘
+       │
+       └── 其他系统消费
+```
+
+### 关键子系统 ↔ 文档/代码映射
+
+| 子系统 | 代码入口 | 深入文档 |
+|---|---|---|
+| FK 关节求解 | [KeyframeManager.js](src/core/KeyframeManager.js) `applyJointDrive` | [HOW-IT-WORKS §2](HOW-IT-WORKS.md) |
+| 拓扑排序 | `applyAllJointDrives` | [HOW-IT-WORKS §4](HOW-IT-WORKS.md) |
+| PKF 公式求值 | `evaluatePkfFormula` / `evaluatePkfAt` | [HOW-IT-WORKS §5](HOW-IT-WORKS.md) |
+| 全局关键帧 | `evaluateAllAt` | [HOW-IT-WORKS §6](HOW-IT-WORKS.md) |
+| 导出 ZIP | [ResultPackageExporter.js](src/core/ResultPackageExporter.js) | [HOW-IT-WORKS §8](HOW-IT-WORKS.md) |
+| 导入两阶段 | [main.js](src/main.js) `handleImportPackage` | [HOW-IT-WORKS §8](HOW-IT-WORKS.md) |
+| AI 后端 | [conversion-service.js](tools/conversion-service.js) | [HOW-IT-WORKS §9](HOW-IT-WORKS.md) |
+| Gizmo + ViewHelper | [SceneManager.js](src/core/SceneManager.js) | [HOW-IT-WORKS §3](HOW-IT-WORKS.md) |
+
+### 当前能做 / 不能做（一句话）
+
+- ✅ 单模型动画编排 + 导出 + 导入 roundtrip
+- ✅ 自然语言生成复合动作（前进 / 升降 / 旋转 / 侧移）
+- ✅ 多模型类型（GLB / USDZ / USD / FBX / GLTF）
+- ❌ AI 自动打关节（还在调研，要手配）
+- ❌ 多模型同场景编辑（当前单模型）
+- ❌ 测试套件（回归靠手动 + 诊断脚本）
+- ❌ Redo（只有 Undo，Ctrl+Z）
 
 ---
 
