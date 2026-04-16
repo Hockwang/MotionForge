@@ -8,16 +8,17 @@ Web 端 3D 动作编辑器（Three.js + Vite），用自然语言或关键帧驱
 
 ## 📖 文档导航
 
-**第一次进项目？按顺序读**：
+**第一次进项目？按角色找入口**：
 
-| 你想做什么 | 先读这个 |
+| 你是谁 | 先读这个 |
 |---|---|
-| 快速上手运行项目 | 继续往下读（本文件） |
-| 了解完整产品能力和端到端流程 | [FLOW.md](FLOW.md) |
-| 了解技术原理（FK 数学、PKF 求值、roundtrip） | [HOW-IT-WORKS.md](HOW-IT-WORKS.md) |
-| 了解架构约束、历史 bug、避坑指南 | [CLAUDE.md](CLAUDE.md) |
-| 了解 AI 打关节研究方向（长期课题） | [AI-RIGGING-README.md](AI-RIGGING-README.md) |
-| 了解当前技术债 | [DEBT.md](DEBT.md) |
+| **纯用户**（不懂技术，想用编辑器做动画） | 👉 [USER-GUIDE.md](USER-GUIDE.md)（使用说明，从加载模型到导出） |
+| 想快速运行项目 | 继续往下读（本文件） |
+| 想看完整流程和故障排查 | [FLOW.md](FLOW.md) |
+| 想了解技术原理（FK 数学、PKF 求值、roundtrip） | [HOW-IT-WORKS.md](HOW-IT-WORKS.md) |
+| 想改代码 / 定位 bug / 理解架构 | [CLAUDE.md](CLAUDE.md) |
+| 想了解 AI 打关节研究方向（长期课题） | [AI-RIGGING-README.md](AI-RIGGING-README.md) |
+| 想了解当前技术债 | [DEBT.md](DEBT.md) |
 
 **历史文档**（了解演进过程）：
 - [REQUIREMENTS.md](docs/archive/REQUIREMENTS.md) — 最初需求文档（March，部分已实现）
