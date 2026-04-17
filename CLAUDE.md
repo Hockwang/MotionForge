@@ -13,6 +13,7 @@
 > | **改代码 / 定位 bug / 理解架构** | 本文档（CLAUDE.md） |
 > | 了解 AI 打关节研究方向 | [AI-RIGGING-README.md](AI-RIGGING-README.md) |
 > | 了解当前技术债 | [DEBT.md](DEBT.md) |
+> | 看二期路线图（5 个未来方向） | [docs/ROADMAP.md](docs/ROADMAP.md) |
 >
 > **AI 打关节研究专题（长期课题）**：
 > - [AI-RIGGING-README.md](AI-RIGGING-README.md) — 2 分钟总览

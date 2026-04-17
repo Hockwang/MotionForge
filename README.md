@@ -95,6 +95,7 @@ Web 端 3D 动作编辑器（Three.js + Vite），用自然语言或关键帧驱
 | 想对接 ZIP 输出（下游系统） | [docs/schema/v4.md](docs/schema/v4.md) |
 | 想了解 AI 打关节研究方向（长期课题） | [AI-RIGGING-README.md](AI-RIGGING-README.md) |
 | 想了解当前技术债 | [DEBT.md](DEBT.md) |
+| 想看二期路线图（5 个未来方向） | [docs/ROADMAP.md](docs/ROADMAP.md) |
 
 **历史文档**（了解演进过程）：
 - [REQUIREMENTS.md](docs/archive/REQUIREMENTS.md) — 最初需求文档（March，部分已实现）
