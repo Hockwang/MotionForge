@@ -85,7 +85,12 @@ export class SelectionManager {
       }
       const emissive = mesh.material.emissive;
       if (!emissive) return;
-      this.originalMaterialState.set(mesh.uuid, emissive.getHex());
+      // #40 (F6 修复)：存完整原始状态（colorHex + intensity），不只是颜色。
+      //   之前 clearHighlight 硬编码 intensity=0.2 会永久改自定义强度材质
+      this.originalMaterialState.set(mesh.uuid, {
+        colorHex: emissive.getHex(),
+        intensity: 'emissiveIntensity' in mesh.material ? mesh.material.emissiveIntensity : null,
+      });
       emissive.setHex(0x22d3ee);
       if ('emissiveIntensity' in mesh.material) {
         mesh.material.emissiveIntensity = 0.55;
@@ -97,13 +102,40 @@ export class SelectionManager {
     if (!object) return;
     const meshes = this._getHighlightMeshes(object);
     meshes.forEach((mesh) => {
-      const original = this.originalMaterialState.get(mesh.uuid);
+      const snap = this.originalMaterialState.get(mesh.uuid);
       const emissive = mesh.material?.emissive;
       if (!emissive) return;
-      emissive.setHex(original ?? 0x000000);
-      if ('emissiveIntensity' in mesh.material) {
-        mesh.material.emissiveIntensity = 0.2;
+      // #40：恢复完整原始状态（兼容老 Map 里存的是 hex 数字）
+      if (snap && typeof snap === 'object' && 'colorHex' in snap) {
+        emissive.setHex(snap.colorHex);
+        if (snap.intensity !== null && 'emissiveIntensity' in mesh.material) {
+          mesh.material.emissiveIntensity = snap.intensity;
+        }
+      } else {
+        emissive.setHex(typeof snap === 'number' ? snap : 0x000000);
+        if ('emissiveIntensity' in mesh.material) {
+          mesh.material.emissiveIntensity = 0.2;
+        }
       }
+      // 清掉该 mesh 的状态记录，避免长期累积
+      this.originalMaterialState.delete(mesh.uuid);
+    });
+  }
+
+  /**
+   * 释放对象上的 clone material（和关联的原始状态记录）。
+   * 调用时机：对象从场景移除前（见 F6，SceneManager.setSceneRoot 统一调）
+   * @param {THREE.Object3D} object
+   */
+  disposeHighlightResources(object) {
+    if (!object) return;
+    object.traverse?.((o) => {
+      if (!o.isMesh) return;
+      if (o.userData?._ownMaterial && o.material) {
+        o.material.dispose();
+        o.userData._ownMaterial = false;
+      }
+      this.originalMaterialState.delete(o.uuid);
     });
   }
 

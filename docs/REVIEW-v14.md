@@ -86,7 +86,7 @@ tests/ 12 个纯 console 粘贴脚本
 - **影响**：同一场景经"仅拆解"和"🚀 一键生成"送进 L1 得到**不同空间理解**，cargo/drop/marker 方位判断分叉。真实行为分叉，不只是文档问题
 - **修复**：改用 `collectSceneForAi()` 统一路径，删除内联采集。见 CLAUDE.md #38
 
-#### F2. `removeAllReparentEventsForChild` 不失效 fork_anchor_zero 缓存（Codex H2）
+#### F2. ~~`removeAllReparentEventsForChild` 不失效 fork_anchor_zero 缓存~~（Codex H2）✅ 已修 @ 2026-04-21（CLAUDE.md #39A）
 - **位置**：[src/core/KeyframeManager.js:301-305](../src/core/KeyframeManager.js#L301)
 - **证据**：
   - 缓存失效定义：[:231-233](../src/core/KeyframeManager.js#L231)
@@ -96,7 +96,7 @@ tests/ 12 个纯 console 粘贴脚本
 - **影响**：用户清完 attach/detach → PKF 预览继续读**过期 anchor** → 公式求值用错几何
 - **修**：3 行改动 — `removeAllReparentEventsForChild` 里补 `this.invalidateForkAnchorZero()`
 
-#### F3. 安全配置不适合公网（新发现）
+#### F3. ~~安全配置不适合公网~~（新发现）✅ 部分已修 @ 2026-04-21（CLAUDE.md #43）—— CORS 白名单 + rate limit + express.json limit 已做；**auth 层还没加**（生产部署前补）
 - **S3a. CORS 通配**：[tools/conversion-service.js:23](../tools/conversion-service.js#L23) `app.use(cors())` → 任意站点能调 `/api/generate-pkf` → 免费刷 AI 额度
 - **S3b. 无 rate limit**：连续点 🚀 可 3s 内发 3 次 AI 请求，后端无节流
 - **S3c. 无认证**：只要知道端口 8091 就能消费
@@ -122,7 +122,7 @@ tests/ 12 个纯 console 粘贴脚本
 
 ### 🟡 P1 — 建议修（v14.1 正式 tag 前）
 
-#### F5. PKF 公式层 vs snap-attach 层参考点不一致（forklift R1）
+#### F5. ~~PKF 公式层 vs snap-attach 层参考点不一致~~（forklift R1）✅ 已修 @ 2026-04-21（CLAUDE.md #40）
 - **位置**：[KeyframeManager.js:392](../src/core/KeyframeManager.js#L392)
 - **证据**：
   - 公式层：`fork_anchor_zero = box.getCenter()` — bbox **中心**
@@ -130,7 +130,7 @@ tests/ 12 个纯 console 粘贴脚本
 - **影响**：这两点差 `bbox_height/2 - cargo_h/2`。用户看到 t=attach 瞬间 cargo **垂直方向**有跳变（水平方向 approach_gap=0 能抵消，垂直不行）
 - **修**：snap 层改为 `desiredWorldPos = center` 纯 bbox 中心 → 结构性零跳变
 
-#### F6. SelectionManager 材质状态污染 + 内存泄漏（Codex M4）
+#### F6. ~~SelectionManager 材质状态污染 + 内存泄漏~~（Codex M4）✅ 已修 @ 2026-04-21（CLAUDE.md #42）
 - **位置**：[src/core/SelectionManager.js:83-105](../src/core/SelectionManager.js#L83)
 - **证据**：
   - `applyHighlight` 首次高亮 `clone()` 材质并 `emissiveIntensity = 0.55`
@@ -144,19 +144,19 @@ tests/ 12 个纯 console 粘贴脚本
   1. 保存完整原始高亮状态（至少 `emissive` + `emissiveIntensity`）
   2. `clearHighlight` 或对象销毁时 `dispose()` clone material 并 `delete originalMaterialState.get(id)`
 
-#### F7. `setSceneRoot` 不 dispose 旧资源（Codex M5 + DEBT #1）
+#### F7. ~~`setSceneRoot` 不 dispose 旧资源~~（Codex M5 + DEBT #1）✅ 已修 @ 2026-04-21（CLAUDE.md #41）
 - **位置**：[src/core/SceneManager.js:178-185](../src/core/SceneManager.js#L178)
 - **证据**：替换旧 root 时只 `scene.remove(this.sceneRoot)`，不递归 dispose geometry/material/texture
 - **影响**：反复导入大 GLB/USD 时 GPU 内存线性涨
 - **修**：见 DEBT.md #1 的代码示例，递归 dispose（~10 行）
 
-#### F8. Bulk delete marker 的 undo 语义碎片化（Codex M3）
+#### F8. ~~Bulk delete marker 的 undo 语义碎片化~~（Codex M3）✅ 已修 @ 2026-04-21（CLAUDE.md #39B）
 - **位置**：[src/main.js:1894-1934](../src/main.js#L1894)
 - **证据**：`removeMarkerById` 内部 `pushUndoSnapshot()`；`removeAllMarkersBtn` 只是 `ids.forEach((id) => removeMarkerById(id))` → N 个 marker = N 次 undo snapshot
 - **影响**：用户"清空所有 marker"一次动作，撤销要点 N 次
 - **修**：`removeAllMarkersBtn` 先 `pushUndoSnapshot()` 一次，然后**传 `{ skipUndoSnapshot: true }` 给 `removeMarkerById`**
 
-#### F9. AI prompt few-shot 与 v14.1 语义自相矛盾（forklift P1）
+#### F9. ~~AI prompt few-shot 与 v14.1 语义自相矛盾~~（forklift P1）✅ 已修 @ 2026-04-21（CLAUDE.md #44）
 - **位置**：
   - L2 few-shot 用旧语义：[conversion-service.js:213-240](../tools/conversion-service.js#L213) `pickup_point_x - safe_distance`（绝对坐标风格）
   - L1 示例 rows 用写死数值："车体前进到 cargo 前方 (y=4.5, 留 0.5m 前插间距)"（违反 L483-495 的"禁止具体数值"规则）
@@ -166,7 +166,7 @@ tests/ 12 个纯 console 粘贴脚本
   - L1 示例 rows 改成纯公式（`"y=cargo.y - fork_anchor_zero_y - approach_gap"`）
   - 把"⚠️ 关键语义"blocks 前置到 few-shot 之前（prompt engineering 共识）
 
-#### F10. 文档版本漂移（Codex L7）
+#### F10. ~~文档版本漂移~~（Codex L7）✅ 部分已修 @ 2026-04-21（CLAUDE.md #44）—— README/FLOW/CLAUDE 版本号 + 脚本数已对齐；ResultPackageExporter comment/EditorUI 内 L2 提示后续清理
 - **位置**：多处
   - [README.md:5](../README.md#L5) 写 `v12+`（实际 v14.1）
   - [docs/ROADMAP.md:6](ROADMAP.md) 写 `v12+`
@@ -185,8 +185,7 @@ tests/ 12 个纯 console 粘贴脚本
 
 ### 🟢 P2 — Nice-to-have
 
-#### F12. `test-pkf-p4.js` 过时断言（Codex M6）
-和 F4 重合。F4 解决就一起解决。
+#### F12. ~~`test-pkf-p4.js` 过时断言~~（Codex M6）✅ 已修 @ 2026-04-21（CLAUDE.md #44）—— 断言 `t=3 results.length === 1 && value === 100`（保末态语义）
 
 #### F13. Cache invalidation 时机不全（forklift 8-code-smell-4）
 `invalidateForkAnchorZero` 目前只在 `addReparentEvent`/`removeReparentEvent` 触发。未覆盖：
@@ -197,14 +196,11 @@ tests/ 12 个纯 console 粘贴脚本
 
 当前无真实触发，但加新入口时会踩。**修**：加 `_forkAnchorInputsHash` 自动失效，或补齐 invalidate 调用点。
 
-#### F14. `_lastSceneRoot` 是 dead code（forklift 8-code-smell-2）
-[KeyframeManager.js:329 和 :765](../src/core/KeyframeManager.js#L329) 两处 write，没有 read。`buildDefaultParamValues` 现在用 `getForkAnchorZero()` 读缓存。**修**：删 2 行。
+#### F14. ~~`_lastSceneRoot` 是 dead code~~（forklift 8-code-smell-2）✅ 已修 @ 2026-04-21（CLAUDE.md #44）
 
-#### F15. `_driftWarned` 永不复位（forklift 8-code-smell-6）
-[KeyframeManager.js:744](../src/core/KeyframeManager.js#L744) drift 警告触发后 `def._driftWarned = true`，如果 `rebindJointBaseTransform` 之后 base 换了也不重置 → 真正新 drift 被静默。**修**：base 改变路径里 `delete def._driftWarned`。
+#### F15. ~~`_driftWarned` 永不复位~~（forklift 8-code-smell-6）✅ 已修 @ 2026-04-21（CLAUDE.md #44）—— `rebindJointBaseTransform` 里补 `delete def._driftWarned`
 
-#### F16. `new_parent_name` 没验证存在性（forklift 8-code-smell-3）
-[src/main.js:1380](../src/main.js#L1380) 应用 reparent 事件时只校验 `child_name`。AI 瞎编一个 parent 名（比如 role 名而不是对象名）时事件仍被加入 → `computeForkAnchorZero` 找不到 → 静默退化为 `{}` → L2 退化模式 → 公式错。**修**：同时校验 `new_parent_name`。
+#### F16. ~~`new_parent_name` 没验证存在性~~（forklift 8-code-smell-3）✅ 已修 @ 2026-04-21（CLAUDE.md #44）—— 加校验 + skipped events 打 warning
 
 #### F17. 资源使用与清理（DEBT #2 / R2 / R4）
 合集：
@@ -215,20 +211,15 @@ tests/ 12 个纯 console 粘贴脚本
 #### F18. ID 生成用 `Math.random + Date.now`（新发现）
 5 处（`KeyframeManager.js:83, :276, :1061` · `main.js:785, :1221`）用 `Math.random().toString(36).slice(2, 8)`，约 36 亿分之一重复概率。session 内不会碰撞，但 `crypto.randomUUID()` 更规范。**修**：加 `src/utils/id.js` 统一。
 
-#### F19. `.env.example` 缺失（新发现）
-`.gitignore` 有 `.env` ✓ 但没 `.env.example` → 新人接入不知道要填什么。**修**：`AI_API_KEY=your_key_here` 等模板。
+#### F19. ~~`.env.example` 缺失~~ ✅ 已修 @ 2026-04-21
 
-#### F20. `docs/.obsidian/` 未进 gitignore（新发现）
-含 Obsidian 工作区个人偏好，早晚误提。**修**：`.gitignore` 加 `docs/.obsidian/`。
+#### F20. ~~`docs/.obsidian/` 未进 gitignore~~ ✅ 已修 @ 2026-04-21（上个 commit）
 
-#### F21. `docs/WIKI-SETUP-PROMPT.md` 是临时文件（新发现）
-30 行内容是给其他 chat 的 prompt，任务完成后应移到 `docs/raw/` 或删。
+#### F21. ~~`docs/WIKI-SETUP-PROMPT.md` 是临时文件~~ ✅ 已修 @ 2026-04-21 —— 移到 `docs/raw/wiki-setup-prompt.md`
 
-#### F22. AI prompt 硬编码 "前进 = prismatic y"（forklift P2）
-[conversion-service.js:252](../tools/conversion-service.js#L252)。如果用户给侧叉标了 `role="车体前进" axis=x` → AI 可能拒绝或输出 warning。**修**：只看 role，真 axis 从 joints 读。
+#### F22. ~~AI prompt 硬编码 "前进 = prismatic y"~~（forklift P2）✅ 已修 @ 2026-04-21（CLAUDE.md #44）
 
-#### F23. role 列表没去重（forklift P2）
-[conversion-service.js:318-321](../tools/conversion-service.js#L318)。当前模型有 2 个 `role="门架升降"`（`_____10` + `cAR201`），AI 看到重复条目可能疑惑。**修**：`[...new Set(availableRoles)].join('、')`。
+#### F23. ~~role 列表没去重~~（forklift P2）✅ 已修 @ 2026-04-21（CLAUDE.md #44）
 
 #### F24. main.js 是 god file（2083 行）
 DEBT.md 架构坏味道已标。推荐切分：
@@ -253,30 +244,41 @@ Three.js r184 可能删。**修**：按 warning 提示换 API 或 pin three 版�
 
 ---
 
-## 4. 推荐行动顺序
+## 4. 推荐行动顺序 + 执行状态
 
-### Week 1（合并 v14.1 前完成）
-| 顺序 | Finding | 工作量 |
-|---|---|---|
-| 1 | **F1** `aiDecomposeBtn` Y/Z swap | 1 行 |
-| 2 | **F2** `removeAllReparentEventsForChild` 缓存失效 | 3 行 |
-| 3 | **F5** anchor/snap 参考点统一 | 5 行 |
-| 4 | **F8** marker bulk delete undo 合并 | 10 行 |
-| 5 | **F10** 文档版本漂移（批量文字替换） | 半小时 |
-| 6 | **F12/F4 partial** 删过时的 `test-pkf-p*.js` 断言 | 1 小时 |
-| 7 | commit + tag `v14.1` | — |
+### ✅ 已完成（2026-04-21 两个 commit：cd56857、本次）
+- F1 aiDecomposeBtn Y/Z swap（CLAUDE.md #38）
+- F2 removeAllReparentEventsForChild 缓存失效（CLAUDE.md #39A）
+- F3 CORS + rate limit + express.json size limit（CLAUDE.md #43）**部分完成** — auth 层还没加
+- F5 anchor/snap 参考点统一（CLAUDE.md #40）
+- F6 SelectionManager 材质/资源清理（CLAUDE.md #42）
+- F7 setSceneRoot dispose（CLAUDE.md #41）
+- F8 marker bulk delete undo 合并（CLAUDE.md #39B）
+- F9 AI prompt few-shot 清理（CLAUDE.md #44）
+- F10 文档版本漂移 **部分完成**（README/CLAUDE/FLOW），次要的 ResultPackageExporter comment/EditorUI L2 提示留待后续
+- F12 test-pkf-p4.js 过时断言（CLAUDE.md #44）
+- F14 _lastSceneRoot dead code（CLAUDE.md #44）
+- F15 _driftWarned 复位（CLAUDE.md #44）
+- F16 new_parent_name 验证（CLAUDE.md #44）
+- F19 .env.example 新建
+- F20 docs/.obsidian/ 入 gitignore
+- F21 WIKI-SETUP-PROMPT 移 docs/raw/
+- F22 AI prompt 去硬编码 axis（CLAUDE.md #44）
+- F23 role 去重（CLAUDE.md #44）
 
-### Week 2（小 bug fix 发布）
-1. **F4** vitest + 5 个核心单元测试（KeyframeManager 优先）
-2. **F6** SelectionManager 材质/资源清理
-3. **F7** setSceneRoot dispose
-4. **F9** AI prompt few-shot 清理
-5. **F19/F20/F21** 小规模文档/配置清理
+### 🟡 仍未做（按优先级）
+**P1（v14.1 tag 前补完）**
+- **F11** Undo 覆盖 role 字段（DEBT #3）— 需要 restoreState 里保守合并
+- **F13** cache invalidation 补齐（hash-based 方案）
 
-### Week 3（视需求触发）
-- **F3** CORS 白名单 + rate limit（上公网前必做，当前本地不紧急）
-- **F13** cache invalidation 补齐（加新入口前）
-- **F24** main.js 拆分（AI 打关节方向定了一起做）
+**P2（有真实触发再做）**
+- **F4** vitest 基建 + 5 个核心单元测试（1-2 小时）
+- **F17** 全局 listener cleanup / RAF cancel（HMR 累积场景）
+- **F18** `crypto.randomUUID` 统一 id 生成
+- **F24** main.js 拆分（2083 行 god file）
+- **F25** alert() → toast
+- **F26** 依赖 pin（three 版本锁）
+- **F27** USDZLoader 迁移
 
 ### 不在规划（等真需求触发）
 - forklift R11/R12 多 anchor / approach_axis

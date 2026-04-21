@@ -6,9 +6,9 @@
 > 3. **改代码前先读什么**（架构约束 + 历史踩坑）
 >
 > 其他文档：
-> - [CLAUDE.md](CLAUDE.md) — 架构约束 + 29 条 bug 修复历史（权威来源）
+> - [CLAUDE.md](CLAUDE.md) — 架构约束 + 39 条 bug 修复历史（权威来源）
 > - [README.md](README.md) — 安装运行
-> - [tests/](tests/) — 5 个浏览器 Console 诊断脚本
+> - [tests/](tests/) — 7 个浏览器 Console 诊断脚本 + 5 个 PKF 测试脚本
 
 ---
 

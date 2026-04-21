@@ -134,7 +134,7 @@ __mf.getJointDefs()     // 所有关节定义的快照
 
 ## 诊断脚本指南
 
-本目录包含 5 个浏览器 Console 诊断脚本，用于定位关节系统、导出导入 roundtrip、动画播放相关问题。
+本目录包含 7 个浏览器 Console 诊断脚本 + 5 个 PKF 测试脚本，用于定位关节系统、导出导入 roundtrip、动画播放、AI 一键生成相关问题。
 
 ### 通用用法
 
@@ -524,6 +524,57 @@ console.log('emissive:', c?.material?.emissive);
 - **根因**：设计时认为 "fixed = 不动 = 无需 apply"，但这只在 joint parent == scene graph parent 时成立。当两者不同时（我们整个关节系统的核心设计就是两者解耦），fixed 子级完全由 scene graph parent 决定运动 → 不跟 joint parent
 - **修复**：[KeyframeManager.js](src/core/KeyframeManager.js) `applyJointDrive` 去掉 fixed 的 early return，加 `else if (def.type === 'fixed')` 分支：`newWorldPos = baseWorldPos; newWorldQuat = baseWorldQuat;`。等价于 prismatic value=0：每帧根据 joint parent 最新世界矩阵 × base 计算 child 世界位置
 - **经验教训**：**关节类型的语义要一致**。revolute/prismatic 都是"joint parent 说了算"（URDF 风格），fixed 也应该是。早期为了省一点性能给 fixed 走快捷路径，破坏了这个一致性。现在 fixed 符合 URDF 标准：刚性连接到 joint parent，无自由度但跟随运动
+
+#### #44 批量清理：AI prompt v14.1 对齐 + 测试断言过时 + 代码 dead code + 文档版本漂移
+- **内容**（v14.1 review F9 / F10 / F12 / F14 / F15 / F16 / F22 / F23 合并条目）：
+  - AI prompt：L2 PKF few-shot 旧 `pickup_point_x - safe_distance` 替换为 v14.1 位移语义 `cargo_pos_y - fork_anchor_zero_y - approach_gap`；L1 rows 示例从具体数值替换为字面公式。关节名占位符改成 `EXAMPLE_*` 降低 AI 误用
+  - AI prompt：动作映射"前进 / 升 / 横移"改为**只看 role 不硬编码 axis**（支持侧叉等非 y=前进模型）
+  - AI prompt：`availableRoles` 去重（`new Set`）— 多关节同 role 不再让 AI 看到重复条目
+  - 测试：`tests/test-pkf-p4.js` 第 6.5 条断言 `t=3 results.length === 0` 已和 bug #31 修复（保末态 progress=1）相反 → 更新为 `length === 1 && value === 100`
+  - 代码：删 `KeyframeManager.js` 里两处 `this._lastSceneRoot = root` 赋值（dead code，buildDefaultParamValues 已改读缓存）
+  - 代码：`rebindJointBaseTransform` 里 `delete def._driftWarned` — base 换了旧 drift 警告失效，允许新 drift 再报
+  - 代码：oneshot handler 应用 reparent 事件时同时校验 `new_parent_name` 是场景里真实对象（防 AI 瞎编 parent 名导致 fork_anchor_zero 静默退化）
+  - 文档：`v12+` / "5 个诊断脚本" 批量改成 `v14.1` / "7 个脚本"
+- **经验教训**：**doc 漂移会误导维护者**。版本号、脚本数、事实性信息应该在每次大改动后一轮扫。LLM 生成的 few-shot 一旦语义更新过就必须同步 — 否则新示例 + 老示例混用，AI 输出质量方差大
+
+#### #43 安全加固：CORS 白名单 + AI 接口 rate limit + express.json size limit
+- **症状**：无已触发 bug；是 v14.1 review F3 识别的**生产前必修**项。本地开发无影响，上公网 / LAN 前必须做
+- **排查**：[docs/REVIEW-v14.md F3](docs/REVIEW-v14.md)。`app.use(cors())` 通配 → 任意站点可从浏览器调 `/api/generate-pkf` 刷 AI 额度；无 rate limit → 误触连点或脚本可打爆；`express.json()` 无显式 limit → 依赖 express 默认 100kb（未来升级可能静默变大）
+- **修复**：[tools/conversion-service.js](tools/conversion-service.js) 引入 `express-rate-limit` 依赖；CORS 走白名单（`CORS_ALLOW` env，默认 `localhost:5173,localhost:4173`）；三个 AI 路由统一挂 `aiRateLimit` 中间件（默认 30/分钟，`AI_RATE_LIMIT_PER_MIN` 可覆盖）；`express.json({ limit: '500kb' })` 显式声明。`.env.example` 加 `CORS_ALLOW` / `AI_RATE_LIMIT_PER_MIN` 两个可选环境变量
+- **经验教训**：**"本地开发够用 ≠ 生产安全"**。开放端口 + 通配 CORS + 无限速 + AI API 付费 = 账单漏油。这类"现在不痛但未来出血"的安全默认值应尽早修，不要等上公网前才想起来
+
+#### #42 SelectionManager 选中高亮污染原始 emissiveIntensity + clone material 不 dispose → 资源渐进式泄漏
+- **症状**：任何带自定义 `emissiveIntensity` 的材质，被选一次 → 永久改成硬编码 `0.2`；长时间点选不同对象，clone material 和 `originalMaterialState` Map 记录无限累积
+- **排查**：Codex 对读 [SelectionManager.js:83-105](src/core/SelectionManager.js)。`applyHighlight` 存状态时只存 `emissive.getHex()`（颜色），丢了 `emissiveIntensity`；`clearHighlight` 恢复时硬编码 `emissiveIntensity = 0.2`。clone material 在 `_ownMaterial` flag 标注后永不 dispose
+- **根因**：**状态快照不完整**（只存部分字段，恢复时用常量猜剩余字段）+ **资源生命周期缺失**（clone 没配套 dispose）
+- **修复**：[SelectionManager.js](src/core/SelectionManager.js)
+  - `originalMaterialState` 存 `{colorHex, intensity}` 对象替代单 hex 值
+  - `clearHighlight` 按快照恢复完整状态（兼容老格式）+ 用完立刻从 Map delete
+  - 新增 `disposeHighlightResources(object)`：递归 dispose `_ownMaterial` 标记的 material，供 `setSceneRoot` 切换场景时调用
+- **经验教训**：**clone 任何资源时，必须设计配对的 dispose**。类似 pattern：FileReader.abort / setTimeout.clearTimeout / Map.set 的配对 delete。没有成对的 allocate/release 最终都会泄漏
+
+#### #41 setSceneRoot 切换模型时不 dispose 旧 GPU 资源 → 反复导入大模型 GPU 内存线性涨
+- **症状**：用户连续导入多个 GLB/USD（30MB → 40MB → 50MB），只 `scene.remove()` 旧 root，geometry/material/texture 全留在 GPU，长时间调模型 OOM
+- **排查**：DEBT #1 已标，v14.1 review F7 复盘。`SceneManager.setSceneRoot` 只调 `scene.remove(this.sceneRoot)`，没递归释放
+- **修复**：[SceneManager.js](src/core/SceneManager.js) 加 `_disposeObjectResources(obj)` 私有方法，`setSceneRoot` 在 `scene.remove` 前递归 dispose geometry + texture。material 只 dispose `_ownMaterial` 标记的（SelectionManager clone 出来的），共享 material 不 dispose（可能被其他 root 持有）
+- **经验教训**：**Three.js 的 scene.remove 只改层级，不释放 GPU**。任何长跑 / 批量换模型的应用都必须显式 dispose。material 的 dispose 要谨慎（共享引用）
+
+#### #40 snap-attach 参考点和 fork_anchor_zero 不一致 → cargo 垂直方向残余 teleport
+- **症状**：🚀 一键生成后播放，t=attach 瞬间 cargo 在垂直方向有明显跳变。水平方向用 `approach_gap=0` 能对齐，垂直方向不行
+- **排查**：gpt5 的 forklift-pickup-model review 指出。PKF 公式层用 `box.getCenter()`（bbox 中心），snap-attach 层用 `(center.x, box.min.y + h/2, center.z)`（bbox 底部 + cargo.h/2）。这两点差 `bbox_height/2 - cargo_h/2`
+- **根因**：**两层参考点不同源**。公式层算出的车体目标会让 fork 中心到 cargo 中心，但 snap 硬把 cargo 按 bbox 底部放
+- **修复**：[KeyframeManager.js applyReparentEventsAtTime](src/core/KeyframeManager.js) snap 层改为 `desiredWorldPos = box.getCenter()`，和 `computeForkAnchorZero` 同源。垂直 teleport 消失
+- **经验教训**：**跨层引用同一几何概念时，必须用同一个算式**。想要不同行为就该显式传参，不要复制粘贴几何逻辑（这次复制时多加了 `min.y + h/2` 导致分叉）
+
+#### #39 `removeAllReparentEventsForChild` / marker bulk delete 语义漏洞集
+- **症状**（两个关联漏洞打包修）：
+  - A: 调 `removeAllReparentEventsForChild` 后 `fork_anchor_zero` 缓存不失效 → PKF 公式读旧 anchor
+  - B: "清空所有 marker" 触发 N 次独立 undo snapshot → 撤销要点 N 次才回去
+- **排查**：Codex review 指出；[src/core/KeyframeManager.js:301](src/core/KeyframeManager.js) 漏 `invalidateForkAnchorZero()`；[src/main.js:1920](src/main.js#L1920) 的 `removeAllMarkersBtn` 直接 forEach `removeMarkerById`，每次都 `pushUndoSnapshot`
+- **修复**：
+  - A: `removeAllReparentEventsForChild` 在真正删事件后 `this.invalidateForkAnchorZero()`
+  - B: `removeMarkerById` 加 `{ skipUndoSnapshot }` 选项；bulk 入口**外层 push 一次**，内层都传 `skipUndoSnapshot: true`
+- **经验教训**：**bulk 操作要显式设计 undo 语义**。否则单个操作里好的实现反而让 bulk 变糟。类似陷阱：事务 vs 独立操作、批量 API vs 单个 API 循环
 
 #### #38 `aiDecomposeBtn`（🪄 仅拆解路径）漏做 Y↔Z swap → 和主路径 AI 空间理解分叉
 - **症状**：同一场景，"🪄 仅拆解"和"🚀 一键生成"送进 L1 得到**不同空间理解**，cargo/drop/marker 方位判断分叉。用户反馈"AI 时好时坏"，难定位是哪条路径的锅

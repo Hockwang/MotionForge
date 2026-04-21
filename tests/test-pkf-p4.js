@@ -193,9 +193,12 @@
     results = km.evaluatePkfAt(2);
     near(results[0].value, 100, 0.001, '6.4 t=2 值为 100');
 
-    // t=3: 超出范围，无结果
+    // t=3: 超出 t_end → evaluatePkfAt 保持末态（progress=1，值 = value_end）
+    //   见 CLAUDE.md #31 修复：循环播放时 completed step 不能 return 导致值丢失
+    //   修复前的断言是 `results.length === 0`，已过时（F12）
     results = km.evaluatePkfAt(3);
-    eq(results.length, 0, '6.5 t=3 超出范围，无结果');
+    eq(results.length, 1, '6.5 t=3 超出 t_end 仍输出末态（#31 循环修复）');
+    near(results[0].value, 100, 0.001, '6.6 t=3 值保持 value_end=100');
 
     // 用覆盖值
     results = km.evaluatePkfAt(2, { stroke: 200 });

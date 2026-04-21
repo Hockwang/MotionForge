@@ -160,6 +160,7 @@ function rebindJointBaseTransform(obj) {
   const def = keyframeManager.getJointDef(obj.uuid);
   if (!def) return;
   def.baseTransform = null; // 让 applyJointDrive 在下一帧懒捕获
+  delete def._driftWarned;  // F15 修复：base 换了，旧的 drift 警告失效，允许新 drift 再报
 }
 
 function refreshObjectTree() {
@@ -1367,14 +1368,27 @@ ui.aiOneshotBtn?.addEventListener('click', async () => {
     existingEvents.forEach((e) => keyframeManager.removeReparentEvent(e.event_id));
 
     // 应用新的 reparent events
+    // F16 修复：同时校验 new_parent_name（null = 回到世界根，合法；否则必须是场景对象）
+    //          否则 AI 瞎编 parent 名（常见：用 role 代替对象名）→ computeForkAnchorZero 返回 {} → L2 退化错误
     let appliedReparents = 0;
+    const skippedReparents = [];
     (l1Body.reparent_events || []).forEach((e) => {
-      // 校验 child_name 存在（否则忽略并加 warning）
-      if (sceneManager.sceneRoot?.getObjectByName(e.child_name)) {
+      const childOk = !!sceneManager.sceneRoot?.getObjectByName(e.child_name);
+      const parentOk = e.new_parent_name === null
+        || !!sceneManager.sceneRoot?.getObjectByName(e.new_parent_name);
+      if (childOk && parentOk) {
         keyframeManager.addReparentEvent(e.t, e.child_name, e.new_parent_name);
         appliedReparents++;
+      } else {
+        skippedReparents.push(
+          `t=${e.t}s ${e.child_name} → ${e.new_parent_name || '(世界根)'}`
+          + ` [${!childOk ? 'child 不存在' : ''}${!childOk && !parentOk ? ' + ' : ''}${!parentOk ? 'parent 不存在' : ''}]`,
+        );
       }
     });
+    if (skippedReparents.length) {
+      console.warn('[oneshot] 忽略无效 reparent 事件：\n  ' + skippedReparents.join('\n  '));
+    }
     refreshReparentEventList();
 
     // ── Step 3: L2 生成 PKF ──
@@ -1883,11 +1897,14 @@ function addMarkerOfType(type) {
 
 /**
  * 删除一个 marker：从场景里移除视觉对象 + 从 KeyframeManager 移除数据 + 清掉相关 reparent 事件
+ * @param {string} id
+ * @param {Object} [opts]
+ * @param {boolean} [opts.skipUndoSnapshot=false] — bulk 删除时外层已 push，内层不再 push（F8 修复）
  */
-function removeMarkerById(id) {
+function removeMarkerById(id, { skipUndoSnapshot = false } = {}) {
   const m = keyframeManager.getMarker(id);
   if (!m) return;
-  pushUndoSnapshot();
+  if (!skipUndoSnapshot) pushUndoSnapshot();
   // 找视觉对象
   const obj = sceneManager.sceneRoot?.getObjectByName(m.name);
   if (obj) {
@@ -1924,7 +1941,9 @@ ui.removeAllMarkersBtn?.addEventListener('click', () => {
     return;
   }
   if (!confirm(`确认清空所有 ${ids.length} 个场景标记？`)) return;
-  ids.forEach((id) => removeMarkerById(id));
+  // F8 修复：bulk delete 走**单次** undo snapshot，撤销时一步回退，不是 N 步
+  pushUndoSnapshot();
+  ids.forEach((id) => removeMarkerById(id, { skipUndoSnapshot: true }));
 });
 
 function refreshMarkerList() {

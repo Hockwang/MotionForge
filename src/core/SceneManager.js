@@ -177,6 +177,10 @@ export class SceneManager {
    */
   setSceneRoot(root, options = {}) {
     if (this.sceneRoot) {
+      // #40 (F7 修复)：递归 dispose 旧 root 的 GPU 资源，防止反复导入大模型时 GPU 内存线性累积。
+      // 只 dispose 自己 clone 过的 material（通过 userData._ownMaterial 标记，见 SelectionManager）
+      // 和所有 geometry + texture。共享 material 不 dispose（可能被其他对象持有）。
+      this._disposeObjectResources(this.sceneRoot);
       this.scene.remove(this.sceneRoot);
     }
     if (!options.skipAlign) {
@@ -185,6 +189,29 @@ export class SceneManager {
     this.sceneRoot = root;
     this.scene.add(root);
     this.fitCameraToObject(root);
+  }
+
+  /**
+   * 递归释放 Object3D 子树上的 GPU 资源（geometry / texture / clone material）。
+   * @private
+   * @param {THREE.Object3D} obj
+   */
+  _disposeObjectResources(obj) {
+    obj.traverse((c) => {
+      if (c.geometry) c.geometry.dispose();
+      if (c.material) {
+        const mats = Array.isArray(c.material) ? c.material : [c.material];
+        mats.forEach((m) => {
+          // 释放 texture maps（map/normalMap/roughnessMap/metalnessMap/emissiveMap 等）
+          for (const k in m) {
+            if (m[k]?.isTexture) m[k].dispose();
+          }
+          // 只 dispose 自己 clone 出来的 material（SelectionManager 标记过）
+          // 原始共享 material 不 dispose（可能还被其他 scene root 持有）
+          if (c.userData?._ownMaterial) m.dispose();
+        });
+      }
+    });
   }
 
   alignObjectToGround(object) {

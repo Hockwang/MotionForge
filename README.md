@@ -2,7 +2,7 @@
 
 Web 端 3D 动作编辑器（Three.js + Vite），用自然语言或关键帧驱动模型做动画，导出标准化运动包。
 
-**当前版本**：v12+（2026-04-16，35 条 bug 已修）
+**当前版本**：v14.1（2026-04-21，39 条 bug 已修，AI 一键生成动画 + fork_anchor_zero）
 
 ---
 
@@ -215,7 +215,8 @@ tools/
   conversion-service.js      # Blender 转换服务 + AI 生 PKF 后端
   convert_usd_to_glb.py      # USD → GLB 转换脚本
 tests/
-  diag-*.js                  # 5 个浏览器 Console 诊断脚本（见 FLOW.md）
+  diag-*.js                  # 7 个浏览器 Console 诊断脚本（见 FLOW.md）
+  test-pkf-p*.js             # 5 个 PKF 语义测试脚本
 ```
 
 ---

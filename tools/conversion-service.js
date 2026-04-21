@@ -6,9 +6,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { promises as fs } from 'node:fs';
+import rateLimit from 'express-rate-limit';
 
 const app = express();
-app.use(express.json());
+// F3 修复：显式 size limit（防未来 express 默认变大）
+app.use(express.json({ limit: '500kb' }));
 const upload = multer({ dest: path.join(os.tmpdir(), 'motionforge-uploads') });
 const PORT = Number(process.env.CONVERTER_PORT || 8091);
 const AI_BASE_URL = process.env.AI_BASE_URL || 'https://coding.qunhequnhe.com';
@@ -20,7 +22,27 @@ const blenderPath = process.env.BLENDER_PATH || DEFAULT_BLENDER_PATH;
 const converterScript = path.resolve(process.cwd(), 'tools', 'convert_usd_to_glb.py');
 const WORK_DIR = path.resolve(process.cwd(), '.converter-temp');
 
-app.use(cors());
+// F3 修复：CORS 白名单（默认只允许本地前端；生产走 env 注入）
+// 不再是 `app.use(cors())` 通配 — 避免任意网站盗刷 AI API 额度
+const CORS_ALLOW = (process.env.CORS_ALLOW || 'http://localhost:5173,http://localhost:4173').split(',');
+app.use(cors({
+  origin: (origin, cb) => {
+    // 无 origin（同源 / curl 等工具）放行
+    if (!origin) return cb(null, true);
+    if (CORS_ALLOW.includes(origin)) return cb(null, true);
+    cb(new Error(`CORS 拒绝来源：${origin}；允许列表：${CORS_ALLOW.join(', ')}`));
+  },
+}));
+
+// F3 修复：AI 接口速率限制（每 IP 60 秒 30 次）
+// 防误触连点 + 公网场景的脚本刷接口
+const aiRateLimit = rateLimit({
+  windowMs: 60_000,
+  max: Number(process.env.AI_RATE_LIMIT_PER_MIN || 30),
+  message: { error: 'AI 请求过于频繁，请稍后再试（默认 30 次/分钟，可改 AI_RATE_LIMIT_PER_MIN）' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
 
 app.get('/health', (_req, res) => {
   res.json({
@@ -116,7 +138,7 @@ const AI_SYSTEM_PROMPT = `你是一个工业机器人运动规划助手。用户
 只输出 JSON，格式：
 {"steps":[{"action":"translate|rotate","part":"对象名","axis":"x|y|z","value":数值,"unit":"mm|deg"}]}`;
 
-app.post('/api/understand-task', async (req, res) => {
+app.post('/api/understand-task', aiRateLimit, async (req, res) => {
   const { prompt, objects } = req.body || {};
   if (!prompt) {
     res.status(400).json({ error: '缺少 prompt 字段' });
@@ -204,42 +226,45 @@ const PKF_SYSTEM_PROMPT = `你是一个工业设备参数化运动规划助手�
 - 默认 easing 为 linear
 - 参数 id 用英文小写 + 下划线命名
 
-**学习下面的完整示例**（叉车取货动作 — 前进 → 下降 → 插入 → 抬升）：
+**⚠️ 核心语义（放在示例之前）**：prismatic 关节的 `value_end` 是**位移**（从零位开始前进多少米），不是世界绝对坐标。
+Runtime：`newWorldPos = baseWorldPos + axis * currentValue`。所以公式要算"要位移多少才能让目标点到达 target"：
+`displacement = target_world - anchor_at_zero`（+ 可选的 approach_gap）
+
+**学习下面的完整示例**（叉车取货动作 — v14.1 位移语义）：
 
 示例输入：
-- 关节列表：cAR201(prismatic, axis=x)，mast_lift(prismatic, axis=z)，fork_tilt(revolute, axis=z)
-- 用户描述：叉车前进 2 米取货，货物高度 0.5 米，抬升 0.3 米
+- 关节列表：EXAMPLE_body_forward(prismatic, role="车体前进")，EXAMPLE_mast_lift(prismatic, role="门架升降")
+- 场景对象：cargo at (0.00, 5.00, 0.60)
+- 叉齿零位锚点：fork_anchor_zero_x=0, fork_anchor_zero_y=2.13, fork_anchor_zero_z=0.32
+- 用户描述：车体开到 cargo 前取货，门架升降对齐 cargo 高度
 
 示例输出：
 {
   "parameters": [
-    { "id": "pickup_point_x", "type": "number", "unit": "m", "desc": "取货点前进距离", "default": 2.0 },
-    { "id": "cargo_height", "type": "number", "unit": "m", "desc": "货物底部高度", "default": 0.5 },
-    { "id": "insert_depth", "type": "number", "unit": "m", "desc": "叉齿插入深度", "default": 0.8 },
-    { "id": "lift_clearance", "type": "number", "unit": "m", "desc": "抬升安全高度", "default": 0.3 },
-    { "id": "safe_distance", "type": "number", "unit": "m", "desc": "接近安全停距", "default": 0.1 }
+    { "id": "cargo_pos_x", "type": "number", "unit": "m", "desc": "货物X坐标", "default": 0 },
+    { "id": "cargo_pos_y", "type": "number", "unit": "m", "desc": "货物Y坐标", "default": 5.0 },
+    { "id": "cargo_pos_z", "type": "number", "unit": "m", "desc": "货物Z坐标", "default": 0.6 },
+    { "id": "approach_gap", "type": "number", "unit": "m", "desc": "叉齿离货物缓冲距离（0=贴合，snap-attach 精准对齐）", "default": 0 },
+    { "id": "lift_height", "type": "number", "unit": "m", "desc": "取货抬升高度", "default": 0.3 }
   ],
   "steps": [
-    { "joint": "cAR201", "channel": "translate", "axis": "x",
-      "t_start": 0.0, "t_end": 2.0,
-      "value_start": "0", "value_end": "pickup_point_x - safe_distance",
+    { "joint": "EXAMPLE_body_forward", "channel": "translate", "axis": "y",
+      "t_start": 0.0, "t_end": 3.0,
+      "value_start": "0", "value_end": "cargo_pos_y - fork_anchor_zero_y - approach_gap",
       "easing": "ease-in-out" },
-    { "joint": "mast_lift", "channel": "translate", "axis": "z",
-      "t_start": 2.0, "t_end": 3.5,
-      "value_start": "0", "value_end": "cargo_height",
+    { "joint": "EXAMPLE_mast_lift", "channel": "translate", "axis": "z",
+      "t_start": 3.0, "t_end": 4.0,
+      "value_start": "0", "value_end": "cargo_pos_z - fork_anchor_zero_z",
       "easing": "ease-in-out" },
-    { "joint": "cAR201", "channel": "translate", "axis": "x",
-      "t_start": 3.5, "t_end": 4.5,
-      "value_start": "pickup_point_x - safe_distance", "value_end": "pickup_point_x + insert_depth",
-      "easing": "ease-in" },
-    { "joint": "mast_lift", "channel": "translate", "axis": "z",
-      "t_start": 4.5, "t_end": 6.0,
-      "value_start": "cargo_height", "value_end": "cargo_height + lift_clearance",
+    { "joint": "EXAMPLE_mast_lift", "channel": "translate", "axis": "z",
+      "t_start": 4.0, "t_end": 5.0,
+      "value_start": "cargo_pos_z - fork_anchor_zero_z",
+      "value_end": "cargo_pos_z - fork_anchor_zero_z + lift_height",
       "easing": "ease-out" }
   ]
 }
 
-**重要**：示例里的关节名（cAR201/mast_lift/fork_tilt）仅为参考，**你必须使用用户当前提供的关节列表里的实际关节名**。参考示例学习的是：公式如何引用参数、多步骤如何编排、并行/串行时序如何安排。
+**重要**：示例里的 `EXAMPLE_*` 是占位关节名，**你必须使用用户当前提供的关节列表里的实际关节名**。参考示例学习：位移公式 (cargo.y - fork_anchor_zero_y - approach_gap)、多步串行/并行编排、参数声明规范。
 
 **@关节名锚定语法（精确模式）**：
 - 用户如果在描述里写 \`@关节名\`（例如 \`@_CS19110 顺时针旋转 90 度\`、\`@_____10 抬升 1 米\`），则：
@@ -247,11 +272,11 @@ const PKF_SYSTEM_PROMPT = `你是一个工业设备参数化运动规划助手�
   - 不要把奇怪字符误当成格式错误（\`_____10\`、\`cAR201\`、\`_CS19110\` 都是合法名字）
   - 同一个 @关节 后面跟的多个动作（逗号/"然后"分隔）按**先后串行**安排时间，不并行
   - 不同 @ 开头的子句默认**并行**（除非用户写"再/然后/之后"表示串行）
-- 动作词到 channel/axis 映射：
-  - "抬升 / 升 / 下降" → prismatic + axis=z（下降则 value 为负）
-  - "前进 / 后退" → 找 role="车体前进" 的 prismatic y
-  - "平移 / 横移 / x 方向" → prismatic x（正方向为正值，反向为负）
-  - "旋转 / 转 / 顺时针 / 逆时针" → revolute（顺时针按右手定则为负，逆时针为正；以 axis 为准）
+- 动作词到关节匹配（**优先看 role，axis 从 joints 列表读取，不要硬编码轴向**）：
+  - "抬升 / 升 / 下降" → 找 role="门架升降" 的 prismatic 关节（下降则 value 为负）
+  - "前进 / 后退" → 找 role="车体前进" 的 prismatic 关节（该关节的真 axis 从 joints 列表读，不假定必为 y）
+  - "平移 / 横移 / x 方向" → 找 role 含"横移"/"侧移" 的 prismatic 关节
+  - "旋转 / 转 / 顺时针 / 逆时针" → revolute（顺时针按右手定则为负，逆时针为正；以关节真 axis 为准）
   - 角度 "90 度" = 90；"米" 保持数值（我们统一米）
 - 示例输入：\`@_CS19110 顺时针旋转 90 度，然后抬升 2 米；@_____10 抬升 1 米；车体前进 3 米\`
   - 生成：_CS19110 先 rotate 0→-90（0-2s），再 translate z 0→2（2-4s）；_____10 translate z 0→1（0-4s 并行）；车体前进关节 translate y 0→3（0-4s 并行）
@@ -298,7 +323,7 @@ prismatic 关节的 value_end 写的是**位移**（从零位开始前进多少�
 
 只有 role 完全匹配（或用户描述明确指定了关节名）才生成 PKF。`;
 
-app.post('/api/generate-pkf', async (req, res) => {
+app.post('/api/generate-pkf', aiRateLimit, async (req, res) => {
   const { prompt, joints, scene, fork_anchor_zero: forkAnchorZero } = req.body || {};
   if (!prompt) {
     res.status(400).json({ error: '缺少 prompt 字段' });
@@ -315,7 +340,8 @@ app.post('/api/generate-pkf', async (req, res) => {
       const roleStr = j.role ? `, role="${j.role}"` : '';
       return `- ${j.name}: type=${j.type}, axis=${j.axis}${roleStr}`;
     }).join('\n');
-    const availableRoles = (joints || []).map((j) => j.role).filter(Boolean);
+    // F23：去重，避免 AI 看到重复 role 后疑惑（一个 role 可能对应多个关节，如 2 个门架升降）
+    const availableRoles = [...new Set((joints || []).map((j) => j.role).filter(Boolean))];
     const rolesNote = availableRoles.length
       ? `\n当前模型已有的角色：${availableRoles.join('、')}`
       : '\n（注意：当前模型未给关节标注 role，请仅凭 type/axis 推测，不准确时返回 error）';
@@ -439,12 +465,12 @@ const DECOMPOSE_SYSTEM_PROMPT = `你是 AGV/叉车动作时序拆解助手。把
 \`\`\`json
 {
   "rows": [
-    { "time": "0-3s", "op": "车体前进到 cargo 前方 (y=4.5, 留 0.5m 前插间距), 同时横移到 x=2（并行）" },
-    { "time": "3-4s", "op": "门架下降到 z=0.3 对齐 cargo 高度" },
+    { "time": "0-3s", "op": "车体前进到 y=cargo.y - fork_anchor_zero_y - approach_gap, 同时横移到 x=cargo.x - fork_anchor_zero_x（并行）" },
+    { "time": "3-4s", "op": "门架下降到 z=cargo.z - fork_anchor_zero_z 对齐 cargo 高度" },
     { "time": "4s",   "op": "cargo 附着到叉齿" },
-    { "time": "4-5s", "op": "门架抬升 0.3m（抬离地面，不要抬太高）" },
-    { "time": "5-8s", "op": "车体继续前进到 drop 前方 (y=9.5, 从 4.5 到 9.5), 横移到 drop.x" },
-    { "time": "8-9s", "op": "门架下降到 drop.z" },
+    { "time": "4-5s", "op": "门架抬升 lift_height（抬离地面）" },
+    { "time": "5-8s", "op": "车体继续前进到 y=drop.y - fork_anchor_zero_y - approach_gap, 横移到 x=drop.x - fork_anchor_zero_x" },
+    { "time": "8-9s", "op": "门架下降到 z=drop.z - fork_anchor_zero_z" },
     { "time": "9s",   "op": "cargo 脱离" }
   ],
   "reparent_events": [
@@ -537,7 +563,7 @@ const DECOMPOSE_SYSTEM_PROMPT = `你是 AGV/叉车动作时序拆解助手。把
 
 **只输出 JSON。**`;
 
-app.post('/api/decompose-intent', async (req, res) => {
+app.post('/api/decompose-intent', aiRateLimit, async (req, res) => {
   const { intent, scene, joints, fork_anchor_zero: forkAnchorZero } = req.body || {};
   if (!intent) {
     res.status(400).json({ error: '缺少 intent 字段' });

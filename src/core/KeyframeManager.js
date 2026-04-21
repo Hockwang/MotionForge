@@ -303,7 +303,10 @@ export class KeyframeManager {
     if (!clip?.reparentEvents) return 0;
     const before = clip.reparentEvents.length;
     clip.reparentEvents = clip.reparentEvents.filter((e) => e.child_name !== childName);
-    return before - clip.reparentEvents.length;
+    const removed = before - clip.reparentEvents.length;
+    // #39: events 变了必须失效缓存，否则 PKF 预览继续读旧 fork_anchor_zero
+    if (removed > 0) this.invalidateForkAnchorZero();
+    return removed;
   }
 
   /** 获取当前 clip 所有 reparent 事件（浅拷贝） */
@@ -326,7 +329,6 @@ export class KeyframeManager {
    */
   applyReparentEventsAtTime(t, root) {
     if (!root) return;
-    this._lastSceneRoot = root; // v14: 给 buildDefaultParamValues 算 fork_offset 用
     const clip = this.getActiveGlobalClip();
     const events = clip?.reparentEvents || [];
 
@@ -375,25 +377,22 @@ export class KeyframeManager {
         targetParent.attach(child); // 保持世界变换
       }
 
-      // Snap-attach（#36）：cargo 附着到非世界父级时，底部贴到**叉齿尖 mesh** 的
-      // bbox 底部中心。用 _findForkTineMesh 找子树里最贴地的 mesh，而不是整个 subtree bbox
-      //（subtree 包含 mast / 支架等高层 mesh，bbox 中心会被拉偏到车体内部）
+      // Snap-attach（#36 / #40）：cargo 附着到非世界父级时，贴到**叉齿尖 mesh bbox 中心**。
+      // 参考点和 computeForkAnchorZero 一致（都用 bbox.getCenter()），
+      // AI 公式层和 snap 层走同一个几何锚点 → 结构性零 teleport（REVIEW F5）
       if (parentChanged && targetParent !== root) {
         const markerMeta = findMarkerMeta(childName);
         if (markerMeta?.type === 'cargo') {
-          const h = markerMeta.size?.h ?? 0.5;
           targetParent.updateMatrixWorld(true);
           const tineMesh = this._findForkTineMesh(targetParent) || targetParent;
           const box = new THREE.Box3().setFromObject(tineMesh);
           let desiredWorldPos;
           if (!box.isEmpty()) {
-            // cargo 底部中心 = 叉齿尖 bbox 底部中心，cargo 几何中心 = 底部 + (0, h/2, 0)
-            const center = box.getCenter(new THREE.Vector3());
-            desiredWorldPos = new THREE.Vector3(center.x, box.min.y + h / 2, center.z);
+            // 和 fork_anchor_zero 同源：纯 bbox 中心
+            desiredWorldPos = box.getCenter(new THREE.Vector3());
           } else {
-            // fallback：父级原点 + h/2 上方
+            // fallback：父级原点
             desiredWorldPos = targetParent.getWorldPosition(new THREE.Vector3());
-            desiredWorldPos.y += h / 2;
           }
           // world → targetParent local
           const localPos = targetParent.worldToLocal(desiredWorldPos.clone());
@@ -762,7 +761,6 @@ export class KeyframeManager {
    */
   applyAllJointDrives(root) {
     if (!root) return;
-    this._lastSceneRoot = root; // v14: 给 buildDefaultParamValues 算 fork_offset 用
 
     // 建立 nodeMap 缓存（避免每个 joint 都 traverse 一遍）
     const nodeMap = new Map();
