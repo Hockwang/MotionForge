@@ -105,6 +105,8 @@ function undoLastChange() {
   refreshSelectionUI();
   refreshPkfParamsUI(); // Undo 后刷新 PKF 参数列表
   refreshPkfStepsUI();  // Undo 后刷新 PKF 步骤列表
+  refreshReparentEventList(); // Undo 后刷新 reparent 事件列表
+  refreshMarkerList?.(); // Undo 后刷新 marker 列表
 }
 
 function isModelTreeNode(obj) {
@@ -395,6 +397,65 @@ function refreshObjectTree() {
       refreshObjectTree();
       refreshSelectionUI();
     },
+
+    // ── v5: Reparent 事件（时间线驱动的运行时 scene graph 切换）──
+    // getCurrentTime / getReparentCandidates：UI 渲染右键子菜单时调用
+    getCurrentTime: () => keyframeManager.currentTime,
+    getReparentCandidates: (node) => {
+      // 返回所有命名对象名字（排除自己），作为 attach 候选父级
+      if (!node?.object) return [];
+      return editableObjects
+        .filter((o) => o.name && o !== node.object)
+        .map((o) => o.name);
+    },
+    // 点击子菜单某个候选 → 直接 attach（不再弹输入框）
+    onReparentAttachTo: (node, targetName) => {
+      if (!node?.object?.name) {
+        alert('该对象没有名字，无法添加 reparent 事件（跨 roundtrip 需要 name）');
+        return;
+      }
+      pushUndoSnapshot();
+      keyframeManager.addReparentEvent(keyframeManager.currentTime, node.object.name, targetName);
+      keyframeManager.applyReparentEventsAtTime(keyframeManager.currentTime, sceneManager.sceneRoot);
+      refreshReparentEventList();
+      refreshObjectTree();
+      ui.setLoadStatus(`已在 t=${keyframeManager.currentTime.toFixed(2)}s 把 "${node.object.name}" attach 到 "${targetName}"`);
+    },
+
+    onReparentDetach: (node) => {
+      if (!node?.object?.name) {
+        alert('该对象没有名字，无法添加 reparent 事件');
+        return;
+      }
+      pushUndoSnapshot();
+      keyframeManager.addReparentEvent(keyframeManager.currentTime, node.object.name, null);
+      keyframeManager.applyReparentEventsAtTime(keyframeManager.currentTime, sceneManager.sceneRoot);
+      refreshReparentEventList();
+      refreshObjectTree();
+    },
+
+    onReparentClearAll: (node) => {
+      if (!node?.object?.name) return;
+      pushUndoSnapshot();
+      const removed = keyframeManager.removeAllReparentEventsForChild(node.object.name);
+      if (removed > 0) {
+        keyframeManager.applyReparentEventsAtTime(keyframeManager.currentTime, sceneManager.sceneRoot);
+        refreshReparentEventList();
+        refreshObjectTree();
+      }
+    },
+  });
+}
+
+function refreshReparentEventList() {
+  const events = keyframeManager.getReparentEvents();
+  ui.renderReparentEvents(events, {
+    onDelete: (eventId) => {
+      pushUndoSnapshot();
+      keyframeManager.removeReparentEvent(eventId);
+      keyframeManager.applyReparentEventsAtTime(keyframeManager.currentTime, sceneManager.sceneRoot);
+      refreshReparentEventList();
+    },
   });
 }
 
@@ -516,6 +577,8 @@ async function handleAssetFile(file) {
     editableObjects = collectEditableObjects(root);
     sceneTreeNodes = buildSceneTree(root);
     keyframeManager.reset();
+    // v5: 记录初始 scene graph parent 快照（reparent 事件循环时还原用）
+    keyframeManager.snapshotOriginalParents(root);
     undoStack.length = 0;
     sourceInfo = {
       fileName: file.name,
@@ -571,6 +634,8 @@ async function handleImportPackage(file) {
     editableObjects = collectEditableObjects(root);
     sceneTreeNodes = buildSceneTree(root);
     keyframeManager.reset();
+    // v5: 记录初始 scene graph parent 快照
+    keyframeManager.snapshotOriginalParents(root);
     undoStack.length = 0;
 
     const objectsByName = new Map();
@@ -715,11 +780,18 @@ async function handleImportPackage(file) {
               });
               return { time: Number(k.t ?? k.time ?? 0), jointValues: jv };
             }).sort((a, b) => a.time - b.time),
+            // v5: 恢复 reparent 事件（v4 及以前 ZIP 没有这个字段 → 空数组）
+            reparentEvents: (clipData.reparent_events || []).map((e) => ({
+              event_id: e.event_id || `rev_imp_${Math.random().toString(36).slice(2, 8)}`,
+              t: Number(e.t) || 0,
+              child_name: String(e.child_name || ''),
+              new_parent_name: e.new_parent_name === undefined ? null : e.new_parent_name,
+            })).sort((a, b) => a.t - b.t),
           };
           keyframeManager.globalClips.set(clipName, newClip);
         });
         if (!keyframeManager.globalClips.size) {
-          keyframeManager.globalClips.set('default', { clipName: 'default', duration: 10, keyframes: [] });
+          keyframeManager.globalClips.set('default', { clipName: 'default', duration: 10, keyframes: [], reparentEvents: [] });
         }
         keyframeManager.activeClipName = clipsArr[0]?.clip_name || keyframeManager.globalClips.keys().next().value;
       }
@@ -773,6 +845,20 @@ async function handleImportPackage(file) {
       restoredPkfSteps = (pkfData.steps || []).length;
     }
 
+    // ── schema v6: 恢复场景标记 metadata ──
+    // GLB 里已经有 marker 对象（按 name 在 scene 里），这里只要补 type/size/color 元数据
+    // 旧 ZIP（v4/v5）没有 scene_markers 字段 → 跳过，行为同之前
+    keyframeManager.sceneMarkers.clear();
+    (manifest.scene_markers || []).forEach((m) => {
+      keyframeManager.sceneMarkers.set(m.id, {
+        id: m.id,
+        name: m.name,
+        type: m.type,
+        size: m.size ? { ...m.size } : null,
+        color: m.color || null,
+      });
+    });
+
     selectionManager.clearSelection();
 
     // ── v5 修复：两阶段应用关节，保证链式关节的 base 在零位捕获 ──
@@ -813,6 +899,8 @@ async function handleImportPackage(file) {
     refreshObjectTree();
     refreshPkfParamsUI();  // 刷新 PKF 参数 UI
     refreshPkfStepsUI();   // 刷新 PKF 步骤 UI
+    refreshReparentEventList(); // 刷新 reparent 事件列表
+    refreshMarkerList(); // 刷新 marker 列表
     refreshAiJointChips(); // 刷新 AI 面板的关节 chips
   } catch (error) {
     ui.setLoadStatus(`导入资产包失败：${error.message}`);
@@ -899,6 +987,9 @@ function loop(now) {
   lastFrameTime = now;
 
   updateTimeline(deltaSeconds);
+  // v5: reparent 事件先应用（切 scene graph parent），再驱动关节
+  // 顺序很重要——joint 计算用最新的 scene graph
+  keyframeManager.applyReparentEventsAtTime(keyframeManager.currentTime, sceneManager.sceneRoot);
   keyframeManager.applyAllJointDrives(sceneManager.sceneRoot);
   sceneManager.render();
   requestAnimationFrame(loop);
@@ -906,6 +997,39 @@ function loop(now) {
 
 selectionManager.attachViewportSelection(() => selectionManager.clearSelection());
 selectionManager.onSelectionChanged(refreshSelectionUI);
+
+// 让"变换"面板的输入框能直接编辑世界坐标 / 旋转
+// 主要给"测试货物"这类无关节对象用，关节对象改了下一帧会被 applyJointDrive 覆盖
+ui.attachTransformEditHandlers((axis, value) => {
+  const obj = selectionManager.selectedObject;
+  if (!obj) return;
+  pushUndoSnapshot();
+  obj.updateMatrixWorld(true);
+  if (axis === 'x' || axis === 'y' || axis === 'z') {
+    // 世界坐标 → scene parent local
+    const parent = obj.parent;
+    if (!parent) return;
+    parent.updateMatrixWorld(true);
+    const targetWorld = obj.getWorldPosition(new THREE.Vector3());
+    if (axis === 'x') targetWorld.x = value;
+    else if (axis === 'y') targetWorld.y = value;
+    else targetWorld.z = value;
+    const localTarget = parent.worldToLocal(targetWorld.clone());
+    obj.position.copy(localTarget);
+  } else if (axis === 'ry') {
+    // 世界 Y 轴旋转（度）→ local 四元数
+    const parent = obj.parent;
+    if (!parent) return;
+    parent.updateMatrixWorld(true);
+    const rad = (value * Math.PI) / 180;
+    const targetWorldQuat = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, rad, 0));
+    const parentWorldQuatInv = parent.getWorldQuaternion(new THREE.Quaternion()).invert();
+    obj.quaternion.copy(parentWorldQuatInv.multiply(targetWorldQuat));
+  }
+  // 如果有关节，rebind base（位置/旋转变了，原 base 失效）
+  rebindJointBaseTransform(obj);
+  refreshSelectionUI();
+});
 
 ui.fileInput.addEventListener('change', (e) => {
   const file = e.target.files?.[0];
@@ -957,6 +1081,8 @@ ui.timeInput.addEventListener('input', () => {
     // 关键帧模式：插值所有 jointDef 的 jointValue
     keyframeManager.evaluateAllAt(t, sceneManager.sceneRoot);
   }
+  // v5: seek 时同步应用 reparent 事件（立即反馈，不等下一帧）
+  keyframeManager.applyReparentEventsAtTime(keyframeManager.currentTime, sceneManager.sceneRoot);
   ui.updateTimelineLabel(keyframeManager.currentTime, getCurrentDuration());
   refreshSelectionUI();
 });
@@ -995,8 +1121,54 @@ const AI_SERVICE_URL = import.meta.env.VITE_AI_SERVICE_URL || 'http://localhost:
 let pendingAiPkf = null;
 
 /**
+ * 采集场景里所有命名对象的世界坐标，给 AI 看。
+ * AI 用这个解析"到 cargo 位置" / "@cargo" 这种引用 —— 把坐标当参数 default 填进去。
+ * 过滤灯光/相机/Helper，不然会塞一堆 noise。
+ *
+ * ⚠️ 轴系转换：Three.js 内部 Y-up，但 AI prompt 用 UI Z-up 约定（z=高度，y=前后）。
+ * UI 的"Z 高度"写到 threejs.y，"Y 前后"写到 threejs.z（见 EditorUI.js #ty/#tz-input）。
+ * 所以发给 AI 时必须 swap y/z，否则 drop.z 会被当成高度（其实是前后距离）。
+ */
+function collectSceneForAi() {
+  const scene = [];
+  if (sceneManager.sceneRoot) {
+    sceneManager.sceneRoot.updateMatrixWorld(true);
+    sceneManager.sceneRoot.traverse((o) => {
+      if (!o.name || o.isLight || o.isCamera || o.type?.includes('Helper')) return;
+      const wp = o.getWorldPosition(new THREE.Vector3());
+      // threejs (y-up) → ui/AI (z-up)：swap y 和 z
+      scene.push({ name: o.name, position: { x: wp.x, y: wp.z, z: wp.y } });
+    });
+  }
+  return scene;
+}
+
+/**
+ * v14.1 (#37): 临时把所有关节归零 → 算 fork_anchor_zero → 恢复关节值。
+ * 必须在"零位"状态下算，否则 anchor 位置会受当前动画位移污染。
+ * 结果既 return 也被 KeyframeManager 缓存（供 buildDefaultParamValues 复用）。
+ */
+function snapshotForkAnchorZero() {
+  const saved = keyframeManager.getAllJointDefs().map((d) => ({ id: d.id, value: d.currentValue }));
+  try {
+    saved.forEach((s) => {
+      const d = keyframeManager.jointDefinitions.get(s.id);
+      if (d) d.currentValue = 0;
+    });
+    keyframeManager.applyAllJointDrives(sceneManager.sceneRoot);
+    return keyframeManager.computeForkAnchorZero(sceneManager.sceneRoot);
+  } finally {
+    saved.forEach((s) => {
+      const d = keyframeManager.jointDefinitions.get(s.id);
+      if (d) d.currentValue = s.value;
+    });
+    keyframeManager.applyAllJointDrives(sceneManager.sceneRoot);
+  }
+}
+
+/**
  * 请求后端 /api/generate-pkf 接口
- * 传入当前关节定义列表 + 用户自然语言描述，返回 { parameters, steps } PKF 格式
+ * 传入当前关节定义列表 + 场景对象世界坐标 + 用户自然语言描述，返回 { parameters, steps } PKF 格式
  * @param {string} prompt - 用户的动作描述
  * @returns {Promise<{parameters: Array, steps: Array}>}
  */
@@ -1007,10 +1179,15 @@ async function requestAiGeneratePkf(prompt) {
     .filter((d) => d.type === 'revolute' || d.type === 'prismatic')
     .map((d) => ({ name: d.name, type: d.type, axis: d.axis, role: d.role || '' }));
 
+  // scene: 场景里所有对象的世界坐标。AI 用它解析"走到 cargo 位置"，把坐标当参数 default
+  const scene = collectSceneForAi();
+  // v14.1 (#37): 叉齿零位锚点（世界坐标），AI 用 value_end = cargo_pos_y - fork_anchor_zero_y - approach_gap
+  const forkAnchorZero = snapshotForkAnchorZero();
+
   const response = await fetch(`${AI_SERVICE_URL}/api/generate-pkf`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ prompt, joints }),
+    body: JSON.stringify({ prompt, joints, scene, fork_anchor_zero: forkAnchorZero }),
   });
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));
@@ -1064,17 +1241,257 @@ function applyAiPkf(pkfData) {
     });
   });
 
+  // 自动把时间线时长贴到最后一步 t_end（避免循环播放时"停顿 1 秒 → 瞬跳回原点"）
+  // 额外 +0.5s 让末态留一眼，不至于瞬间 wrap
+  const maxEnd = pkfData.steps.reduce((m, s) => Math.max(m, Number(s.t_end) || 0), 0);
+  if (maxEnd > 0) {
+    const newDuration = maxEnd + 0.5;
+    keyframeManager.setClipDuration(newDuration);
+    ui.setTimelineRange(newDuration);
+  }
+
   refreshPkfParamsUI();
   refreshPkfStepsUI();
   refreshSelectionUI();
 }
 
+// ── AI 输入双模式 toggle 接线 ──
+ui.aiModeTextBtn?.addEventListener('click', () => ui.setAiInputMode('text'));
+ui.aiModeTableBtn?.addEventListener('click', () => ui.setAiInputMode('table'));
+ui.aiAddRowBtn?.addEventListener('click', () => ui.addAiTableRow());
+
+// ── L1: 高级意图 → 时间表 ──
+ui.aiDecomposeBtn?.addEventListener('click', async () => {
+  const intent = ui.aiIntentInput?.value?.trim();
+  if (!intent) {
+    alert('请先在"高级意图"框里写一句话');
+    return;
+  }
+  // 收集场景 context：所有命名对象 + 世界坐标
+  const scene = [];
+  if (sceneManager.sceneRoot) {
+    sceneManager.sceneRoot.updateMatrixWorld(true);
+    sceneManager.sceneRoot.traverse((o) => {
+      if (!o.name || o.isLight || o.isCamera || o.type?.includes('Helper')) return;
+      const wp = o.getWorldPosition(new THREE.Vector3());
+      scene.push({ name: o.name, position: { x: wp.x, y: wp.y, z: wp.z } });
+    });
+  }
+  // 关节列表（含 role）
+  const joints = keyframeManager.getAllJointDefs()
+    .filter((d) => d.type === 'revolute' || d.type === 'prismatic')
+    .map((d) => ({ name: d.name, type: d.type, axis: d.axis, role: d.role || '' }));
+
+  ui.aiDecomposeBtn.disabled = true;
+  ui.aiDecomposeBtn.textContent = '🪄 拆解中...';
+  try {
+    const forkAnchorZeroDecompose = snapshotForkAnchorZero();
+    const resp = await fetch(`${AI_SERVICE_URL}/api/decompose-intent`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ intent, scene, joints, fork_anchor_zero: forkAnchorZeroDecompose }),
+    });
+    const body = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      alert(`拆解失败：${body.error || resp.statusText}`);
+      return;
+    }
+    if (!body.rows?.length) {
+      alert('AI 没返回任何行，请换种说法重试');
+      return;
+    }
+    // 切到表格模式 + 填入行
+    ui.setAiInputMode('table');
+    ui.setAiTableRows(body.rows);
+    ui.setLoadStatus(`已拆解为 ${body.rows.length} 行时间表，请检查后点 "AI 生成动作"`);
+  } catch (err) {
+    alert(`请求失败：${err.message}`);
+  } finally {
+    ui.aiDecomposeBtn.disabled = false;
+    ui.aiDecomposeBtn.textContent = '🪄 仅拆解';
+  }
+});
+
+// ══════════════════════════════════════════════════════════════
+//  v14: 🚀 一键生成完整动画（L1 → apply reparent → L2 → 播放）
+// ══════════════════════════════════════════════════════════════
+
+ui.aiOneshotBtn?.addEventListener('click', async () => {
+  const intent = ui.aiIntentInput?.value?.trim();
+  if (!intent) {
+    alert('请先在"高级意图"框里写一句话');
+    return;
+  }
+  const out = ui.aiOneshotOutput;
+  const setOut = (html, color) => {
+    if (!out) return;
+    out.style.display = 'block';
+    out.style.color = color || '#94a3b8';
+    out.innerHTML = html;
+  };
+
+  const originalBtnText = ui.aiOneshotBtn.textContent;
+  ui.aiOneshotBtn.disabled = true;
+
+  try {
+    pushUndoSnapshot();
+
+    // ── Step 1: L1 拆解 ──
+    ui.aiOneshotBtn.textContent = '1/4 AI 拆解意图...';
+    setOut('🪄 Step 1: 让 AI 拆解时间表...', '#93c5fd');
+
+    const scene = collectSceneForAi();
+    // v14.1 (#37): 叉齿零位锚点世界坐标（若无 reparent event 则为 {}，AI 退化用 approach_gap）
+    const forkAnchorZero = snapshotForkAnchorZero();
+    const joints = keyframeManager.getAllJointDefs()
+      .filter((d) => d.type === 'revolute' || d.type === 'prismatic')
+      .map((d) => ({ name: d.name, type: d.type, axis: d.axis, role: d.role || '' }));
+
+    const l1Resp = await fetch(`${AI_SERVICE_URL}/api/decompose-intent`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ intent, scene, joints, fork_anchor_zero: forkAnchorZero }),
+    });
+    const l1Body = await l1Resp.json().catch(() => ({}));
+    window.__mf = window.__mf || {};
+    window.__mf.lastOneshot = { intent, scene, joints, fork_anchor_zero: forkAnchorZero, l1: l1Body };
+    if (!l1Resp.ok || !l1Body.rows?.length) {
+      throw new Error(`L1 拆解失败: ${l1Body.error || l1Resp.statusText || '无行返回'}`);
+    }
+
+    const rowsMsg = `✅ L1: ${l1Body.rows.length} 行时间表 + ${l1Body.reparent_events?.length || 0} 个 reparent 事件`;
+    const warningsMsg = (l1Body.warnings?.length)
+      ? `<br>⚠️ AI 警告:<br>${l1Body.warnings.map((w) => `· ${w}`).join('<br>')}`
+      : '';
+    setOut(`${rowsMsg}${warningsMsg}<br>🪄 Step 2: 应用 reparent...`, '#93c5fd');
+
+    // ── Step 2: 填表格 + 应用 reparent 事件 ──
+    ui.setAiInputMode('table');
+    ui.setAiTableRows(l1Body.rows);
+
+    // 先清空当前 clip 的旧 reparent 事件（避免叠加）
+    const existingEvents = keyframeManager.getReparentEvents();
+    existingEvents.forEach((e) => keyframeManager.removeReparentEvent(e.event_id));
+
+    // 应用新的 reparent events
+    let appliedReparents = 0;
+    (l1Body.reparent_events || []).forEach((e) => {
+      // 校验 child_name 存在（否则忽略并加 warning）
+      if (sceneManager.sceneRoot?.getObjectByName(e.child_name)) {
+        keyframeManager.addReparentEvent(e.t, e.child_name, e.new_parent_name);
+        appliedReparents++;
+      }
+    });
+    refreshReparentEventList();
+
+    // ── Step 3: L2 生成 PKF ──
+    ui.aiOneshotBtn.textContent = '3/4 AI 生成 PKF...';
+    setOut(`${rowsMsg}${warningsMsg}<br>✅ 已应用 ${appliedReparents} 个 reparent 事件<br>🪄 Step 3: 生成 PKF 公式...`, '#93c5fd');
+
+    const l2Prompt = ui.serializeAiTable();
+    // v14.1 (#37): L2 调用前重算 fork_anchor_zero —— L1 刚应用了 reparent events，现在才有 fork 信息
+    // 解决"首次 🚀 需要跑两次才生效"的问题
+    const forkAnchorZeroForL2 = snapshotForkAnchorZero();
+    const l2Resp = await fetch(`${AI_SERVICE_URL}/api/generate-pkf`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: l2Prompt, joints, scene, fork_anchor_zero: forkAnchorZeroForL2 }),
+    });
+    const l2Body = await l2Resp.json().catch(() => ({}));
+    if (window.__mf?.lastOneshot) {
+      window.__mf.lastOneshot.l2Prompt = l2Prompt;
+      window.__mf.lastOneshot.l2 = l2Body;
+    }
+    if (!l2Resp.ok) {
+      throw new Error(`L2 PKF 生成失败: ${l2Body.error || l2Resp.statusText}`);
+    }
+
+    // 应用 PKF（和现有 ai-apply-btn 逻辑一致）
+    if (Array.isArray(l2Body.parameters)) {
+      keyframeManager.pkfParameters.clear();
+      l2Body.parameters.forEach((p) => {
+        keyframeManager.addPkfParameter({
+          id: p.id,
+          type: p.type || 'number',
+          unit: p.unit || '',
+          desc: p.desc || '',
+          default: p.default ?? 0,
+        });
+      });
+    }
+    if (Array.isArray(l2Body.steps)) {
+      keyframeManager.pkfSteps = [];
+      l2Body.steps.forEach((s) => {
+        const def = keyframeManager.getAllJointDefs().find((d) => d.name === s.joint);
+        keyframeManager.addPkfStep({
+          joint: s.joint || '',
+          joint_def_id: def?.id || '',
+          channel: s.channel || 'translate',
+          axis: s.axis || 'z',
+          t_start: Number(s.t_start) || 0,
+          t_end: Number(s.t_end) || 1,
+          value_start: String(s.value_start ?? '0'),
+          value_end: String(s.value_end ?? '0'),
+          easing: s.easing || 'linear',
+        });
+      });
+    }
+    // 自动把时间线时长贴到最后一步 t_end（+ 0.5s buffer），避免循环边界瞬跳回原点
+    // 同时考虑 reparent events 的 t（虽然通常 ≤ steps，但保险一点）
+    const stepMaxEnd = (l2Body.steps || []).reduce((m, s) => Math.max(m, Number(s.t_end) || 0), 0);
+    const eventMaxT = (l1Body.reparent_events || []).reduce((m, e) => Math.max(m, Number(e.t) || 0), 0);
+    const maxEnd = Math.max(stepMaxEnd, eventMaxT);
+    if (maxEnd > 0) {
+      const newDuration = maxEnd + 0.5;
+      keyframeManager.setClipDuration(newDuration);
+      ui.setTimelineRange(newDuration);
+    }
+
+    refreshPkfParamsUI();
+    refreshPkfStepsUI();
+
+    // ── Step 4: 切到 PKF 播放 + 从 0 开始 ──
+    ui.aiOneshotBtn.textContent = '4/4 切 PKF 播放...';
+    pkfPlaybackMode = true;
+    if (ui.pkfPlaybackModeInput) ui.pkfPlaybackModeInput.checked = true;
+    keyframeManager.currentTime = 0;
+    applyPkfAtTime(0);
+    keyframeManager.applyReparentEventsAtTime(0, sceneManager.sceneRoot);
+    keyframeManager.applyAllJointDrives(sceneManager.sceneRoot);
+
+    setOut(
+      `${rowsMsg}${warningsMsg}<br>`
+      + `✅ 已应用 ${appliedReparents} 个 reparent 事件<br>`
+      + `✅ PKF: ${l2Body.parameters?.length || 0} 参数 / ${l2Body.steps?.length || 0} 步骤<br>`
+      + `✅ 已切到 PKF 播放，按"播放"键开始`,
+      '#34d399',
+    );
+    ui.setLoadStatus('🚀 一键生成完成！按下方"播放"键看动画');
+  } catch (err) {
+    setOut(`❌ ${err.message}`, '#f87171');
+    console.error('[Oneshot]', err);
+  } finally {
+    ui.aiOneshotBtn.disabled = false;
+    ui.aiOneshotBtn.textContent = originalBtnText;
+  }
+});
+
 // ── AI 生成按钮事件 ──
 ui.aiGenerateBtn.addEventListener('click', async () => {
-  const prompt = ui.aiPromptInput.value.trim();
-  if (!prompt) {
-    ui.aiResultOutput.textContent = '请输入动作描述。';
-    return;
+  // 根据模式拼 prompt：自由文本直接读 textarea，表格模式序列化成 markdown
+  let prompt;
+  if (ui.getAiInputMode() === 'table') {
+    prompt = ui.serializeAiTable();
+    if (!prompt) {
+      ui.aiResultOutput.textContent = '请至少添加一行有效的时间表（时间 + 操作描述）。';
+      return;
+    }
+  } else {
+    prompt = ui.aiPromptInput.value.trim();
+    if (!prompt) {
+      ui.aiResultOutput.textContent = '请输入动作描述。';
+      return;
+    }
   }
   const jointDefs = keyframeManager.getAllJointDefs().filter(
     (d) => d.type === 'revolute' || d.type === 'prismatic',
@@ -1151,6 +1568,8 @@ function buildExportClips() {
         });
         return { t: k.time, joint_values: jvByName };
       }),
+      // v5: reparent 事件（原样透传到 exporter，内部字段已经是 name 形式）
+      reparent_events: (clip.reparentEvents || []).map((e) => ({ ...e })),
     });
   });
   return clipsArr;
@@ -1341,6 +1760,10 @@ ui.pkfGenFromKfBtn.addEventListener('click', () => {
 
 // 初始渲染一次 PKF 步骤列表
 refreshPkfStepsUI();
+// 初始渲染一次 Reparent 事件列表（空）
+refreshReparentEventList();
+// 初始渲染一次 marker 列表（空）
+refreshMarkerList();
 
 // ══════════════════════════════════════════════════════════════
 //  PKF 预览
@@ -1424,6 +1847,140 @@ ui.exportJsonBtn.addEventListener('click', () => {
   ui.exportOutput.textContent = JSON.stringify({ jointDefs, clips }, null, 2);
 });
 
+// ══════════════════════════════════════════════════════════════
+//  场景标记 Marker（schema v6）：货物占位 / 取货点 / 放货点
+//  统一通过 KeyframeManager.sceneMarkers 管理，视觉由 SceneManager.createMarkerObject 渲染
+// ══════════════════════════════════════════════════════════════
+
+/**
+ * 添加一个 marker：在 KeyframeManager 注册数据 + 在 sceneRoot 加视觉对象
+ * @param {string} type - 'cargo' | 'pickup' | 'drop'
+ */
+function addMarkerOfType(type) {
+  if (!sceneManager.sceneRoot) {
+    alert('请先加载一个模型');
+    return;
+  }
+  // 自动生成唯一名字（确保不和场景已有对象重名）
+  const baseName = type === 'cargo' ? 'cargo' : (type === 'pickup' ? 'pickup' : 'drop');
+  let n = 1;
+  let name = baseName;
+  while (sceneManager.sceneRoot.getObjectByName(name)) {
+    n += 1;
+    name = `${baseName}_${n}`;
+  }
+
+  pushUndoSnapshot();
+  // 1. 在 KeyframeManager 注册数据
+  const marker = keyframeManager.addMarker({ name, type });
+  // 2. 创建视觉对象
+  const obj = sceneManager.createMarkerObject(marker);
+  if (!obj) return;
+  // 3. 默认位置：世界原点前方
+  obj.position.set(1, type === 'cargo' ? (marker.size?.h ?? 0.5) / 2 : 0, 1);
+  sceneManager.sceneRoot.add(obj);
+
+  keyframeManager.snapshotOriginalParents(sceneManager.sceneRoot);
+  editableObjects = collectEditableObjects(sceneManager.sceneRoot);
+  sceneTreeNodes = buildSceneTree(sceneManager.sceneRoot);
+  refreshObjectTree();
+  refreshMarkerList();
+  ui.setLoadStatus(`已添加 ${type === 'cargo' ? '货物占位' : (type === 'pickup' ? '取货点' : '放货点')}：${name}`);
+}
+
+/**
+ * 删除一个 marker：从场景里移除视觉对象 + 从 KeyframeManager 移除数据 + 清掉相关 reparent 事件
+ */
+function removeMarkerById(id) {
+  const m = keyframeManager.getMarker(id);
+  if (!m) return;
+  pushUndoSnapshot();
+  // 找视觉对象
+  const obj = sceneManager.sceneRoot?.getObjectByName(m.name);
+  if (obj) {
+    obj.parent?.remove(obj);
+    if (obj.geometry) obj.geometry.dispose();
+    if (obj.material) {
+      (Array.isArray(obj.material) ? obj.material : [obj.material]).forEach((mt) => mt.dispose?.());
+    }
+    obj.traverse?.((c) => {
+      if (c.geometry) c.geometry.dispose();
+      if (c.material) {
+        (Array.isArray(c.material) ? c.material : [c.material]).forEach((mt) => mt.dispose?.());
+      }
+    });
+  }
+  keyframeManager.removeMarker(id);
+  keyframeManager.removeAllReparentEventsForChild(m.name);
+  keyframeManager.snapshotOriginalParents(sceneManager.sceneRoot);
+  editableObjects = collectEditableObjects(sceneManager.sceneRoot);
+  sceneTreeNodes = buildSceneTree(sceneManager.sceneRoot);
+  refreshObjectTree();
+  refreshMarkerList();
+  refreshReparentEventList();
+}
+
+ui.addCargoMarkerBtn?.addEventListener('click', () => addMarkerOfType('cargo'));
+ui.addPickupMarkerBtn?.addEventListener('click', () => addMarkerOfType('pickup'));
+ui.addDropMarkerBtn?.addEventListener('click', () => addMarkerOfType('drop'));
+
+ui.removeAllMarkersBtn?.addEventListener('click', () => {
+  const ids = keyframeManager.getAllMarkers().map((m) => m.id);
+  if (!ids.length) {
+    ui.setLoadStatus('场景里没有标记');
+    return;
+  }
+  if (!confirm(`确认清空所有 ${ids.length} 个场景标记？`)) return;
+  ids.forEach((id) => removeMarkerById(id));
+});
+
+function refreshMarkerList() {
+  ui.renderMarkerList(keyframeManager.getAllMarkers(), {
+    onSelect: (markerName) => {
+      const obj = sceneManager.sceneRoot?.getObjectByName(markerName);
+      if (obj) selectionManager.selectObject(obj);
+    },
+    onSizeChange: (id, axis, value) => {
+      pushUndoSnapshot();
+      const m = keyframeManager.updateMarker(id, { size: { [axis]: value } });
+      if (m) {
+        const obj = sceneManager.sceneRoot?.getObjectByName(m.name);
+        sceneManager.updateMarkerObject(obj, m);
+      }
+      refreshMarkerList(); // 刷 hint 文字
+    },
+    onRename: (id, newName) => {
+      const m = keyframeManager.getMarker(id);
+      if (!m) return;
+      // 检查重名
+      if (sceneManager.sceneRoot?.getObjectByName(newName)) {
+        alert(`场景里已有名字为 "${newName}" 的对象`);
+        refreshMarkerList();
+        return;
+      }
+      pushUndoSnapshot();
+      const oldName = m.name;
+      keyframeManager.updateMarker(id, { name: newName });
+      // 同步 scene 对象 name
+      const obj = sceneManager.sceneRoot?.getObjectByName(oldName);
+      if (obj) obj.name = newName;
+      // 同步 reparent 事件里的 child_name 引用
+      const events = keyframeManager.getReparentEvents();
+      events.forEach((e) => {
+        if (e.child_name === oldName) e.child_name = newName;
+        if (e.new_parent_name === oldName) e.new_parent_name = newName;
+      });
+      keyframeManager.snapshotOriginalParents(sceneManager.sceneRoot);
+      editableObjects = collectEditableObjects(sceneManager.sceneRoot);
+      sceneTreeNodes = buildSceneTree(sceneManager.sceneRoot);
+      refreshObjectTree();
+      refreshMarkerList();
+      refreshReparentEventList();
+    },
+    onDelete: (id) => removeMarkerById(id),
+  });
+}
+
 ui.exportPackageBtn.addEventListener('click', async () => {
   const clips = buildExportClips();
   const jointDefs = keyframeManager.getAllJointDefs();
@@ -1433,12 +1990,17 @@ ui.exportPackageBtn.addEventListener('click', async () => {
     return;
   }
 
-  // ── 导出前：保存状态，归零 + 清选中 ──
+  // ── 导出前：保存状态，归零 + 清选中 + reparent 回初始 ──
   const savedSelection = selectionManager.selectedObject;
   const savedValues = [];
+  const savedTime = keyframeManager.currentTime;
   try {
     // 清除选中（防止 emissive 烘焙进 GLB）
     selectionManager.clearSelection();
+
+    // v5: reparent 状态重置到 t=0（所有对象回到 originalParent）
+    // 否则 GLB 会烘焙"当前时间点的 scene graph"，导入后 originalParentMap 错乱
+    keyframeManager.applyReparentEventsAtTime(0, sceneManager.sceneRoot);
 
     // 方案A 归零：保留 baseTransform，只设 value=0
     // GLTFExporter 烘焙当前 transform → 必须是零位态
@@ -1465,6 +2027,7 @@ ui.exportPackageBtn.addEventListener('click', async () => {
       clips,
       pkfParameters: keyframeManager.getAllPkfParameters(),
       pkfSteps: keyframeManager.getAllPkfSteps(),
+      sceneMarkers: keyframeManager.getAllMarkers(),
     });
 
     ui.exportOutput.textContent = `已导出结果包 ZIP。\n${JSON.stringify(manifest, null, 2)}`;
@@ -1477,6 +2040,8 @@ ui.exportPackageBtn.addEventListener('click', async () => {
       const def = keyframeManager.getJointDef(saved.id);
       if (def) def.currentValue = saved.currentValue;
     });
+    // v5: 把 reparent 状态还原到导出前的时间点（保持用户当前视图）
+    keyframeManager.applyReparentEventsAtTime(savedTime, sceneManager.sceneRoot);
     keyframeManager.applyAllJointDrives(sceneManager.sceneRoot);
     if (savedSelection) {
       selectionManager.selectObject(savedSelection);

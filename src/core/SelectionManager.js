@@ -43,7 +43,15 @@ export class SelectionManager {
         onEmptyClick?.();
         return;
       }
-      this.selectObject(meshHit.object);
+      // marker 的视觉由 Group + 多个子 mesh 组成（球/柱/圆盘），子 mesh 本身没 name
+      // 点到任意子 mesh 都应该选到整个 marker Group —— 向上走找带 markerId 的祖先
+      let target = meshHit.object;
+      let cur = target;
+      while (cur) {
+        if (cur.userData?.markerId) { target = cur; break; }
+        cur = cur.parent;
+      }
+      this.selectObject(target);
     });
   }
 

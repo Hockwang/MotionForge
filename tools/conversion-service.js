@@ -241,6 +241,50 @@ const PKF_SYSTEM_PROMPT = `你是一个工业设备参数化运动规划助手�
 
 **重要**：示例里的关节名（cAR201/mast_lift/fork_tilt）仅为参考，**你必须使用用户当前提供的关节列表里的实际关节名**。参考示例学习的是：公式如何引用参数、多步骤如何编排、并行/串行时序如何安排。
 
+**@关节名锚定语法（精确模式）**：
+- 用户如果在描述里写 \`@关节名\`（例如 \`@_CS19110 顺时针旋转 90 度\`、\`@_____10 抬升 1 米\`），则：
+  - @ 后面到第一个空格/逗号/句号之前的 token 就是**关节名**，必须与 joints 列表精确匹配（包括奇怪字符，如下划线、数字）
+  - 不要把奇怪字符误当成格式错误（\`_____10\`、\`cAR201\`、\`_CS19110\` 都是合法名字）
+  - 同一个 @关节 后面跟的多个动作（逗号/"然后"分隔）按**先后串行**安排时间，不并行
+  - 不同 @ 开头的子句默认**并行**（除非用户写"再/然后/之后"表示串行）
+- 动作词到 channel/axis 映射：
+  - "抬升 / 升 / 下降" → prismatic + axis=z（下降则 value 为负）
+  - "前进 / 后退" → 找 role="车体前进" 的 prismatic y
+  - "平移 / 横移 / x 方向" → prismatic x（正方向为正值，反向为负）
+  - "旋转 / 转 / 顺时针 / 逆时针" → revolute（顺时针按右手定则为负，逆时针为正；以 axis 为准）
+  - 角度 "90 度" = 90；"米" 保持数值（我们统一米）
+- 示例输入：\`@_CS19110 顺时针旋转 90 度，然后抬升 2 米；@_____10 抬升 1 米；车体前进 3 米\`
+  - 生成：_CS19110 先 rotate 0→-90（0-2s），再 translate z 0→2（2-4s）；_____10 translate z 0→1（0-4s 并行）；车体前进关节 translate y 0→3（0-4s 并行）
+
+**场景对象坐标注入（重要）**：
+- user message 里如果有"场景对象（含世界坐标）"区块，每行 \`- name at (x, y, z)\` 是场景里一个对象的真实世界坐标
+- 用户描述里提到对象名（cargo / drop / marker 名 / 零件名），必须把坐标**实际数值**填进参数 default：
+  - "走到 cargo 位置" → 新参数 \`cargo_pos_x\`，default = scene 里 cargo 的 x 坐标实际值（例 7.66），不是 2 不是 5
+  - "到 drop" → \`drop_pos_x\` default = scene 里 drop 的 x
+- **绝对禁止**凭空写 default=2 / default=5 / default=1 这种硬编整数。如果 scene 给了坐标就用坐标
+- 取货"前插间距"规则：value_end 公式应写 \`cargo_pos_x - 0.5\`（留 0.5m 不走到货物上），不是 \`cargo_pos_x\`
+- 放货时车体继续移动：value_start 接上一段的 end（或新参数 \`cargo_arrival_x\`），value_end = \`drop_pos_x - 0.5\`
+- 如果 scene 里找不到用户提的对象名，在输出 JSON 顶层加 \`"warnings": ["场景里没有'cargo'对象"]\` 但仍尝试生成
+
+**自动注入的 PKF 参数（不用你在 parameters 里声明，运行时会自动填）**：
+- \`cargo_width\` / \`cargo_height\` / \`cargo_depth\`：cargo marker 的尺寸
+- \`fork_anchor_zero_x\` / \`fork_anchor_zero_y\` / \`fork_anchor_zero_z\`：叉齿在零位时的承载点世界坐标（UI Z-up；只有存在 reparent event 时可用）
+
+**⚠️ 关键语义（#37）**：
+prismatic 关节的 value_end 写的是**位移**（从零位开始前进多少米），**不是**世界绝对坐标。
+所以公式要算"要位移多少才能让叉齿到目标点"：
+- 公式：displacement = target_world - anchor_at_zero - gap
+- 例：cargo.y=5, fork_anchor_zero_y=2.13, approach_gap=0 → value_end = 5 - 2.13 = 2.87（车体前进 2.87m，叉齿到 cargo 位置，snap-attach 精准对齐）
+- Runtime 接着 add 到 baseWorldPos=2.93 → fork 世界 y = 5.0（= cargo.y，无缓冲）
+
+**fork_anchor_zero 使用规则（组合 approach_gap）**：
+- 有"叉齿零位锚点"区块：value_end 应写 \`cargo_pos_y - fork_anchor_zero_y - approach_gap\`
+- 横移：\`cargo_pos_x - fork_anchor_zero_x\`（不加 approach_gap）
+- 放货段：\`drop_pos_y - fork_anchor_zero_y - approach_gap\`
+- **必须声明 approach_gap 参数**：\`{ "id": "approach_gap", "type": "number", "unit": "m", "desc": "叉齿离货物缓冲距离（0=贴合，snap-attach 精准对齐；正值=留安全距离）", "default": 0 }\`
+- fork_anchor_zero_* 是自动注入（不用声明），approach_gap 要声明（用户可调）
+- 没"叉齿零位锚点"区块 → 退化用 \`cargo_pos_y - approach_gap\`（default=1）
+
 **关节角色（role）优先匹配规则**：
 - 用户提供的每个关节可能带 \`role\` 字段（语义角色，如"车体前进"、"门架升降"、"叉齿侧移"）
 - 解析用户描述时**优先按 role 匹配**关节意图，不要仅凭 type/axis 推测
@@ -255,7 +299,7 @@ const PKF_SYSTEM_PROMPT = `你是一个工业设备参数化运动规划助手�
 只有 role 完全匹配（或用户描述明确指定了关节名）才生成 PKF。`;
 
 app.post('/api/generate-pkf', async (req, res) => {
-  const { prompt, joints } = req.body || {};
+  const { prompt, joints, scene, fork_anchor_zero: forkAnchorZero } = req.body || {};
   if (!prompt) {
     res.status(400).json({ error: '缺少 prompt 字段' });
     return;
@@ -275,7 +319,22 @@ app.post('/api/generate-pkf', async (req, res) => {
     const rolesNote = availableRoles.length
       ? `\n当前模型已有的角色：${availableRoles.join('、')}`
       : '\n（注意：当前模型未给关节标注 role，请仅凭 type/axis 推测，不准确时返回 error）';
-    const userMessage = `可用关节:\n${jointsSummary || '（无）'}${rolesNote}\n\n用户指令: ${prompt}`;
+    // 场景对象世界坐标：让 AI 把"去 cargo 位置" / "@cargo" 解析成实际数值
+    // 没有 scene（旧前端）时留空，AI fallback 到"凭经验猜"（旧行为）
+    const sceneSummary = (scene || []).map((o) => {
+      const p = o.position;
+      const pos = p ? ` at (${Number(p.x).toFixed(2)}, ${Number(p.y).toFixed(2)}, ${Number(p.z).toFixed(2)})` : '';
+      return `- ${o.name}${pos}`;
+    }).join('\n');
+    const sceneBlock = sceneSummary ? `\n场景对象（含世界坐标）:\n${sceneSummary}\n` : '';
+    // v14.1 (#37): 叉齿零位锚点世界坐标（UI Z-up）
+    // 语义：叉齿在"所有关节 value=0"时的承载点世界坐标
+    // ⚠️ 关键：runtime 的 prismatic currentValue 是**位移**（加到 baseWorldPos 上），
+    //         所以公式必须写 displacement = target - anchor_zero - gap
+    const forkAnchorBlock = (forkAnchorZero && Object.keys(forkAnchorZero).length)
+      ? `\n叉齿零位锚点（"所有关节 value=0 时"叉齿承载点的世界坐标，UI Z-up）:\n  fork_anchor_zero_x = ${forkAnchorZero.fork_anchor_zero_x}\n  fork_anchor_zero_y = ${forkAnchorZero.fork_anchor_zero_y}（主轴：前后方向）\n  fork_anchor_zero_z = ${forkAnchorZero.fork_anchor_zero_z}\n\n⚠️ 关键：prismatic 关节 value_end 写的是**位移**（从零位开始前进多少），**不是**世界绝对坐标。\n   正确公式：value_end = cargo_pos_y - fork_anchor_zero_y - approach_gap\n   这个公式计算"车体需要前进多少才能让叉齿到 cargo 前 approach_gap 处"。\n`
+      : '';
+    const userMessage = `可用关节:\n${jointsSummary || '（无）'}${rolesNote}\n${sceneBlock}${forkAnchorBlock}\n用户指令: ${prompt}`;
 
     const response = await fetch(`${AI_BASE_URL}/v1/chat/completions`, {
       method: 'POST',
@@ -364,6 +423,220 @@ app.post('/api/generate-pkf', async (req, res) => {
     res.json(parsed);
   } catch (error) {
     console.error('[MotionForge] AI generate-pkf error:', error.message);
+    res.status(500).json({ error: `AI 请求失败: ${error.message}` });
+  }
+});
+
+// ══════════════════════════════════════════════════════════════
+//  L1：高级意图 → 时间表（"去 a 取货" → markdown 表格行）
+//  与 /api/generate-pkf 的关系：L1 拆出时间表，用户审核后再调 L2 生成 PKF
+// ══════════════════════════════════════════════════════════════
+
+const DECOMPOSE_SYSTEM_PROMPT = `你是 AGV/叉车动作时序拆解助手。把用户的高级意图（"去 cargo 取货"）拆成**一键可执行**的动画规划。
+
+## 输出严格格式（仅 JSON，无任何 markdown 或解释）
+
+\`\`\`json
+{
+  "rows": [
+    { "time": "0-3s", "op": "车体前进到 cargo 前方 (y=4.5, 留 0.5m 前插间距), 同时横移到 x=2（并行）" },
+    { "time": "3-4s", "op": "门架下降到 z=0.3 对齐 cargo 高度" },
+    { "time": "4s",   "op": "cargo 附着到叉齿" },
+    { "time": "4-5s", "op": "门架抬升 0.3m（抬离地面，不要抬太高）" },
+    { "time": "5-8s", "op": "车体继续前进到 drop 前方 (y=9.5, 从 4.5 到 9.5), 横移到 drop.x" },
+    { "time": "8-9s", "op": "门架下降到 drop.z" },
+    { "time": "9s",   "op": "cargo 脱离" }
+  ],
+  "reparent_events": [
+    { "t": 4, "child_name": "cargo", "new_parent_name": "<叉齿关节名>" },
+    { "t": 9, "child_name": "cargo", "new_parent_name": null }
+  ],
+  "warnings": [
+    "车体无横移关节，cargo.x 方向对不齐，叉车只能前进到 y 方向"
+  ]
+}
+\`\`\`
+
+## 车辆动作规则（核心）
+
+用户的模型**只有前后/平移/升降**，**不转弯**，撞了不管。所以：
+
+1. **状态跟踪（重要）**：车在每一段结束后的坐标 = 上一段 end + 本段 delta。
+   - t=0 时车体在 (0,0,0)
+   - 取货段走到 cargo 附近后，车体就停在那里；下一段 delta 基准是**车体当前位置**，不是 (0,0,0)
+2. **按 role 分配 delta 到关节**：
+   - \`delta.x\` → role="车体横移" 或 "叉齿侧移"
+   - \`delta.y\` → role="车体前进"
+   - \`delta.z\` → role="门架升降"
+3. **多关节可并行**（同一时间区间）——常见"车体前进 + 横移"同时进行
+4. **缺少某轴关节时**：
+   - 忽略那个轴的 delta
+   - 必须在 \`warnings[]\` 里加一条："车体无横移关节，cargo.x=2 对不齐"
+   - 不要 error，继续做能做的
+
+## 取货 / 放货流程
+
+**⚠️ 坐标来源**：cargo.x/cargo.y/cargo.z 的具体数值**必须从 user message 的"场景对象"区块里读**。用户会给你 \`cargo at (7.66, 0.50, 0.10)\` 这种行，你用 7.66 不要用 5，用 0.10 不要用 0.3。下面示例里的 5 只是占位。
+
+**⚠️ 叉齿零位锚点规则（#37，必须遵守）**：
+如果 user message 里有"叉齿零位锚点"区块：
+- ⛔ **禁止**在 rows 里写 "留 Xm 间距" / 具体数值（y=4.0 那种）
+- ✅ 必须写**字面位移公式**："y=cargo.y - fork_anchor_zero_y - approach_gap"
+- 横移："x=cargo.x - fork_anchor_zero_x"（不加 approach_gap）
+- 放货同理："y=drop.y - fork_anchor_zero_y - approach_gap"
+- **approach_gap 默认 0**（叉齿直接到 cargo 位置，由 snap-attach 精准对齐；用户可调大到 0.3 / 0.5 留缓冲）
+- **关键语义**：这是**位移公式**（prismatic 关节的 value 是从零位开始的位移），**不是绝对坐标**
+
+**示例 rows（有 fork_anchor_zero 时）**：
+\`{ "time": "0-3s", "op": "车体前进到 y=cargo.y - fork_anchor_zero_y - approach_gap, 同时横移到 x=cargo.x - fork_anchor_zero_x（并行）" }\`
+
+**反面示例（错！不要这样写）**：
+- \`{ "op": "车体前进到 cargo 前方 (y=4.0, 留 1m 间距)" }\`  ← 把位移当成了绝对坐标，还丢了 anchor
+- \`{ "op": "车体前进到 y=cargo.y - approach_gap" }\`  ← 漏掉 anchor_zero，把绝对坐标当位移用 → 车会开过头
+
+**取货 X**（X 是 cargo 名字）：
+1. 车体移动到**货物前方**（不是货物上），留 ~0.5m 间距给叉齿前插空间。
+   - 例：scene 里 cargo at (?, 5, ?) → 车体前进关节 value_end = 5 − 0.5 = **4.5**（用 scene 给的实际 y，不是示例里的 5）
+   - 横移 value_end = cargo 的 x 坐标实际值（没有偏移）
+2. 门架下降对齐 cargo 高度（cargo 的 z 坐标实际值）
+3. reparent：cargo attach 到叉齿（瞬时，写进 reparent_events）
+4. 门架抬升（小幅，~0.3m，把货物抬离地面）
+
+**放货到 Y**（Y 是 drop 名字）：
+1. 车体从当前位置（cargo 附近）**继续前进/横移到 drop 前方**，再留 0.5m 间距
+   - ⚠️ delta 是 drop − cargo，不是 drop − 原点
+   - value_end 写绝对位置：drop 的 y 实际值 − 0.5
+2. 门架下降到 drop 的 z 实际值
+3. reparent：cargo detach（写进 reparent_events）
+4. ⚠️ 不要把车体送回原点，停在 drop 附近
+
+## 附着关节选择（reparent 的 new_parent_name）
+
+- 优先找叉齿类关节（role 含"叉齿"字样，或 name 含"CS"/"叉"字样）
+- 没有叉齿关节 → 用门架关节
+- 还没有 → warnings 加"无合适附着关节"，reparent_events 留空
+
+## 时间格式
+
+- 区间："0-3s"、"4-5s"
+- 瞬时："4s"（reparent 事件触发点）
+- 总时长 < 15s
+
+## 输出字段
+
+- \`rows\`: 给人看的时间表（用户会审核）
+- \`reparent_events\`: **前端自动应用**（不用用户手动加）
+- \`warnings\`: 任何信息性提示（缺关节、无法精确到达等）
+
+## 约束
+
+- cargo / drop 名字必须**精确匹配**用户传来的 scene context 里的对象名
+- reparent 的 new_parent_name 必须是**场景中存在的关节对应的子对象名**（不是 joint role）
+- 操作描述要带具体数值（"y=5" 不是"y 方向"）
+- 不要硬加 transformation，model 只支持前后 / 平移 / 升降
+
+**只输出 JSON。**`;
+
+app.post('/api/decompose-intent', async (req, res) => {
+  const { intent, scene, joints, fork_anchor_zero: forkAnchorZero } = req.body || {};
+  if (!intent) {
+    res.status(400).json({ error: '缺少 intent 字段' });
+    return;
+  }
+  if (!AI_API_KEY) {
+    res.status(500).json({ error: 'AI_API_KEY 未配置' });
+    return;
+  }
+  try {
+    // 场景对象列表（带世界坐标）
+    const sceneSummary = (scene || []).map((o) => {
+      const pos = o.position ? ` at (${o.position.x.toFixed(2)}, ${o.position.y.toFixed(2)}, ${o.position.z.toFixed(2)})` : '';
+      return `- ${o.name}${pos}`;
+    }).join('\n');
+
+    // 关节列表（含 role）
+    const jointsSummary = (joints || []).map((j) => {
+      const roleStr = j.role ? `, role="${j.role}"` : '';
+      return `- ${j.name}: type=${j.type}, axis=${j.axis}${roleStr}`;
+    }).join('\n');
+
+    // v14.1 (#37): 叉齿零位锚点（叉齿在"所有关节 value=0"时的世界坐标，UI Z-up）
+    const forkAnchorBlock = (forkAnchorZero && Object.keys(forkAnchorZero).length)
+      ? `\n叉齿零位锚点（"所有关节 value=0 时"叉齿承载点的世界坐标，UI Z-up）:
+  fork_anchor_zero_x = ${forkAnchorZero.fork_anchor_zero_x}
+  fork_anchor_zero_y = ${forkAnchorZero.fork_anchor_zero_y}（主轴：前后方向）
+  fork_anchor_zero_z = ${forkAnchorZero.fork_anchor_zero_z}
+
+⚠️ 关键：prismatic 关节的"value"在 runtime 里是**从零位开始的位移**，不是世界绝对坐标。
+   所以 PKF 公式里车体前进的 value_end 必须写位移表达式：
+   value_end = cargo.y - fork_anchor_zero_y - approach_gap
+   这表示"车体需要前进多少米，让叉齿从零位挪到 cargo 前 approach_gap 处"。\n`
+      : '';
+    const userMessage = `场景对象（含世界坐标）:
+${sceneSummary || '（无）'}
+
+可用关节:
+${jointsSummary || '（无）'}
+${forkAnchorBlock}
+用户高级意图: ${intent}`;
+
+    console.log('\n[Decompose] ═══ 用户意图 ═══\n' + intent + '\n═══════════════════\n');
+    console.log('[Decompose] ═══ 送给 AI 的完整 user message ═══\n' + userMessage + '\n═══════════════════\n');
+
+    const response = await fetch(`${AI_BASE_URL}/v1/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${AI_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: AI_MODEL,
+        messages: [
+          { role: 'system', content: DECOMPOSE_SYSTEM_PROMPT },
+          { role: 'user', content: userMessage },
+        ],
+        temperature: 0.3,
+      }),
+    });
+
+    if (!response.ok) {
+      const detail = await response.text().catch(() => '');
+      res.status(502).json({ error: `AI API 错误 (${response.status})`, detail });
+      return;
+    }
+
+    const data = await response.json();
+    const content = data.choices?.[0]?.message?.content || '';
+    console.log('[Decompose] ═══ AI 返回 ═══\n' + content + '\n═══════════════════\n');
+
+    const match = content.match(/\{[\s\S]*\}/);
+    if (!match) {
+      res.status(422).json({ error: 'AI 返回中未找到 JSON', raw_response: content });
+      return;
+    }
+
+    const parsed = JSON.parse(match[0]);
+    if (!Array.isArray(parsed.rows)) {
+      res.status(422).json({ error: 'AI 返回 JSON 缺少 rows 数组', raw_response: content });
+      return;
+    }
+
+    // 校验每行格式
+    const validRows = parsed.rows.filter((r) => r && typeof r.time === 'string' && typeof r.op === 'string');
+    // v14: reparent_events + warnings（AI 可能不输出，容错为空数组）
+    const validReparentEvents = Array.isArray(parsed.reparent_events)
+      ? parsed.reparent_events.filter(
+          (e) => e && typeof e.t !== 'undefined' && typeof e.child_name === 'string',
+        ).map((e) => ({
+          t: Number(e.t) || 0,
+          child_name: e.child_name,
+          new_parent_name: e.new_parent_name === undefined ? null : e.new_parent_name,
+        }))
+      : [];
+    const warnings = Array.isArray(parsed.warnings) ? parsed.warnings.filter((w) => typeof w === 'string') : [];
+    res.json({ rows: validRows, reparent_events: validReparentEvents, warnings });
+  } catch (error) {
+    console.error('[MotionForge] decompose-intent error:', error.message);
     res.status(500).json({ error: `AI 请求失败: ${error.message}` });
   }
 });

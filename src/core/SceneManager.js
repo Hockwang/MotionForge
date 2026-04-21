@@ -42,6 +42,85 @@ export class SceneManager {
     this.viewHelper.location = { top: 0, right: 0, bottom: null, left: null };
   }
 
+  // ══════════════════════════════════════════════════════════════
+  //  场景 Marker 视觉工厂（schema v6）
+  //  按 marker 类型创建对应的 Three.js 对象（box / sphere），
+  //  返回的对象会被加到 sceneRoot，名字 = marker.name 让它能进场景树和参与 reparent
+  // ══════════════════════════════════════════════════════════════
+
+  createMarkerObject(marker) {
+    let obj;
+    if (marker.type === 'cargo') {
+      // 货物占位：半透明立方体，size 来自 marker
+      const w = marker.size?.w ?? 0.5;
+      const h = marker.size?.h ?? 0.5;
+      const d = marker.size?.d ?? 0.5;
+      const geo = new THREE.BoxGeometry(w, h, d);
+      const mat = new THREE.MeshStandardMaterial({
+        color: marker.color || 0xff9933,
+        transparent: true,
+        opacity: 0.65,
+        roughness: 0.6,
+      });
+      obj = new THREE.Mesh(geo, mat);
+    } else if (marker.type === 'pickup') {
+      // 取货点：青色球 + 立柱
+      obj = this._buildPointMarker(marker.color || 0x22d3ee);
+    } else if (marker.type === 'drop') {
+      // 放货点：红色球 + 立柱
+      obj = this._buildPointMarker(marker.color || 0xf87171);
+    } else {
+      return null;
+    }
+    obj.name = marker.name;
+    obj.userData.markerId = marker.id;
+    obj.userData.markerType = marker.type;
+    return obj;
+  }
+
+  /**
+   * 取货/放货点的视觉：地面上一个小球 + 一根细立柱（方便从上面看到位置）
+   * @private
+   */
+  _buildPointMarker(color) {
+    const group = new THREE.Group();
+    // 球（在立柱顶部）
+    const sphere = new THREE.Mesh(
+      new THREE.SphereGeometry(0.15, 16, 12),
+      new THREE.MeshBasicMaterial({ color }),
+    );
+    sphere.position.y = 0.5;
+    // 立柱
+    const pole = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.02, 0.02, 0.5, 8),
+      new THREE.MeshBasicMaterial({ color }),
+    );
+    pole.position.y = 0.25;
+    // 地面圆盘
+    const ring = new THREE.Mesh(
+      new THREE.CircleGeometry(0.25, 24),
+      new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.45, side: THREE.DoubleSide }),
+    );
+    ring.rotation.x = -Math.PI / 2;
+    group.add(sphere, pole, ring);
+    return group;
+  }
+
+  /**
+   * 更新一个已存在的 marker 视觉：cargo 改尺寸时重建 geometry
+   */
+  updateMarkerObject(obj, marker) {
+    if (!obj || marker.type !== 'cargo') return;
+    if (obj.geometry) obj.geometry.dispose();
+    const w = marker.size?.w ?? 0.5;
+    const h = marker.size?.h ?? 0.5;
+    const d = marker.size?.d ?? 0.5;
+    obj.geometry = new THREE.BoxGeometry(w, h, d);
+    if (marker.color && obj.material?.color) {
+      obj.material.color.set(marker.color);
+    }
+  }
+
   addDefaultLights() {
     this.scene.add(new THREE.AmbientLight(0xffffff, 0.65));
 

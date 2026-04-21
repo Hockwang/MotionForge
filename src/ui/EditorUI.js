@@ -14,6 +14,7 @@ export class EditorUI {
 
     this.txInput = this.appRoot.querySelector('#tx-input');
     this.tyInput = this.appRoot.querySelector('#ty-input');
+    this.tzInput = this.appRoot.querySelector('#tz-input');
     this.ryInput = this.appRoot.querySelector('#ry-input');
     this.clipNameInput = this.appRoot.querySelector('#clip-name-input');
     this.createClipBtn = this.appRoot.querySelector('#create-clip-btn');
@@ -27,6 +28,20 @@ export class EditorUI {
     this.keyframeList = this.appRoot.querySelector('#keyframe-list');
     this.aiPromptInput = this.appRoot.querySelector('#ai-prompt-input');
     this.aiGenerateBtn = this.appRoot.querySelector('#ai-generate-btn');
+    this.aiIntentInput = this.appRoot.querySelector('#ai-intent-input');
+    this.aiDecomposeBtn = this.appRoot.querySelector('#ai-decompose-btn');
+    this.aiOneshotBtn = this.appRoot.querySelector('#ai-oneshot-btn');
+    this.aiOneshotOutput = this.appRoot.querySelector('#ai-oneshot-output');
+
+    // ── AI 输入双模式（自由文本 / 表格）──
+    this.aiModeTextBtn = this.appRoot.querySelector('#ai-mode-text-btn');
+    this.aiModeTableBtn = this.appRoot.querySelector('#ai-mode-table-btn');
+    this.aiTextModeWrap = this.appRoot.querySelector('#ai-text-mode-wrap');
+    this.aiTableModeWrap = this.appRoot.querySelector('#ai-table-mode-wrap');
+    this.aiStepRows = this.appRoot.querySelector('#ai-step-rows');
+    this.aiAddRowBtn = this.appRoot.querySelector('#ai-add-row-btn');
+    this._aiInputMode = 'text'; // 'text' | 'table'
+    this._aiTableRows = []; // [{time, op}, ...]
     this.aiResultOutput = this.appRoot.querySelector('#ai-result-output');
     this.aiApplyBtn = this.appRoot.querySelector('#ai-apply-btn');
     this.aiJointChips = this.appRoot.querySelector('#ai-joint-chips');
@@ -41,6 +56,15 @@ export class EditorUI {
     this.pkfPreviewBtn = this.appRoot.querySelector('#pkf-preview-btn');
     this.pkfPreviewOutput = this.appRoot.querySelector('#pkf-preview-output');
     this.pkfPlaybackModeInput = this.appRoot.querySelector('#pkf-playback-mode-input');
+
+    // ── Reparent 事件列表 DOM 引用（schema v5）──
+    this.reparentEventList = this.appRoot.querySelector('#reparent-event-list');
+    // ── Marker UI（schema v6）──
+    this.addCargoMarkerBtn = this.appRoot.querySelector('#add-cargo-marker-btn');
+    this.addPickupMarkerBtn = this.appRoot.querySelector('#add-pickup-marker-btn');
+    this.addDropMarkerBtn = this.appRoot.querySelector('#add-drop-marker-btn');
+    this.removeAllMarkersBtn = this.appRoot.querySelector('#remove-all-markers-btn');
+    this.markerList = this.appRoot.querySelector('#marker-list');
 
     this.exportJsonBtn = this.appRoot.querySelector('#export-json-btn');
     this.exportPackageBtn = this.appRoot.querySelector('#export-package-btn');
@@ -78,15 +102,19 @@ export class EditorUI {
           <p id="selection-label" class="hint">当前选择：无</p>
 
           <label>X 世界坐标
-            <input id="tx-input" type="number" step="0.1" value="0" readonly />
+            <input id="tx-input" type="number" step="0.1" value="0" />
           </label>
 
           <label>Z 世界坐标（高度）
-            <input id="ty-input" type="number" step="0.1" value="0" readonly />
+            <input id="ty-input" type="number" step="0.1" value="0" />
+          </label>
+
+          <label>Y 世界坐标（前后）
+            <input id="tz-input" type="number" step="0.1" value="0" />
           </label>
 
           <label>Z 世界旋转（度）
-            <input id="ry-input" type="number" step="1" value="0" readonly />
+            <input id="ry-input" type="number" step="1" value="0" />
           </label>
 
           <hr />
@@ -120,10 +148,33 @@ export class EditorUI {
               <span class="hint">（还没有配置关节）</span>
             </div>
           </details>
-          <label>自然语言描述
+          <details id="ai-decompose-wrap" style="margin-bottom:8px" open>
+            <summary style="cursor:pointer;font-size:12px;color:#93c5fd;padding:4px 0">🎯 高级意图（一句话生成动画）</summary>
+            <textarea id="ai-intent-input" rows="2" placeholder="例如：去 cargo 取货，放到 drop"
+              style="width:100%;margin-top:4px"></textarea>
+            <div style="display:flex;gap:4px;margin-top:4px">
+              <button id="ai-oneshot-btn" type="button" style="flex:2;background:#3b82f6;color:#fff;font-weight:600">🚀 一键生成完整动画</button>
+              <button id="ai-decompose-btn" type="button" class="mini-btn" style="flex:1" title="只拆到时间表，不自动生成 PKF">🪄 仅拆解</button>
+            </div>
+            <p class="hint" style="margin-top:4px">一键生成：自动拆时间表 + 应用 reparent + 生成 PKF + 切到 PKF 播放。失败不影响现有状态。</p>
+            <div id="ai-oneshot-output" style="display:none;margin-top:6px;padding:6px;font-size:11px;background:#0f172a;border:1px solid #334155;border-radius:4px"></div>
+          </details>
+          <div class="ai-mode-toggle">
+            <button type="button" id="ai-mode-text-btn" class="ai-mode-btn active">📝 自由文本</button>
+            <button type="button" id="ai-mode-table-btn" class="ai-mode-btn">📋 时间表</button>
+          </div>
+          <label id="ai-text-mode-wrap">自然语言描述
             <textarea id="ai-prompt-input" rows="3" placeholder="例如：@叉齿 抬升 0.3 米，或 叉齿抬升 0.3 米"></textarea>
           </label>
-          <button id="ai-generate-btn" type="button">AI 生成动作</button>
+          <div id="ai-table-mode-wrap" style="display:none">
+            <p class="hint">每行一个步骤。时间格式：「0-3s」区间 或「4s」瞬时。</p>
+            <table class="ai-step-table">
+              <thead><tr><th style="width:80px">时间</th><th>操作</th><th style="width:30px"></th></tr></thead>
+              <tbody id="ai-step-rows"></tbody>
+            </table>
+            <button type="button" id="ai-add-row-btn" class="mini-btn" style="width:100%;margin-top:6px">+ 添加行</button>
+          </div>
+          <button id="ai-generate-btn" type="button" style="margin-top:8px">AI 生成动作</button>
           <pre id="ai-result-output" class="export-output" style="max-height:120px;overflow:auto"></pre>
           <button id="ai-apply-btn" type="button" style="display:none">确认并应用</button>
 
@@ -149,6 +200,22 @@ export class EditorUI {
           <pre id="pkf-preview-output" class="export-output" style="max-height:100px;overflow:auto"></pre>
 
           <hr />
+          <h2>📎 Reparent 事件</h2>
+          <p class="hint">时间线上切换对象的 scene graph parent（取货/放货用）。右键场景树节点添加。</p>
+          <div id="reparent-event-list" class="pkf-step-list"></div>
+
+          <hr />
+          <h2>📍 场景标记</h2>
+          <p class="hint">辅助物：货物占位（含尺寸）、取货点、放货点。可被 reparent 拾起；尺寸自动注入 PKF 公式（cargo_width / cargo_height / cargo_depth）。</p>
+          <div style="display:flex;gap:4px;margin-bottom:6px;flex-wrap:wrap">
+            <button id="add-cargo-marker-btn" type="button" class="mini-btn" style="flex:1;min-width:90px">📦 货物占位</button>
+            <button id="add-pickup-marker-btn" type="button" class="mini-btn" style="flex:1;min-width:90px">🟢 取货点</button>
+            <button id="add-drop-marker-btn" type="button" class="mini-btn" style="flex:1;min-width:90px">🔴 放货点</button>
+            <button id="remove-all-markers-btn" type="button" class="mini-btn danger" style="flex:1;min-width:60px">🗑 清空</button>
+          </div>
+          <div id="marker-list" class="pkf-step-list"></div>
+
+          <hr />
           <h2>导出</h2>
           <button id="export-json-btn" type="button">导出当前对象动作 JSON</button>
           <button id="export-package-btn" type="button">导出结果包 ZIP</button>
@@ -170,6 +237,7 @@ export class EditorUI {
 
   setSelectedObject(object) {
     this.selectionLabel.textContent = `当前选择：${object?.name || object?.uuid || '无'}`;
+    this._currentSelectedObject = object || null;
     if (object) {
       const worldPos = object.getWorldPosition(new THREE.Vector3());
       const worldQuat = object.getWorldQuaternion(new THREE.Quaternion());
@@ -177,12 +245,35 @@ export class EditorUI {
 
       this.txInput.value = worldPos.x.toFixed(3);
       this.tyInput.value = worldPos.y.toFixed(3);
+      if (this.tzInput) this.tzInput.value = worldPos.z.toFixed(3);
       this.ryInput.value = ((worldEuler.y * 180) / Math.PI).toFixed(2);
     } else {
       this.txInput.value = 0;
       this.tyInput.value = 0;
+      if (this.tzInput) this.tzInput.value = 0;
       this.ryInput.value = 0;
     }
+  }
+
+  /**
+   * 注册 transform 输入框的编辑事件 — 让用户能直接改世界坐标 / 旋转
+   * 注意：如果对象有关节驱动，下一帧 applyJointDrive 会覆盖。手动改的对象通常是无关节的（如测试货物）。
+   * @param {Function} onChange - (axis, value) => void  axis: 'x' | 'y' | 'z' | 'ry'
+   */
+  attachTransformEditHandlers(onChange) {
+    const apply = (axis, input) => {
+      if (!input) return;
+      input.addEventListener('change', () => {
+        const v = Number(input.value);
+        if (Number.isFinite(v) && this._currentSelectedObject) {
+          onChange(axis, v);
+        }
+      });
+    };
+    apply('x', this.txInput);
+    apply('y', this.tyInput);
+    apply('z', this.tzInput);
+    apply('ry', this.ryInput);
   }
 
   setClipOptions(clipNames, activeClipName) {
@@ -227,6 +318,57 @@ export class EditorUI {
       this.renderObjectList(treeNodes, selectedId, handlers);
     });
     menu.appendChild(moveRootBtn);
+
+    // ── v5: Reparent 事件（取货/放货用）──
+    // 在当前时间点把该对象 attach 到另一个对象下，或 detach 回世界根
+    // UI：展开候选父级列表（直接点目标，不用输入序号）
+    const attachLabel = document.createElement('div');
+    attachLabel.textContent = `📎 在 t=${(handlers?.getCurrentTime?.() ?? 0).toFixed(2)}s attach 到：`;
+    attachLabel.style.cssText = 'padding: 6px 8px; color: #93c5fd; font-size: 11px; background: #0f172a;';
+    menu.appendChild(attachLabel);
+
+    const attachListWrap = document.createElement('div');
+    attachListWrap.style.cssText = 'max-height: 180px; overflow-y: auto; border-bottom: 1px solid #334155;';
+
+    const candidates = (handlers?.getReparentCandidates?.(node) || []);
+    if (!candidates.length) {
+      const empty = document.createElement('div');
+      empty.textContent = '(没有可选父级)';
+      empty.style.cssText = 'padding: 4px 8px; font-size: 11px; color: #94a3b8;';
+      attachListWrap.appendChild(empty);
+    } else {
+      candidates.forEach((name) => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.textContent = name;
+        btn.style.cssText = 'display: block; width: 100%; text-align: left; padding: 4px 12px; font-size: 12px;';
+        btn.addEventListener('click', () => {
+          this.hideTreeContextMenu();
+          handlers?.onReparentAttachTo?.(node, name);
+        });
+        attachListWrap.appendChild(btn);
+      });
+    }
+    menu.appendChild(attachListWrap);
+
+    const detachBtn = document.createElement('button');
+    detachBtn.type = 'button';
+    detachBtn.textContent = '📌 在当前时间 detach（挂回世界根）';
+    detachBtn.addEventListener('click', () => {
+      this.hideTreeContextMenu();
+      handlers?.onReparentDetach?.(node);
+    });
+    menu.appendChild(detachBtn);
+
+    const clearReparentBtn = document.createElement('button');
+    clearReparentBtn.type = 'button';
+    clearReparentBtn.textContent = '❌ 删除此对象所有 reparent 事件';
+    clearReparentBtn.addEventListener('click', () => {
+      this.hideTreeContextMenu();
+      handlers?.onReparentClearAll?.(node);
+    });
+    menu.appendChild(clearReparentBtn);
+
     document.body.appendChild(menu);
     this.treeContextMenu = menu;
     const close = (e) => {
@@ -447,6 +589,110 @@ export class EditorUI {
   }
 
   /** 把文本插入到 ai-prompt-input 的光标位置（如无光标则追加到末尾） */
+  /** 切换 AI 输入模式 */
+  setAiInputMode(mode) {
+    if (mode !== 'text' && mode !== 'table') return;
+    this._aiInputMode = mode;
+    if (mode === 'text') {
+      this.aiTextModeWrap.style.display = '';
+      this.aiTableModeWrap.style.display = 'none';
+      this.aiModeTextBtn.classList.add('active');
+      this.aiModeTableBtn.classList.remove('active');
+    } else {
+      this.aiTextModeWrap.style.display = 'none';
+      this.aiTableModeWrap.style.display = '';
+      this.aiModeTextBtn.classList.remove('active');
+      this.aiModeTableBtn.classList.add('active');
+      // 第一次切到表格 mode，给一个空行作为模板
+      if (!this._aiTableRows.length) {
+        this._aiTableRows.push({ time: '0-3s', op: '' });
+        this._renderAiTableRows();
+      }
+    }
+  }
+
+  getAiInputMode() {
+    return this._aiInputMode;
+  }
+
+  /** 表格模式：序列化成 markdown 表格字符串 */
+  serializeAiTable() {
+    const rows = this._aiTableRows.filter((r) => r.time?.trim() && r.op?.trim());
+    if (!rows.length) return '';
+    let md = '请按下面的时间表生成 PKF 动作步骤：\n\n';
+    md += '| 时间 | 操作 |\n|---|---|\n';
+    rows.forEach((r) => {
+      md += `| ${r.time.trim()} | ${r.op.trim()} |\n`;
+    });
+    md += '\n要求：\n';
+    md += '- 每行一个 PKF step。"4s" 表示瞬时点（持续 0.1s 即可）；"0-3s" 是区间\n';
+    md += '- 操作描述里"附着到 X"或"脱离"是 reparent 类操作，**不要**输出为 PKF step（用户会手工加 reparent 事件）\n';
+    md += '- 关节匹配按 role 语义，axis/channel 按关节 type 推断\n';
+    return md;
+  }
+
+  /** 表格行内部数据访问（main.js 用） */
+  getAiTableRows() {
+    return [...this._aiTableRows];
+  }
+
+  /** 添加新行 */
+  addAiTableRow() {
+    this._aiTableRows.push({ time: '', op: '' });
+    this._renderAiTableRows();
+  }
+
+  /** 整体替换表格内容（L1 拆解后填入用） */
+  setAiTableRows(rows) {
+    this._aiTableRows = (rows || []).map((r) => ({
+      time: String(r.time || '').trim(),
+      op: String(r.op || '').trim(),
+    }));
+    this._renderAiTableRows();
+  }
+
+  /** 渲染表格行 */
+  _renderAiTableRows() {
+    if (!this.aiStepRows) return;
+    this.aiStepRows.innerHTML = '';
+    this._aiTableRows.forEach((row, idx) => {
+      const tr = document.createElement('tr');
+
+      const tdTime = document.createElement('td');
+      const inpTime = document.createElement('input');
+      inpTime.type = 'text';
+      inpTime.value = row.time;
+      inpTime.placeholder = '0-3s';
+      inpTime.addEventListener('input', () => { row.time = inpTime.value; });
+      tdTime.appendChild(inpTime);
+
+      const tdOp = document.createElement('td');
+      const inpOp = document.createElement('input');
+      inpOp.type = 'text';
+      inpOp.value = row.op;
+      inpOp.placeholder = '操作描述（自然语言）';
+      inpOp.addEventListener('input', () => { row.op = inpOp.value; });
+      tdOp.appendChild(inpOp);
+
+      const tdDel = document.createElement('td');
+      const delBtn = document.createElement('button');
+      delBtn.type = 'button';
+      delBtn.className = 'mini-btn danger';
+      delBtn.textContent = '✕';
+      delBtn.style.padding = '2px 6px';
+      delBtn.addEventListener('click', () => {
+        this._aiTableRows.splice(idx, 1);
+        this._renderAiTableRows();
+      });
+      tdDel.appendChild(delBtn);
+
+      tr.appendChild(tdTime);
+      tr.appendChild(tdOp);
+      tr.appendChild(tdDel);
+      this.aiStepRows.appendChild(tr);
+    });
+  }
+
   _insertIntoAiPrompt(text) {
     const ta = this.aiPromptInput;
     if (!ta) return;
@@ -580,6 +826,134 @@ export class EditorUI {
    * @param {Function} handlers.onUpdate - (stepId, patch) => void  修改步骤字段
    * @param {Function} handlers.onDelete - (stepId) => void         删除步骤
    */
+  /**
+   * 渲染 Reparent 事件列表（schema v5）
+   * @param {Array} events - [{ event_id, t, child_name, new_parent_name }, ...]
+   * @param {Object} handlers
+   * @param {Function} handlers.onDelete - (eventId) => void
+   */
+  /**
+   * 渲染场景标记列表（schema v6）
+   * @param {Array} markers - keyframeManager.getAllMarkers() 的结果
+   * @param {Object} handlers
+   * @param {Function} handlers.onSelect - (markerName) => void  点 marker 名字 → 选中视口对象
+   * @param {Function} handlers.onSizeChange - (markerId, axis, value) => void  cargo 改尺寸
+   * @param {Function} handlers.onRename - (markerId, newName) => void
+   * @param {Function} handlers.onDelete - (markerId) => void
+   */
+  renderMarkerList(markers, handlers) {
+    if (!this.markerList) return;
+    this.markerList.innerHTML = '';
+
+    if (!markers || !markers.length) {
+      this.markerList.innerHTML = '<p class="hint">还没有场景标记。点上面按钮添加。</p>';
+      return;
+    }
+
+    markers.forEach((m) => {
+      const card = document.createElement('div');
+      card.className = 'pkf-step-card';
+
+      // 标题行：name 输入 + 类型标签 + 删除
+      const header = document.createElement('div');
+      header.className = 'pkf-step-header';
+      const nameWrap = document.createElement('div');
+      nameWrap.style.cssText = 'display:flex;align-items:center;gap:6px;flex:1';
+
+      const typeIcon = m.type === 'cargo' ? '📦' : (m.type === 'pickup' ? '🟢' : '🔴');
+      const icon = document.createElement('span');
+      icon.textContent = typeIcon;
+      icon.style.cssText = 'cursor:pointer;font-size:14px';
+      icon.title = '点击在视口选中';
+      icon.addEventListener('click', () => handlers?.onSelect?.(m.name));
+      nameWrap.appendChild(icon);
+
+      const nameInput = document.createElement('input');
+      nameInput.type = 'text';
+      nameInput.value = m.name;
+      nameInput.style.cssText = 'flex:1;padding:3px 6px;font-size:12px;font-weight:600';
+      nameInput.addEventListener('change', () => {
+        const newName = nameInput.value.trim();
+        if (newName && newName !== m.name) handlers?.onRename?.(m.id, newName);
+      });
+      nameWrap.appendChild(nameInput);
+
+      header.appendChild(nameWrap);
+
+      const delBtn = document.createElement('button');
+      delBtn.type = 'button';
+      delBtn.className = 'mini-btn danger';
+      delBtn.textContent = '删除';
+      delBtn.addEventListener('click', () => handlers?.onDelete?.(m.id));
+      header.appendChild(delBtn);
+      card.appendChild(header);
+
+      // cargo 类型才显示尺寸编辑
+      if (m.type === 'cargo' && m.size) {
+        const sizeRow = document.createElement('div');
+        sizeRow.style.cssText = 'display:flex;gap:4px;margin-top:6px';
+        ['w', 'h', 'd'].forEach((axis) => {
+          const label = axis === 'w' ? '宽' : (axis === 'h' ? '高' : '深');
+          const wrap = document.createElement('label');
+          wrap.style.cssText = 'flex:1;font-size:10px';
+          wrap.textContent = `${label} (m)`;
+          const input = document.createElement('input');
+          input.type = 'number';
+          input.step = '0.05';
+          input.value = String(m.size[axis] ?? 0.5);
+          input.style.cssText = 'width:100%;font-size:11px;padding:3px 4px';
+          input.addEventListener('change', () => {
+            handlers?.onSizeChange?.(m.id, axis, Number(input.value));
+          });
+          wrap.appendChild(input);
+          sizeRow.appendChild(wrap);
+        });
+        card.appendChild(sizeRow);
+
+        const hint = document.createElement('p');
+        hint.className = 'hint';
+        hint.style.cssText = 'margin-top:4px;font-size:10px';
+        hint.textContent = `公式可引用：cargo_width=${m.size.w}, cargo_height=${m.size.h}, cargo_depth=${m.size.d}`;
+        card.appendChild(hint);
+      }
+
+      this.markerList.appendChild(card);
+    });
+  }
+
+  renderReparentEvents(events, handlers) {
+    if (!this.reparentEventList) return;
+    this.reparentEventList.innerHTML = '';
+
+    if (!events || !events.length) {
+      this.reparentEventList.innerHTML = '<p class="hint">暂无 reparent 事件。右键场景树节点 →「📎 在当前时间 attach 到...」添加。</p>';
+      return;
+    }
+
+    events.forEach((ev) => {
+      const card = document.createElement('div');
+      card.className = 'pkf-step-card';
+
+      const header = document.createElement('div');
+      header.className = 'pkf-step-header';
+      const title = document.createElement('span');
+      title.className = 'pkf-step-title';
+      const target = ev.new_parent_name === null ? '世界根' : ev.new_parent_name;
+      title.textContent = `t=${Number(ev.t).toFixed(2)}s  ${ev.child_name} → ${target}`;
+      header.appendChild(title);
+
+      const delBtn = document.createElement('button');
+      delBtn.type = 'button';
+      delBtn.className = 'mini-btn danger';
+      delBtn.textContent = '删除';
+      delBtn.addEventListener('click', () => handlers?.onDelete?.(ev.event_id));
+      header.appendChild(delBtn);
+
+      card.appendChild(header);
+      this.reparentEventList.appendChild(card);
+    });
+  }
+
   renderPkfSteps(steps, jointDefs, handlers) {
     this.pkfStepList.innerHTML = '';
 

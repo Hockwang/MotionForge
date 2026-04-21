@@ -525,6 +525,30 @@ console.log('emissive:', c?.material?.emissive);
 - **修复**：[KeyframeManager.js](src/core/KeyframeManager.js) `applyJointDrive` 去掉 fixed 的 early return，加 `else if (def.type === 'fixed')` 分支：`newWorldPos = baseWorldPos; newWorldQuat = baseWorldQuat;`。等价于 prismatic value=0：每帧根据 joint parent 最新世界矩阵 × base 计算 child 世界位置
 - **经验教训**：**关节类型的语义要一致**。revolute/prismatic 都是"joint parent 说了算"（URDF 风格），fixed 也应该是。早期为了省一点性能给 fixed 走快捷路径，破坏了这个一致性。现在 fixed 符合 URDF 标准：刚性连接到 joint parent，无自由度但跟随运动
 
+#### #37 fork_offset（关节间差）语义错位 → AI 生成的"位移"被当成"绝对坐标"→ 车体过冲 2.7m
+- **症状**：🚀 一键生成后播放到 t=4，cargo 深陷车体内部；车体前进关节停在 world y=7.73，但 cargo 只在 y=5，车体整整过了 2.7m
+- **排查**：Codex 对读 [KeyframeManager.js:712](src/core/KeyframeManager.js#L712) 的 prismatic 驱动 —— `newWorldPos = baseWorldPos.clone().add(worldAxisVec.multiplyScalar(def.currentValue))`。这说明 `currentValue` 语义是**从零位开始的位移**（加到 baseWorldPos 上）。但 AI 的 prompt 让它写 `cargo.y - fork_offset_y - gap = 4.8`，AI 以为这是"车体应该到达的世界 y 坐标"。runtime 把 4.8 当位移 → fork.world.y = base(2.93) + 4.8 = 7.73
+- **根因**：**"绝对世界坐标"和"从零位起的位移"的语义错位**。fork_offset 这个参数是"两个关节间差"（几何含义模糊），不包含"零位参考点"信息。AI 无从得知它写的数字应该被加到哪个 base 上 → 只能瞎写。
+- **修复**（v14.1）：
+  - 参数换语义：`fork_offset_*`（关节间差）→ `fork_anchor_zero_*`（叉齿在零位时的**世界绝对坐标**）
+  - 公式相应改：`cargo.y - fork_anchor_zero_y - gap` ←这就是"要位移多少才能让叉齿到 cargo - gap"的数学表达
+  - 验证（模型数据）：fork_anchor_zero_y=2.13, cargo.y=5, gap=0.3 → displacement = 5 - 2.13 - 0.3 = 2.57（车体前进 2.57m，叉齿落到 y=4.7）
+  - [KeyframeManager.js](src/core/KeyframeManager.js) `computeForkOffsetFromReparent` → `computeForkAnchorZero`，内部缓存，`buildDefaultParamValues` 读缓存不实时重算（避免运动中参数漂移）
+  - [src/main.js](src/main.js) 加 `snapshotForkAnchorZero()` helper：**临时把所有关节 value=0** → 算 anchor → **恢复关节 value**（try/finally）。保证 anchor 永远是"零位锚点"
+  - AI prompt（[tools/conversion-service.js](tools/conversion-service.js)）明确提示："prismatic value_end 是位移，不是绝对坐标" + 提供具体公式模板
+- **经验教训**：**语义必须和 runtime 对齐**。如果 runtime 的驱动模型是"base + displacement"，暴露给 AI 的参数就必须让它能直接算位移。之前用"关节间差"相当于让 AI 做两步推理（猜零位 + 算位移）→ AI 第一步就错。推广：任何想让 LLM 写"运行时可执行表达式"的系统，**参数语义必须是 runtime 可直接解释的量**，不是需要再转换一次的中间量。
+- **踩过的中间坑**（写出来给未来自己看）：
+  1. v14.0 初版只用 approach_gap 常数 → 不懂具体几何，值不对
+  2. v14.0.1 加 fork_offset_y（关节间差） → AI 用上了，但公式被当绝对坐标 → 过冲更严重（本 bug）
+  3. v14.1 改成 fork_anchor_zero（绝对世界坐标）+ 公式明确标注"这是位移表达式"
+
+#### #36 叉齿吸附用整个 `_CS19110` 子树 bbox → cargo 卡在车体内不在叉齿尖
+- **症状**：🚀 一键生成动画，播放到 t=4（attach 瞬间）cargo 视觉上贴在车体内部 / 门架附近，不在叉齿尖上。x/y 方向偏差 ~0.5m
+- **排查**：`__mf.keyframeManager.computeForkOffsetFromReparent(sceneRoot)` 返回 `{fork_offset_x: 0.526, fork_offset_y: -0.801, fork_offset_z: 0.373}`。对比 `_CS19110` 整个子树 bbox center y=0.32 vs bbox min.y=0.042 → 中心在门架中部，不是叉齿尖底
+- **根因**：`THREE.Box3().setFromObject(_CS19110)` 把整个子树（叉齿尖 + 支架 + 门架 + 内件）算在一起，bbox 中心被高层 mesh "拉高"。把 bbox 中心当"叉齿位置"是错的 —— fork_offset_y 算出的方向和真实叉齿尖位置不符
+- **修复**：[KeyframeManager.js](src/core/KeyframeManager.js) 加 `_findForkTineMesh(forkObj)` helper —— 在 `_CS19110` 的所有 mesh 后代里找 world bbox `min.y` **最小**的那个（叉齿尖 = 最贴地）。`computeForkOffsetFromReparent` 和 `applyReparentEventsAtTime` 的 snap-attach 都改用叉齿尖 mesh 的 bbox，不用整个 subtree
+- **经验教训**：**"父节点 bbox" 和 "我想定位的子部件" 语义不同**。Forklift 的 `_CS19110` 是关节 group，视觉 mesh 都在它下面但职能不同（升降 / 支撑 / 承载 / 叉齿尖）。用整个 subtree bbox 混了这些语义。启发式"最低 mesh = 叉齿尖"对标准叉车有效，但**不适用所有模型**（倒挂叉齿、侧向叉齿等特殊几何会失效）→ 未来加 UI 让用户手动指定"cargo 吸附 mesh"。**中间踩过的坑**：尝试过"去掉 snap 的 position 逻辑、靠 attach() 保世界"的简化版，但因为 fork_offset_y 本身算错，cargo 落点仍然不对 → 要同时修"位置计算源"和"snap 位置逻辑"
+
 #### #34 FBX 源 ZIP roundtrip 后根节点改名导致 parent=root 的关节找不到父级
 - **症状**：FBX 源加载后场景根名叫 "Scene"。如果用户把关节的 parent 设为场景根，导出 ZIP 再导入后，该关节被兜底到错误的 scene graph parent（通常是子级 AGV 或无名包装），视觉上表现为"关节丢失 / 左侧顶部名字改变"
 - **排查**：`__mf.sceneManager.sceneRoot.name` 导入前是 "Scene"，导入后变成 `.fbx` 文件名（如 `shuangchaxiaoqianyi.fbx`）；joints.json 里 `parent_name: "Scene"` 在 objectsByName 里找不到
@@ -631,3 +655,47 @@ let c = null; __mf.sceneManager.sceneRoot.traverse(o => { if (o.name === '_CS191
 - 链式关节导入后整体下沉（两阶段应用）— [#22](#22-链式关节导入后整体下沉)
 - 导出前清除选中（避免高亮 emissive 烘焙）— [#17](#17-导入后零件高亮不消失)
 - Gizmo 旋转角度解缠（避免 360° 跳变）— [#23](#23-旋转-gizmo-大角度跳变-360)
+
+---
+
+## 文档系统
+
+项目在 `docs/` 下维护一套 Karpathy LLM Wiki 风格的结构化文档体系，入口是 [`docs/index.md`](docs/index.md)。
+
+### 目录结构
+
+```
+docs/
+├── index.md          # 分类导航索引（新 session 从这里开始）
+├── log.md            # Append-only 时间线（重要决策/里程碑记录）
+├── architecture/     # 系统架构文档（模块职责、数据流、坐标系）
+├── concepts/         # 领域概念（PKF、ZIP schema、场景标记等）
+├── decisions/        # ADR 架构决策记录（带背景/选项/理由/后果）
+├── gotchas/          # 踩坑记录（症状/根因/解决方案）
+├── raw/              # 草稿/未整理笔记
+├── ai-rigging/       # AI 打关节研究专题（独立维护）
+├── archive/          # 历史文档（不再更新）
+└── schema/           # ZIP 输出格式规范
+```
+
+### 新 session 接手时的阅读顺序
+
+1. [`README.md`](README.md) — 3 分钟了解项目是什么
+2. [`docs/index.md`](docs/index.md) — 找到与当前任务相关的文档
+3. [`docs/architecture/overview.md`](docs/architecture/overview.md) — 理解模块关系
+4. 对应 decision + gotcha — 理解为什么这么做、有哪些坑
+
+### 维护触发条件
+
+| 触发时机 | 写到哪里 |
+|---------|---------|
+| 做了影响范围 > 1 个文件的架构决策 | `docs/decisions/` 新增 ADR |
+| 修了需要诊断脚本才定位的疑难 bug | `docs/gotchas/` 新增条目 |
+| 发现新的领域概念需要解释 | `docs/concepts/` 新增文档 |
+| 重要里程碑或决策 | 追加到 `docs/log.md` |
+| CLAUDE.md 里的 Bug 修复历史 | 照旧追加（两个系统并行，CLAUDE.md 偏运维，docs/ 偏知识库） |
+
+### 维护模型约定
+
+- **日常文档维护**：sonnet 即可
+- **schema 变更审核 / 架构重构 ADR**：建议用 opus，确保推理严谨

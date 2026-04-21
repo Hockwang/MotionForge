@@ -147,6 +147,34 @@
 
 ---
 
+## 导出格式的已知怪异（留给未来 schema 升级时一起改）
+
+> 来源：autorigging 项目作为首个外部消费方踩到后反馈。当前下游已有稳定 workaround，暂不动 MotionForge 代码。
+> 详细跨项目分析见 `C:\Users\Administrator\Desktop\cursor\obsidian\knowledge-vault\notes\cross-project\patterns\boundary-format-drift.md`
+
+### 1. 根级 joint 的 `name` 写成源文件名而非场景树根节点名
+
+- **现状**：`ResultPackageExporter.js` 导出 joints.json 时，`parent=null` 的根级 joint 的 `name` 字段写的是源文件名（如 `三向车.glb`），场景树里实际不存在这个名字
+- **下游影响**：consumer 按 name 去场景树找 → 找不到 → 需要额外兜底代码（autorigging GT 加载器已有 10 行根节点映射）
+- **修复方向**：导出时写场景树根节点名 + 另加 `source_file` 单独字段保留文件名
+- **触发条件**：下次 schema 升级（v7）时一起做；或出现第二个外部消费方时
+
+### 2. Y↔Z swap 分散在各离境点，无统一转换函数
+
+- **现状**：Three.js 是 Y-up，对外（UI/AI/外部工具）约定 Z-up。每个离境点（`collectSceneForAi`、UI 输入框绑定、导出）各自手工做 `{x, y: threejs.z, z: threejs.y}`
+- **已知漏点**：`aiDecomposeBtn` 的 handler 里那段 scene 采集没做 swap（见 `docs/architecture/ai-pipeline.md` 已标注）
+- **风险**：未来加新的"导出给外部"功能时很容易忘做 swap
+- **修复方向**：建 `src/utils/coordinate.js` 导出 `toZUp()` / `toYUp()`，所有离境点强制走这里；配合在 ESLint 加 `getWorldPosition` 直接返回的警告
+
+### 3. UI 切换到 `type=fixed` 时不清 `axis` 字段
+
+- **现状**：UI 的 type 下拉切换到 fixed 时只是隐藏 axis 下拉，不清字段。导出 joints.json 里仍带 `type=fixed, axis=y`（y 是 UI 默认值）
+- **下游影响**：consumer 如果严格比对 axis 会误判（autorigging evaluator 已跳过 fixed 的 axis 比对，3 行代码）
+- **数学上无影响**：生产 FK 公式不读 fixed 关节的 axis
+- **修复方向**：`EditorUI.js` 的 type onChange 回调里，`type=fixed` 时强制 `axis=null`（5 行改动）
+
+---
+
 ## 冒烟测试流程（每条改动后跑一遍）
 
 1. `npm run dev`

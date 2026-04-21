@@ -76,6 +76,7 @@ export class ResultPackageExporter {
     clips,
     pkfParameters,
     pkfSteps,
+    sceneMarkers,
     editorName = 'MotionForge',
   }) {
     if (!sceneRoot) {
@@ -93,8 +94,19 @@ export class ResultPackageExporter {
     // v4：模型固定为 .glb（GLTFExporter 输出格式），不管原文件是 fbx/usd 都统一
     const modelFileName = `model-${timestamp}.glb`;
 
+    // schema v6：场景标记（货物占位 / 取货点 / 放货点）含位置 + 类型 + 尺寸
+    // markers 同时是 Three.js 对象（已存进 GLB），这里的 metadata 给 type/size/color 等
+    // 不存 position：position 已经在 GLB 里（marker 是 sceneRoot 的子对象）
+    const markersMetadata = (sceneMarkers || []).map((m) => ({
+      id: m.id,
+      name: m.name,
+      type: m.type,
+      size: m.size ? { ...m.size } : null,
+      color: m.color || null,
+    }));
+
     const manifest = {
-      schema_version: 4,
+      schema_version: 6,
       generator: editorName,
       exported_at: new Date().toISOString(),
       source: {
@@ -109,6 +121,8 @@ export class ResultPackageExporter {
         units_in_meters: 1.0,
         fps: 30,
       },
+      // v6: 场景标记 metadata（位置/Three.js 对象在 GLB 里，按 name 关联）
+      scene_markers: markersMetadata,
       files: {
         manifest: manifestFileName,
         model: modelFileName,
@@ -145,13 +159,20 @@ export class ResultPackageExporter {
     // 每个关键帧含 jointValues 字典：{ jointDefName: number }
     // 不再有 per-object channels，所有关节在同一时间线上同步
     const motion = {
-      _comment: 'v2 全局关键帧 schema：每个 clip 是项目级动画片段，keyframes[].joint_values 字典记录所有关节在该时刻的状态。joint_values 的 key 是 joint definition 的 name。',
+      _comment: 'v5 全局关键帧 + reparent 事件 schema：keyframes[] 驱动 joint_values；reparent_events[] 在指定时间切换对象的 scene graph parent（取货/放货用）。child_name/new_parent_name 用名字跨 roundtrip 稳定。new_parent_name=null 表示挂回世界根。',
       clips: (clips || []).map((clip) => ({
         clip_name: clip.clip_name,
         duration: clip.duration,
         keyframes: (clip.keyframes || []).map((k) => ({
           t: k.t,
           joint_values: { ...(k.joint_values || {}) },
+        })),
+        // v5: reparent 事件（按 t 排序；child_name/new_parent_name 是名字不是 uuid）
+        reparent_events: (clip.reparent_events || []).map((e) => ({
+          event_id: e.event_id,
+          t: e.t,
+          child_name: e.child_name,
+          new_parent_name: e.new_parent_name, // null = 世界根
         })),
       })),
     };

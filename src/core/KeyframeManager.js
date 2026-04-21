@@ -33,7 +33,7 @@ export class KeyframeManager {
     //     一个 keyframe 同时记录多个关节在该时刻的状态，回放时所有关节同步插值
     /** @type {Map<string, {clipName:string, duration:number, keyframes:Array<{time:number, jointValues:Object<string,number>}>}>} */
     this.globalClips = new Map();
-    this.globalClips.set('default', { clipName: 'default', duration: 10, keyframes: [] });
+    this.globalClips.set('default', { clipName: 'default', duration: 10, keyframes: [], reparentEvents: [] });
     this.activeClipName = 'default';
 
     // ── PKF（参数化关键帧公式）数据容器 ──
@@ -43,6 +43,18 @@ export class KeyframeManager {
     // 步骤列表：每个步骤关联一个关节，定义通道/轴向/时间区间/起止公式/缓动
     /** @type {Array<{id:string, joint:string, joint_def_id:string, channel:string, axis:string, t_start:number, t_end:number, value_start:string, value_end:string, easing:string}>} */
     this.pkfSteps = [];
+
+    // ── Reparent 事件系统（schema v5）──
+    // 记录模型加载时每个对象的初始 scene graph parent（by name），循环回 t=0 时还原用。
+    // Map<child_name, original_parent_name | null>
+    this.originalParentMap = new Map();
+
+    // ── 场景标记系统（schema v6）──
+    // 用户在场景里加的辅助物：货物占位 / 取货点 / 放货点。独立于关节系统。
+    // Marker 也作为 Three.js 对象出现在 sceneRoot 下，参与 reparent / 选中 / 编辑流程。
+    // metadata（type/size/color）单独存这里，对应 scene 里的 Object3D 通过 name 查找。
+    /** @type {Map<string, {id, name, type, size?, color?}>} */
+    this.sceneMarkers = new Map();
   }
 
   reset() {
@@ -50,10 +62,375 @@ export class KeyframeManager {
     this.objectDataById.clear();
     this.jointDefinitions.clear();
     this.globalClips.clear();
-    this.globalClips.set('default', { clipName: 'default', duration: 10, keyframes: [] });
+    this.globalClips.set('default', { clipName: 'default', duration: 10, keyframes: [], reparentEvents: [] });
     this.activeClipName = 'default';
     this.pkfParameters.clear();  // 清空 PKF 参数
     this.pkfSteps = [];           // 清空 PKF 步骤
+    this.originalParentMap.clear(); // 清空初始 parent 快照
+    this.sceneMarkers.clear();      // 清空场景标记
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  //  场景标记系统（schema v6）
+  // ══════════════════════════════════════════════════════════════
+
+  /**
+   * 添加 marker
+   * @param {Object} opts - { name, type, size?, color? }
+   * @returns {Object} 创建的 marker 数据
+   */
+  addMarker({ name, type, size, color }) {
+    const id = `mk_${Date.now().toString(36)}_${Math.floor(Math.random() * 1e4)}`;
+    const marker = {
+      id,
+      name: String(name || `${type}_${this.sceneMarkers.size + 1}`),
+      type, // 'cargo' | 'pickup' | 'drop'
+      size: type === 'cargo' ? (size || { w: 0.5, h: 0.5, d: 0.5 }) : null,
+      color: color || null,
+    };
+    this.sceneMarkers.set(id, marker);
+    return marker;
+  }
+
+  removeMarker(id) {
+    return this.sceneMarkers.delete(id);
+  }
+
+  removeMarkerByName(name) {
+    for (const [id, m] of this.sceneMarkers) {
+      if (m.name === name) {
+        this.sceneMarkers.delete(id);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  getMarker(id) {
+    return this.sceneMarkers.get(id);
+  }
+
+  getMarkerByName(name) {
+    for (const m of this.sceneMarkers.values()) {
+      if (m.name === name) return m;
+    }
+    return null;
+  }
+
+  getAllMarkers() {
+    return [...this.sceneMarkers.values()];
+  }
+
+  updateMarker(id, patch) {
+    const m = this.sceneMarkers.get(id);
+    if (!m) return null;
+    if (typeof patch.name !== 'undefined') m.name = String(patch.name);
+    if (patch.size && m.type === 'cargo') {
+      if (typeof patch.size.w !== 'undefined') m.size.w = Number(patch.size.w) || 0;
+      if (typeof patch.size.h !== 'undefined') m.size.h = Number(patch.size.h) || 0;
+      if (typeof patch.size.d !== 'undefined') m.size.d = Number(patch.size.d) || 0;
+    }
+    if (typeof patch.color !== 'undefined') m.color = patch.color;
+    return m;
+  }
+
+  /**
+   * 获取 cargo marker 的尺寸参数（注入到 PKF 公式求值器）
+   * 当前简化：只取第一个 cargo marker 的尺寸作为 cargo_width / cargo_height / cargo_depth
+   * 多 cargo 场景需要扩展（按 marker name 区分）
+   */
+  getCargoSizeParams() {
+    for (const m of this.sceneMarkers.values()) {
+      if (m.type === 'cargo' && m.size) {
+        return {
+          cargo_width: m.size.w,
+          cargo_height: m.size.h,
+          cargo_depth: m.size.d,
+        };
+      }
+    }
+    return {};
+  }
+
+  /**
+   * 找叉齿尖 mesh —— forkObj 子树里 world bbox min.y 最小的那个 mesh。
+   * 启发式：叉齿尖是整个 fork 组件里最贴地面的部分（门架/支架都在它上面）。
+   * 用整个 subtree bbox 会被高层 mesh 拉偏（#36 修复）。
+   *
+   * @param {THREE.Object3D} forkObj
+   * @returns {THREE.Mesh|null}
+   */
+  _findForkTineMesh(forkObj) {
+    let bestMesh = null;
+    let bestMinY = Infinity;
+    forkObj.traverse((o) => {
+      if (!o.isMesh) return;
+      const box = new THREE.Box3().setFromObject(o);
+      if (box.isEmpty()) return;
+      if (box.min.y < bestMinY) {
+        bestMinY = box.min.y;
+        bestMesh = o;
+      }
+    });
+    return bestMesh;
+  }
+
+  /**
+   * v14.1（#37）：算叉齿"承载锚点"在**零位**时的世界坐标。
+   *
+   * 语义：叉齿尖 mesh 的 bbox 中心 world position（UI Z-up）。
+   *
+   * 用途：AI 生成 PKF 时写公式 `cargo_pos_y - fork_anchor_zero_y - approach_gap`。
+   * 因为 runtime 的 prismatic `currentValue` 是**位移**（加到 baseWorldPos 上），
+   * 所以公式应该算"要从零位挪到目标的位移"，即：
+   *   displacement = target_world - anchor_at_zero - gap
+   * 之前用 fork_offset（关节间差）是错的，公式被 runtime 当位移 → double offset（见 #37）。
+   *
+   * ⚠️ 调用时机：**必须在所有关节 currentValue=0 时**才能得到真零位锚点。
+   *    main.js 的 🚀 handler 负责临时归零 → 调本函数 → 恢复。
+   *    此处不主动归零（避免破坏当前动画状态）。
+   *    结果缓存在 this._forkAnchorZeroCached，buildDefaultParamValues 读缓存。
+   *
+   * @param {THREE.Object3D} sceneRoot
+   * @returns {Object} {} 或 { fork_anchor_zero_x, fork_anchor_zero_y, fork_anchor_zero_z }
+   */
+  computeForkAnchorZero(sceneRoot) {
+    if (!sceneRoot) return {};
+    const clip = this.getActiveGlobalClip();
+    const events = clip?.reparentEvents || [];
+    const attachEvent = events.find((e) => e.new_parent_name);
+    if (!attachEvent) return {};
+    const forkObj = sceneRoot.getObjectByName(attachEvent.new_parent_name);
+    if (!forkObj) return {};
+
+    sceneRoot.updateMatrixWorld(true);
+    const tineMesh = this._findForkTineMesh(forkObj) || forkObj;
+    const box = new THREE.Box3().setFromObject(tineMesh);
+    if (box.isEmpty()) return {};
+    const anchor = box.getCenter(new THREE.Vector3()); // threejs Y-up 世界
+
+    // threejs → UI Z-up（swap y/z）
+    const result = {
+      fork_anchor_zero_x: +anchor.x.toFixed(3),
+      fork_anchor_zero_y: +anchor.z.toFixed(3), // threejs z = UI y(前后)
+      fork_anchor_zero_z: +anchor.y.toFixed(3), // threejs y = UI z(高度)
+    };
+    this._forkAnchorZeroCached = result;
+    return result;
+  }
+
+  /**
+   * 返回 computeForkAnchorZero 缓存值（给 buildDefaultParamValues 用，不触发重算）。
+   * 未缓存 → 空对象（AI 退化用 approach_gap 老路）。
+   */
+  getForkAnchorZero() {
+    return this._forkAnchorZeroCached || {};
+  }
+
+  /** 清掉缓存（reparent event 变了就应该清，下次 🚀 重算） */
+  invalidateForkAnchorZero() {
+    this._forkAnchorZeroCached = null;
+  }
+
+  // ══════════════════════════════════════════════════════════════
+  //  Reparent 事件系统（schema v5）
+  // ══════════════════════════════════════════════════════════════
+
+  /**
+   * 快照所有命名对象的初始 scene graph parent name。
+   * 加载模型后调一次，循环回 t=0 时把 reparented 对象还原用。
+   * @param {THREE.Object3D} root
+   */
+  snapshotOriginalParents(root) {
+    this.originalParentMap.clear();
+    this.originalWorldTransforms = this.originalWorldTransforms || new Map();
+    this.originalWorldTransforms.clear();
+    if (!root) return;
+    root.updateMatrixWorld(true);
+    root.traverse((obj) => {
+      if (obj.name && obj.parent) {
+        // 只记录命名对象；parent 也只记 name（无 name 的 parent 记为 null = sceneRoot 语义）
+        this.originalParentMap.set(obj.name, obj.parent.name || null);
+        // 同时快照世界变换：循环回 t=0 时 reparented 对象还要回到原位
+        // 修的 bug：cargo 放下后卡在 drop 位置，第 2 轮不会自己回 spawn
+        this.originalWorldTransforms.set(obj.name, {
+          pos: obj.getWorldPosition(new THREE.Vector3()),
+          quat: obj.getWorldQuaternion(new THREE.Quaternion()),
+          scale: obj.getWorldScale(new THREE.Vector3()),
+        });
+      }
+    });
+  }
+
+  /**
+   * 给当前 clip 增加一个 reparent 事件
+   * @param {number} t - 时间点（秒）
+   * @param {string} childName - 子对象名字
+   * @param {string|null} newParentName - 新父级名字，null = 挂回世界根
+   * @returns {string} event_id
+   */
+  addReparentEvent(t, childName, newParentName) {
+    const clip = this.getActiveGlobalClip();
+    if (!clip) return null;
+    if (!clip.reparentEvents) clip.reparentEvents = [];
+    const id = `rev_${Date.now().toString(36)}_${Math.floor(Math.random() * 1e4)}`;
+    clip.reparentEvents.push({
+      event_id: id,
+      t: Number(t) || 0,
+      child_name: String(childName || ''),
+      new_parent_name: newParentName === null || newParentName === undefined ? null : String(newParentName),
+    });
+    // 按 t 升序排序，应用时从 t=0 顺序累积
+    clip.reparentEvents.sort((a, b) => a.t - b.t);
+    this.invalidateForkAnchorZero(); // #37: events 变了，fork anchor 可能变，强制下次重算
+    return id;
+  }
+
+  /** 删除一个 reparent 事件 */
+  removeReparentEvent(eventId) {
+    const clip = this.getActiveGlobalClip();
+    if (!clip?.reparentEvents) return false;
+    const before = clip.reparentEvents.length;
+    clip.reparentEvents = clip.reparentEvents.filter((e) => e.event_id !== eventId);
+    const changed = clip.reparentEvents.length !== before;
+    if (changed) this.invalidateForkAnchorZero();
+    return changed;
+  }
+
+  /** 删除某个对象的所有 reparent 事件 */
+  removeAllReparentEventsForChild(childName) {
+    const clip = this.getActiveGlobalClip();
+    if (!clip?.reparentEvents) return 0;
+    const before = clip.reparentEvents.length;
+    clip.reparentEvents = clip.reparentEvents.filter((e) => e.child_name !== childName);
+    return before - clip.reparentEvents.length;
+  }
+
+  /** 获取当前 clip 所有 reparent 事件（浅拷贝） */
+  getReparentEvents() {
+    const clip = this.getActiveGlobalClip();
+    return clip?.reparentEvents ? [...clip.reparentEvents] : [];
+  }
+
+  /**
+   * 在时间 t 应用 reparent 事件到 scene graph
+   *
+   * 算法：从 t=0 沿事件列表累积，得出每个 child 在时间 t "应该处于"的 parent。
+   * 然后和实际 scene graph 对比，用 Three.js 的 Object3D.attach() 切换
+   * （attach 会自动保持世界变换不变）。
+   *
+   * 关键设计：状态由 t=0 累积而不是"处理 delta"——seek 到任意时间都正确。
+   *
+   * @param {number} t - 目标时间（秒）
+   * @param {THREE.Object3D} root - sceneRoot
+   */
+  applyReparentEventsAtTime(t, root) {
+    if (!root) return;
+    this._lastSceneRoot = root; // v14: 给 buildDefaultParamValues 算 fork_offset 用
+    const clip = this.getActiveGlobalClip();
+    const events = clip?.reparentEvents || [];
+
+    // 建 name → object 索引
+    const nameMap = new Map();
+    root.traverse((obj) => { if (obj.name) nameMap.set(obj.name, obj); });
+
+    // 计算"在时间 t，每个被 reparent 过的 child 应该挂谁下面"
+    // 初始状态：所有 child 在其 originalParent 下（由 snapshotOriginalParents 记录）
+    const targetState = new Map(); // child_name → parent_name (null = sceneRoot)
+
+    // 哪些 child 被事件涉及过 → 初始化为 originalParent
+    const touchedChildren = new Set();
+    const firstEventTime = new Map(); // child → 它最早一个事件的 t
+    for (const ev of events) {
+      touchedChildren.add(ev.child_name);
+      if (!firstEventTime.has(ev.child_name)) {
+        firstEventTime.set(ev.child_name, ev.t);
+      }
+    }
+    for (const childName of touchedChildren) {
+      targetState.set(childName, this.originalParentMap.get(childName) ?? null);
+    }
+
+    // 按 t 升序累积（events 已经排序）
+    for (const ev of events) {
+      if (ev.t > t + 1e-6) break; // 未到时间
+      targetState.set(ev.child_name, ev.new_parent_name);
+    }
+
+    // 查 marker 类型的辅助（用于 snap-attach）
+    const findMarkerMeta = (name) => {
+      for (const meta of this.sceneMarkers.values()) {
+        if (meta.name === name) return meta;
+      }
+      return null;
+    };
+
+    // 应用 diff：如果实际 parent !== target parent，attach 切换
+    for (const [childName, targetParentName] of targetState) {
+      const child = nameMap.get(childName);
+      if (!child) continue;
+      const targetParent = targetParentName ? (nameMap.get(targetParentName) || root) : root;
+      const parentChanged = child.parent !== targetParent;
+      if (parentChanged) {
+        targetParent.attach(child); // 保持世界变换
+      }
+
+      // Snap-attach（#36）：cargo 附着到非世界父级时，底部贴到**叉齿尖 mesh** 的
+      // bbox 底部中心。用 _findForkTineMesh 找子树里最贴地的 mesh，而不是整个 subtree bbox
+      //（subtree 包含 mast / 支架等高层 mesh，bbox 中心会被拉偏到车体内部）
+      if (parentChanged && targetParent !== root) {
+        const markerMeta = findMarkerMeta(childName);
+        if (markerMeta?.type === 'cargo') {
+          const h = markerMeta.size?.h ?? 0.5;
+          targetParent.updateMatrixWorld(true);
+          const tineMesh = this._findForkTineMesh(targetParent) || targetParent;
+          const box = new THREE.Box3().setFromObject(tineMesh);
+          let desiredWorldPos;
+          if (!box.isEmpty()) {
+            // cargo 底部中心 = 叉齿尖 bbox 底部中心，cargo 几何中心 = 底部 + (0, h/2, 0)
+            const center = box.getCenter(new THREE.Vector3());
+            desiredWorldPos = new THREE.Vector3(center.x, box.min.y + h / 2, center.z);
+          } else {
+            // fallback：父级原点 + h/2 上方
+            desiredWorldPos = targetParent.getWorldPosition(new THREE.Vector3());
+            desiredWorldPos.y += h / 2;
+          }
+          // world → targetParent local
+          const localPos = targetParent.worldToLocal(desiredWorldPos.clone());
+          child.position.copy(localPos);
+          child.quaternion.identity();
+          // scale 补偿：防止 attach/detach roundtrip 的 matrix decompose 精度累积
+          // 让 cargo.world.scale 稳定 = (1,1,1)，不管父级世界 scale 是多少
+          const parentWorldScale = targetParent.getWorldScale(new THREE.Vector3());
+          child.scale.set(
+            1 / (parentWorldScale.x || 1),
+            1 / (parentWorldScale.y || 1),
+            1 / (parentWorldScale.z || 1),
+          );
+        }
+      }
+      // 循环边界修复：如果当前时间早于该 child 的第一个事件，
+      // 把 child 重置到原始世界变换（否则循环回来 cargo 会卡在 drop 位置）
+      const firstT = firstEventTime.get(childName);
+      const snap = this.originalWorldTransforms?.get(childName);
+      if (firstT !== undefined && t + 1e-6 < firstT && snap && child.parent) {
+        child.parent.updateMatrixWorld(true);
+        const localPos = child.parent.worldToLocal(snap.pos.clone());
+        child.position.copy(localPos);
+        const parentWorldQuat = child.parent.getWorldQuaternion(new THREE.Quaternion());
+        const localQuat = parentWorldQuat.invert().multiply(snap.quat);
+        child.quaternion.copy(localQuat);
+        // 还原 scale：compensate parent world scale 让 child.world.scale = snap.scale
+        if (snap.scale) {
+          const parentWS = child.parent.getWorldScale(new THREE.Vector3());
+          child.scale.set(
+            snap.scale.x / (parentWS.x || 1),
+            snap.scale.y / (parentWS.y || 1),
+            snap.scale.z / (parentWS.z || 1),
+          );
+        }
+      }
+    }
   }
 
   /**
@@ -385,6 +762,7 @@ export class KeyframeManager {
    */
   applyAllJointDrives(root) {
     if (!root) return;
+    this._lastSceneRoot = root; // v14: 给 buildDefaultParamValues 算 fork_offset 用
 
     // 建立 nodeMap 缓存（避免每个 joint 都 traverse 一遍）
     const nodeMap = new Map();
@@ -462,7 +840,7 @@ export class KeyframeManager {
       i += 1;
       name = `${base}_${i}`;
     }
-    this.globalClips.set(name, { clipName: name, duration: 10, keyframes: [] });
+    this.globalClips.set(name, { clipName: name, duration: 10, keyframes: [], reparentEvents: [] });
     return name;
   }
 
@@ -759,7 +1137,7 @@ export class KeyframeManager {
         objectName: obj.objectName,
         baseTransform: obj.baseTransform,
       })),
-      // 全局 clips：每个 clip 包含 duration + keyframes（每个 keyframe 含全局 jointValues）
+      // 全局 clips：每个 clip 包含 duration + keyframes + reparentEvents（schema v5）
       activeClipName: this.activeClipName,
       globalClips: [...this.globalClips.values()].map((clip) => ({
         clipName: clip.clipName,
@@ -768,10 +1146,20 @@ export class KeyframeManager {
           time: k.time,
           jointValues: { ...k.jointValues }, // 浅拷贝足够（值都是 number）
         })),
+        // v5: reparent 事件（深拷贝）
+        reparentEvents: (clip.reparentEvents || []).map((e) => ({ ...e })),
       })),
       // PKF 数据序列化（深拷贝，确保快照与当前数据解耦）
       pkfParameters: [...this.pkfParameters.values()].map((p) => ({ ...p })),
       pkfSteps: this.pkfSteps.map((s) => ({ ...s })),
+      // schema v6: 场景标记
+      sceneMarkers: [...this.sceneMarkers.values()].map((m) => ({
+        id: m.id,
+        name: m.name,
+        type: m.type,
+        size: m.size ? { ...m.size } : null,
+        color: m.color || null,
+      })),
     };
   }
 
@@ -817,11 +1205,13 @@ export class KeyframeManager {
           time: Number(k.time) || 0,
           jointValues: { ...(k.jointValues || {}) },
         })),
+        // v5: 恢复 reparent 事件（旧快照没有字段 → 空数组兜底）
+        reparentEvents: (clip.reparentEvents || []).map((e) => ({ ...e })),
       });
     });
     // 至少保证有一个 default clip
     if (!this.globalClips.size) {
-      this.globalClips.set('default', { clipName: 'default', duration: 10, keyframes: [] });
+      this.globalClips.set('default', { clipName: 'default', duration: 10, keyframes: [], reparentEvents: [] });
     }
     this.activeClipName = serializedState?.activeClipName && this.globalClips.has(serializedState.activeClipName)
       ? serializedState.activeClipName
@@ -834,6 +1224,17 @@ export class KeyframeManager {
     });
     // 步骤数组整体替换，逐项深拷贝
     this.pkfSteps = (serializedState?.pkfSteps || []).map((s) => ({ ...s }));
+    // schema v6: 恢复场景标记
+    this.sceneMarkers.clear();
+    (serializedState?.sceneMarkers || []).forEach((m) => {
+      this.sceneMarkers.set(m.id, {
+        id: m.id,
+        name: m.name,
+        type: m.type,
+        size: m.size ? { ...m.size } : null,
+        color: m.color || null,
+      });
+    });
   }
 
   // ══════════════════════════════════════════════════════════════
@@ -915,6 +1316,13 @@ export class KeyframeManager {
     this.pkfParameters.forEach((p) => {
       values[p.id] = p.default ?? 0;
     });
+    // schema v6: 注入 cargo 尺寸参数（cargo_width / cargo_height / cargo_depth）
+    // 用户在公式里可直接写 "cargo_width / 2 + 0.05"
+    Object.assign(values, this.getCargoSizeParams());
+    // v14.1 (#37): 叉齿零位锚点参数（fork_anchor_zero_x/y/z）—— 读缓存
+    // 缓存由 main.js 🚀 handler 在"关节归零"状态下显式调 computeForkAnchorZero 填充。
+    // 这里不主动算，避免每帧读实时场景（运动中场景 ≠ 零位 → 参数会漂，见 #37）。
+    Object.assign(values, this.getForkAnchorZero());
     return values;
   }
 
