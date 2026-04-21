@@ -11,8 +11,10 @@
 git clone <repo>
 cd MotionForge
 npm install
+cp .env.example .env  # 填入 AI_API_KEY 等
 npm run dev       # 前端（默认 http://localhost:5173）
 npm run converter # AI 后端 + Blender 转换（可选，端口 8091）
+npm test          # 单元测试（vitest）
 ```
 
 需要 Node 18+。USD/FBX 转换需本地 Blender（验证路径见 [README.md](README.md#usdfbx-自动转换可选)）。
@@ -125,6 +127,22 @@ __mf.selectionManager   // selectedObject / clearSelection
 __mf.editableObjects()  // 可编辑对象列表
 __mf.getJointDefs()     // 关节定义快照
 ```
+
+### 单元测试（vitest）
+
+核心逻辑改动（KeyframeManager / 公式求值 / reparent / fork_anchor_zero）先跑：
+
+```bash
+npm test           # 一次性跑完
+npm run test:watch # 开发时 watch 模式
+```
+
+测试位置：[tests/unit/](tests/unit/)（vitest 只跑这里，不碰 `tests/diag-*.js` 浏览器脚本）。
+
+**写新单元测试的场景**：
+- 修 bug 时补一个覆盖 bug 场景的测试，防止再犯（bug 回归防线）
+- 新加 KeyframeManager 公开方法时
+- 改变历史 bug 修复语义时（比如改 #31 的"保末态"就会打掉现有测试——这是提醒你在破坏语义）
 
 ### 冒烟测试流程
 

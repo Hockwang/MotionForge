@@ -16,6 +16,10 @@
 `v14-ai-oneshot` 分支 commit `f005ef3`：🚀 一键生成（L1 + L2 串联）+ fork_anchor_zero 语义修复。
 追加 bug log `#32-#37`（CLAUDE.md）、新 gotcha `006-coordinate-swap-forgotten`、新 architecture `ai-pipeline`。
 
+## [2026-04-21] milestone | vitest 基建落地（feature/vitest-infra）
+
+v14.1 tag 后立即接 F4 基建：`vitest ^4.1.5` + 23 个单元测试覆盖 5 个历史 bug 经过的关键路径（#22/#31/#33/#36/#37/#39）。`npm test` 11ms 跑完。CONTRIBUTING.md 单元测试章节 + README 快速上手追加。详见 CLAUDE.md #45。
+
 ## [2026-04-21] review | v14.1 三份 review 合并
 
 三份独立 AI 评审合并成 master：[REVIEW-v14.md](REVIEW-v14.md)。

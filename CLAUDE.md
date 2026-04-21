@@ -525,6 +525,21 @@ console.log('emissive:', c?.material?.emissive);
 - **修复**：[KeyframeManager.js](src/core/KeyframeManager.js) `applyJointDrive` 去掉 fixed 的 early return，加 `else if (def.type === 'fixed')` 分支：`newWorldPos = baseWorldPos; newWorldQuat = baseWorldQuat;`。等价于 prismatic value=0：每帧根据 joint parent 最新世界矩阵 × base 计算 child 世界位置
 - **经验教训**：**关节类型的语义要一致**。revolute/prismatic 都是"joint parent 说了算"（URDF 风格），fixed 也应该是。早期为了省一点性能给 fixed 走快捷路径，破坏了这个一致性。现在 fixed 符合 URDF 标准：刚性连接到 joint parent，无自由度但跟随运动
 
+#### #45 vitest 基建 + 23 个核心单元测试（F4 解决）
+- **背景**：review F4 指出项目**零单元测试**，所有 37+ 条已修 bug 没有回归防线；最糟的情况是 `tests/test-pkf-p4.js` 断言已和当前语义相反，如果拿来回归会误导维护者
+- **修复**：
+  - 加 `vitest ^4.1.5` devDep + `npm test` / `test:watch` 脚本
+  - [vitest.config.js](vitest.config.js)：node 环境，只跑 `tests/unit/**/*.test.js`（不碰 `tests/diag-*.js` / `test-pkf-p*.js` 浏览器脚本）
+  - [tests/unit/keyframe-manager.test.js](tests/unit/keyframe-manager.test.js) 5 个 describe × 23 个 test case，覆盖：
+    - `setJointDef` 环检测（bug #33）— 4 case
+    - `buildDefaultParamValues` 参数注入（cargo size + fork_anchor_zero + 退化）— 5 case
+    - `_interpolateJointValueAtTime` 关键帧插值（bug #22/#31 语义基础）— 5 case
+    - `computeForkAnchorZero`（bug #36/#37，用真 THREE.Mesh+BoxGeometry 构最小 scene）— 4 case
+    - `addReparentEvent` / `removeReparentEvent` / `removeAllReparentEventsForChild` 缓存失效（bug #39）— 5 case
+  - 全部通过（23/23）；运行 ~300ms
+  - CONTRIBUTING.md 加"单元测试"章节 + 冒烟流程前置 `npm test`
+- **经验教训**：**有测试就能改得更狠**。之前改 KeyframeManager 每次都要"改→冒烟→祈祷"，现在 `npm test` 11ms 直接验证核心语义没被破坏。5 个 describe 每个都对应一个历史 bug——**bug 回归防线本质是把经验教训变成自动化约束**
+
 #### #44 批量清理：AI prompt v14.1 对齐 + 测试断言过时 + 代码 dead code + 文档版本漂移
 - **内容**（v14.1 review F9 / F10 / F12 / F14 / F15 / F16 / F22 / F23 合并条目）：
   - AI prompt：L2 PKF few-shot 旧 `pickup_point_x - safe_distance` 替换为 v14.1 位移语义 `cargo_pos_y - fork_anchor_zero_y - approach_gap`；L1 rows 示例从具体数值替换为字面公式。关节名占位符改成 `EXAMPLE_*` 降低 AI 误用

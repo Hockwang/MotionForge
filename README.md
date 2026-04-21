@@ -147,7 +147,10 @@ Web 端 3D 动作编辑器（Three.js + Vite），用自然语言或关键帧驱
 
 ```bash
 npm install
-npm run dev
+cp .env.example .env    # 填入 AI_API_KEY 等（默认仅 AI 功能需要）
+npm run dev             # 前端
+npm run converter       # 可选：AI / USD 转换后端（端口 8091）
+npm test                # 单元测试（vitest）
 ```
 
 默认访问 `http://localhost:5173`。
