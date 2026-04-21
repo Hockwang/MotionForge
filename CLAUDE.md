@@ -525,6 +525,13 @@ console.log('emissive:', c?.material?.emissive);
 - **修复**：[KeyframeManager.js](src/core/KeyframeManager.js) `applyJointDrive` 去掉 fixed 的 early return，加 `else if (def.type === 'fixed')` 分支：`newWorldPos = baseWorldPos; newWorldQuat = baseWorldQuat;`。等价于 prismatic value=0：每帧根据 joint parent 最新世界矩阵 × base 计算 child 世界位置
 - **经验教训**：**关节类型的语义要一致**。revolute/prismatic 都是"joint parent 说了算"（URDF 风格），fixed 也应该是。早期为了省一点性能给 fixed 走快捷路径，破坏了这个一致性。现在 fixed 符合 URDF 标准：刚性连接到 joint parent，无自由度但跟随运动
 
+#### #38 `aiDecomposeBtn`（🪄 仅拆解路径）漏做 Y↔Z swap → 和主路径 AI 空间理解分叉
+- **症状**：同一场景，"🪄 仅拆解"和"🚀 一键生成"送进 L1 得到**不同空间理解**，cargo/drop/marker 方位判断分叉。用户反馈"AI 时好时坏"，难定位是哪条路径的锅
+- **排查**：Codex 全仓 review（[docs/raw/codex-full-repo-review-2026-04-21.md](docs/raw/codex-full-repo-review-2026-04-21.md)）对读 [src/main.js:1132-1140](src/main.js#L1132) 的 `collectSceneForAi()` 已做 `{x, y: wp.z, z: wp.y}` swap；而 [src/main.js:1270-1278](src/main.js#L1270) 的 `aiDecomposeBtn` handler 用**独立采集逻辑**发 Three.js Y-up `{x, y: wp.y, z: wp.z}` → AI 看 cargo.y 是 threejs 的 y（高度），把高度当前后距离
+- **根因**：**同一概念两份实现已分叉**。历史上先有 `aiDecomposeBtn`（内联 scene 采集），后加 `collectSceneForAi()` helper 做了 Y/Z swap 但没回头统一。[docs/architecture/ai-pipeline.md:49-55](docs/architecture/ai-pipeline.md) 早标了"已知 bug"，没修
+- **修复**（v14.1）：[src/main.js:1270-1278](src/main.js#L1270) 删 8 行自有采集逻辑，改用 `collectSceneForAi()` — 1 行改动
+- **经验教训**：**任何 data-out 到外部系统的点**（AI / 导出 / 日志 / 外部工具）都必须走**同一个** helper。历史留下的双实现是最容易埋 bug 的地方。见 [docs/REVIEW-v14.md F1](docs/REVIEW-v14.md) 和 [docs/gotchas/006-coordinate-swap-forgotten.md](docs/gotchas/006-coordinate-swap-forgotten.md)
+
 #### #37 fork_offset（关节间差）语义错位 → AI 生成的"位移"被当成"绝对坐标"→ 车体过冲 2.7m
 - **症状**：🚀 一键生成后播放到 t=4，cargo 深陷车体内部；车体前进关节停在 world y=7.73，但 cargo 只在 y=5，车体整整过了 2.7m
 - **排查**：Codex 对读 [KeyframeManager.js:712](src/core/KeyframeManager.js#L712) 的 prismatic 驱动 —— `newWorldPos = baseWorldPos.clone().add(worldAxisVec.multiplyScalar(def.currentValue))`。这说明 `currentValue` 语义是**从零位开始的位移**（加到 baseWorldPos 上）。但 AI 的 prompt 让它写 `cargo.y - fork_offset_y - gap = 4.8`，AI 以为这是"车体应该到达的世界 y 坐标"。runtime 把 4.8 当位移 → fork.world.y = base(2.93) + 4.8 = 7.73

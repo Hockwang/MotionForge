@@ -1267,16 +1267,9 @@ ui.aiDecomposeBtn?.addEventListener('click', async () => {
     alert('请先在"高级意图"框里写一句话');
     return;
   }
-  // 收集场景 context：所有命名对象 + 世界坐标
-  const scene = [];
-  if (sceneManager.sceneRoot) {
-    sceneManager.sceneRoot.updateMatrixWorld(true);
-    sceneManager.sceneRoot.traverse((o) => {
-      if (!o.name || o.isLight || o.isCamera || o.type?.includes('Helper')) return;
-      const wp = o.getWorldPosition(new THREE.Vector3());
-      scene.push({ name: o.name, position: { x: wp.x, y: wp.y, z: wp.z } });
-    });
-  }
+  // #38 修复：复用 collectSceneForAi()，保证 Y↔Z swap 和一键生成主链路一致
+  // 历史：此处曾有自己的采集逻辑，发 threejs Y-up 坐标给 L1 → AI 空间理解和主路径分叉
+  const scene = collectSceneForAi();
   // 关节列表（含 role）
   const joints = keyframeManager.getAllJointDefs()
     .filter((d) => d.type === 'revolute' || d.type === 'prismatic')

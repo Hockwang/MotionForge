@@ -1,5 +1,5 @@
 ---
-updated: 2026-04-18
+updated: 2026-04-21
 ---
 # MotionForge 项目 Wiki 索引
 
@@ -45,6 +45,7 @@ updated: 2026-04-18
 - [pkf-parametric-keyframe-formula.md](concepts/pkf-parametric-keyframe-formula.md) — PKF 格式：parameters + steps + 公式求值 + AI 生成流程
 - [zip-output-schema.md](concepts/zip-output-schema.md) — ZIP 包结构（manifest/joints/motion/pkf/model.glb）及各文件格式
 - [scene-marker-system.md](concepts/scene-marker-system.md) — 场景标记（cargo/pickup/dropoff）及 schema v6
+- [forklift-pickup-model.md](concepts/forklift-pickup-model.md) — v14.1 领域模型：fork_anchor_zero + snap-attach + 11 条隐含假设清单（接新模型前读）
 
 ---
 
@@ -61,3 +62,5 @@ updated: 2026-04-18
 - [FLOW.md](../FLOW.md) — 完整产品操作流程
 - [docs/schema/v4.md](schema/v4.md) — ZIP schema v4 详细规范
 - [docs/ROADMAP.md](ROADMAP.md) — 二期路线图
+- **[docs/REVIEW-v14.md](REVIEW-v14.md)** — v14.1 master review（三份 AI 评审合并版，F1-F27 + 行动路线）
+- [docs/raw/codex-full-repo-review-2026-04-21.md](raw/codex-full-repo-review-2026-04-21.md) — Codex 原版 review（归档）
