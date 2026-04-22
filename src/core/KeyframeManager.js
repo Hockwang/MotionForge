@@ -205,9 +205,15 @@ export class KeyframeManager {
       return { x: bboxCenter.x, z: bboxCenter.z, forwardDir: null };
     }
     forward.normalize();
-    // bbox 沿任意方向的半长 = Σ |half_i × dir_i|（投影定理）
+    // 修 #50 的 bug：射线-bbox 相交而不是"投影和"。
+    //   射线 P(t) = center + t × forward，在 bbox 内的最大 t = min(hx/|dx|, hz/|dz|)
+    //   旧公式 extent = hx·|dx| + hz·|dz| 会让 anchor 落到 bbox 外（不在表面）
     const bboxHalf = box.getSize(new THREE.Vector3()).multiplyScalar(0.5);
-    const extent = Math.abs(bboxHalf.x * forward.x) + Math.abs(bboxHalf.z * forward.z);
+    const absX = Math.abs(forward.x);
+    const absZ = Math.abs(forward.z);
+    const tX = absX > 1e-6 ? bboxHalf.x / absX : Infinity;
+    const tZ = absZ > 1e-6 ? bboxHalf.z / absZ : Infinity;
+    const extent = Math.min(tX, tZ);
     return {
       x: bboxCenter.x + forward.x * extent,
       z: bboxCenter.z + forward.z * extent,
@@ -506,8 +512,13 @@ export class KeyframeManager {
             let horizX = bboxCenter.x;
             let horizZ = bboxCenter.z;
             if (forward && forward.lengthSq() > 0.5) {
+              // 射线-bbox 相交（和 _computeForkForwardExtreme 保持同一算法）
               const bboxHalf = box.getSize(new THREE.Vector3()).multiplyScalar(0.5);
-              const extent = Math.abs(bboxHalf.x * forward.x) + Math.abs(bboxHalf.z * forward.z);
+              const absX = Math.abs(forward.x);
+              const absZ = Math.abs(forward.z);
+              const tX = absX > 1e-6 ? bboxHalf.x / absX : Infinity;
+              const tZ = absZ > 1e-6 ? bboxHalf.z / absZ : Infinity;
+              const extent = Math.min(tX, tZ);
               horizX = bboxCenter.x + forward.x * extent;
               horizZ = bboxCenter.z + forward.z * extent;
             }

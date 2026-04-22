@@ -185,10 +185,11 @@ describe('computeForkAnchorZero（bug #37）', () => {
     expect(r.fork_anchor_zero_z).toBeCloseTo(-0.5, 3); // min.y
   });
 
-  it('#50：斜对角 cargo → forward 是归一化向量，anchor 落在 bbox 对角外沿', () => {
-    // cargo 在 +x,+z 方向 → forward 归一化 (1,0,1)/√2
-    // extent = |0.5 * 1/√2| + |0.5 * 1/√2| = 0.5/√2 + 0.5/√2 = 0.707
-    // anchor.x = 0 + (1/√2)*0.707 = 0.5；anchor.z = 同理 0.5
+  it('#50：斜对角 cargo → forward 归一化 (1,0,1)/√2，anchor 落在 bbox 表面上', () => {
+    // cargo 在 +x,+z 方向 → forward = (1/√2, 0, 1/√2)
+    // 射线-bbox 相交：t = min(0.5/(1/√2), 0.5/(1/√2)) = 0.5·√2 ≈ 0.707
+    // anchor.x = (1/√2) × 0.707 = 0.5（bbox 角点上）
+    // anchor.z 同理 = 0.5
     const { sceneRoot } = buildMinScene({
       forkWorldPos: [0, 0, 0],
       boxSize: [1, 1, 1],
@@ -198,6 +199,24 @@ describe('computeForkAnchorZero（bug #37）', () => {
     const r = km.computeForkAnchorZero(sceneRoot);
     expect(r.fork_anchor_zero_x).toBeCloseTo(0.5, 2);
     expect(r.fork_anchor_zero_y).toBeCloseTo(0.5, 2);
+  });
+
+  it('#50 数学修正：anchor 始终在 bbox 表面（不超出）', () => {
+    // 非对称 bbox + 非对角方向：确保 anchor 不会飞出 bbox
+    // size=(1, ?, 2), cargo 在 (10, 0, 2) 方向
+    // forward = (10, 0, 2) normalized ≈ (0.981, 0, 0.196)
+    // half = (0.5, ?, 1). 射线 t = min(0.5/0.981, 1/0.196) = min(0.510, 5.10) = 0.510
+    // anchor.x = 0.981 × 0.510 = 0.5（正好 bbox.max.x）
+    // anchor.z = 0.196 × 0.510 = 0.1（远小于 half.z=1，在 bbox 内）
+    const { sceneRoot } = buildMinScene({
+      forkWorldPos: [0, 0, 0],
+      boxSize: [1, 1, 2],
+      cargoWorldPos: [10, 0, 2],
+    });
+    km.addReparentEvent(5, 'cargo', '_CS19110');
+    const r = km.computeForkAnchorZero(sceneRoot);
+    expect(r.fork_anchor_zero_x).toBeCloseTo(0.5, 2); // 正好 max.x
+    expect(r.fork_anchor_zero_y).toBeCloseTo(0.1, 2); // bbox 内（不是外）
   });
 
   it('computeForkAnchorZero 后 getForkAnchorZero 读到缓存', () => {
