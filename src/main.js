@@ -2300,10 +2300,18 @@ ui.exportPackageBtn.addEventListener('click', async () => {
   }
 
   // ── 导出前：保存状态，归零 + 清选中 + reparent 回初始 ──
+  // ⚠ 关键：**必须先暂停播放循环**，否则 requestAnimationFrame 每帧都会 applyReparentEventsAtTime(currentTime)
+  //        把 cargo 重新挪回 fork 下，于是 GLB 烘焙了 racy 的 scene graph（cargo 挂 fork + 非 1 scale 补偿）。
+  //        导入后 cargo 就变巨大（scale 错误被烘焙进模型）。
   const savedSelection = selectionManager.selectedObject;
   const savedValues = [];
   const savedTime = keyframeManager.currentTime;
+  const savedIsPlaying = isPlaying;
   try {
+    // 暂停播放循环 + 时间归零（防止导出期间动画继续跑）
+    isPlaying = false;
+    keyframeManager.currentTime = 0;
+
     // 清除选中（防止 emissive 烘焙进 GLB）
     selectionManager.clearSelection();
 
@@ -2318,6 +2326,10 @@ ui.exportPackageBtn.addEventListener('click', async () => {
       def.currentValue = 0;
     });
     keyframeManager.applyAllJointDrives(sceneManager.sceneRoot);
+
+    // 再走一遍 reparent，保证 applyAllJointDrives 之后 scene graph 仍在 t=0 态
+    // （driveAll 可能触发 base 懒捕获，对 matrixWorld 有副作用）
+    keyframeManager.applyReparentEventsAtTime(0, sceneManager.sceneRoot);
 
     const { manifest } = await packageExporter.exportZip({
       sourceFileName: sourceInfo.fileName,
@@ -2344,18 +2356,21 @@ ui.exportPackageBtn.addEventListener('click', async () => {
   } catch (error) {
     ui.exportOutput.textContent = `导出 ZIP 失败：${error.message}`;
   } finally {
-    // ── 不管成功失败，一定恢复关节值 + 选中状态 ──
+    // ── 不管成功失败，一定恢复关节值 + 选中状态 + 播放状态 ──
     // 没有 finally 的话，GLTFExporter 抛异常会卡在"全关节零位 + 无选中"状态
     savedValues.forEach((saved) => {
       const def = keyframeManager.getJointDef(saved.id);
       if (def) def.currentValue = saved.currentValue;
     });
     // v5: 把 reparent 状态还原到导出前的时间点（保持用户当前视图）
+    keyframeManager.currentTime = savedTime;
     keyframeManager.applyReparentEventsAtTime(savedTime, sceneManager.sceneRoot);
     keyframeManager.applyAllJointDrives(sceneManager.sceneRoot);
     if (savedSelection) {
       selectionManager.selectObject(savedSelection);
     }
+    // 恢复播放状态（如果之前在播放，继续播放）
+    isPlaying = savedIsPlaying;
   }
 });
 
