@@ -21,6 +21,7 @@ updated: 2026-04-22
 - [场景 5：判断"归零策略"是否正确](#场景-5判断归零策略是否正确)
 - [场景 6：模型某片零件一直发光高亮](#场景-6模型某片零件一直发光高亮)
 - [场景 7：承载锚点 / 叉齿 mesh 分析](#场景-7承载锚点--叉齿-mesh-分析)
+- [场景 8：叉车 14 段模板路径验证（mvp3）](#场景-8叉车-14-段模板路径验证mvp3)
 - [附：单行快速检查命令](#附单行快速检查命令)
 
 ---
@@ -49,6 +50,7 @@ updated: 2026-04-22
 | [tests/diag-animation.js](../tests/diag-animation.js) | 动画播放过程中各时间点的关节状态 | `__diagA.scanClip/at/keyframes` |
 | [tests/diag-oneshot.js](../tests/diag-oneshot.js) | 🚀 一键生成流程排查（L1 / L2 / PKF eval / markers） | `__diagO.report/l1/l2/plan/actual` |
 | [tests/diag-fork-anchor.js](../tests/diag-fork-anchor.js) | 承载锚点 / 叉齿 mesh / bbox / PKF eval 一把梭 | `__diagFA.run/listForkSubmeshes` |
+| [tests/diag-template.js](../tests/diag-template.js) | 叉车 14 段模板：编译产物 / 公式 / 级联 / 循环 / 时间采样 | `__diagTpl.all/compiled/formulas/...` |
 
 ---
 
@@ -242,6 +244,42 @@ __diagFA.listForkSubmeshes()  // 只看叉齿子树所有 mesh 的 bbox（按 mi
 ```
 
 **相关 bug**：[#36, #37, #40, #47-#52](bugfix-log.md) + [gotchas/007-merged-mesh-bbox-trap](gotchas/007-merged-mesh-bbox-trap.md)
+
+---
+
+## 场景 8：叉车 14 段模板路径验证（mvp3）
+
+**典型症状 / 触发时机**
+- 🚀 一键生成选了"模板"后验证是否真的零瞬移
+- 想看 AI 返回的节奏是什么 / 编译后的 14 段结构
+- 怀疑 attach 前后 cargo 世界坐标不连续（瞬移）
+- 想做循环回 t=0 时 cargo 回原位验证
+
+**检测流程**
+
+```js
+__diagTpl.all()                 // 一把梭：健康 + 编译 + reparent 时间 + 级联 + 公式限位 + 循环 + 时间采样
+
+// 或按需单跑：
+__diagTpl.health()              // _pkfTemplateMeta / lastTemplate 是否就绪
+__diagTpl.compiled()            // 看 14 段结构 + 参数 + reparent 事件
+__diagTpl.reparentTiming()      // attach.t 应 = 段 3 t_end；detach.t 应 = 段 11 t_end
+__diagTpl.cascadeCheck()        // 每段 value_start 严格等于同 joint 上一段 value_end
+__diagTpl.formulas()            // 逐段 eval value_end + 对比关节 limits（超限会被钳位）
+__diagTpl.loopBoundary()        // seek t=0 后 cargo 偏移应 < 0.01m
+__diagTpl.playbackSample()      // 每段末尾 cargo/fork 世界位置采样（默认 14 点，attach/detach 连续性）
+__diagTpl.playbackSample([3.0, 3.01, 3.99, 4.0])  // 自定义采样 attach 前后
+```
+
+**关注输出**
+- **compiled → steps 表**：每段 seg/joint/value_start/value_end/easing——对照 §4 模板表确认公式正确
+- **reparentTiming**：所有 OK 列为 true，否则编译器 bug
+- **cascadeCheck**：空 problems → ✅；有 problems → compileTemplate 的 prevValueByRole 级联错
+- **formulas**：**超限** 列有 ⚠️ 的段会被钳位 → 动作不到位；需要调 cargo 位置或关节行程
+- **loopBoundary**：偏移 < 0.01 = cargo 正常回原位；偏移大 = 可能 originalWorldTransforms 未快照
+- **playbackSample**：attach 前后 t（如 3.0 vs 3.01）cargo 世界坐标差 > 0.05m = 瞬移未消除
+
+**相关 bug / 契约**：[#47-#52](bugfix-log.md) + [concepts/forklift-pickup-template](concepts/forklift-pickup-template.md)
 
 ---
 
