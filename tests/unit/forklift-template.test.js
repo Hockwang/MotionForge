@@ -20,38 +20,26 @@ import {
   TEMPLATE_PARAMETERS,
   buildDefaultRhythm,
   collectTemplateContext,
+  autoDetectForkName,
   compileTemplate,
   ROLE_CAR_FORWARD,
   ROLE_MAST_LIFT,
 } from '../../src/core/ForkliftTemplate.js';
 
 // ── 辅助：构造模板编译所需的最小可行 KeyframeManager + sceneRoot ──
-function setupScene({ cargoPos = [0, 0, 0.5], dropPos = [0, 5, 0] } = {}) {
+// withAttachEvent=false 时不加 reparent event，走自动识别路径（测 auto-detect）
+function setupScene({
+  cargoPos = [0, 0, 0.5],
+  dropPos = [0, 5, 0],
+  withAttachEvent = true,
+} = {}) {
   const km = new KeyframeManager();
 
   // marker
   km.addMarker({ name: 'cargo', type: 'cargo', size: { w: 0.8, h: 0.6, d: 0.8 } });
   km.addMarker({ name: 'drop', type: 'drop' });
 
-  // role 关节
-  km.setJointDef('car_joint_id', {
-    name: 'car_forward',
-    type: 'prismatic',
-    axis: 'y',
-    role: ROLE_CAR_FORWARD,
-  });
-  km.setJointDef('mast_joint_id', {
-    name: 'mast_lift',
-    type: 'prismatic',
-    axis: 'z',
-    role: ROLE_MAST_LIFT,
-  });
-
-  // 预设一条 attach reparent event（给模板提供 fork 名字）
-  km.addReparentEvent(2.0, 'cargo', 'fork_tine');
-
-  // scene root：两个命名对象（UI 传的是 UI 空间坐标，内部存 threejs Y-up → 这里坐标约定是 UI）
-  // UI (x, y, z) → threejs (x, z, y)
+  // scene root 和 fork 对象先建，以便 mast joint 用 fork.uuid 作 childId
   const sceneRoot = new THREE.Object3D();
   sceneRoot.name = 'root';
 
@@ -65,13 +53,32 @@ function setupScene({ cargoPos = [0, 0, 0.5], dropPos = [0, 5, 0] } = {}) {
   dropObj.position.set(dropPos[0], dropPos[2], dropPos[1]);
   sceneRoot.add(dropObj);
 
-  // fork_tine 对象也加一个（作为 reparent target 的存在性检查；模板不读其位置）
   const forkObj = new THREE.Object3D();
   forkObj.name = 'fork_tine';
   sceneRoot.add(forkObj);
 
+  // role 关节：mast joint 的 childId 指向 fork 对象的 uuid（模拟真实场景绑定）
+  km.setJointDef('car_joint_id', {
+    name: 'car_forward',
+    type: 'prismatic',
+    axis: 'y',
+    role: ROLE_CAR_FORWARD,
+  });
+  km.setJointDef('mast_joint_id', {
+    name: 'mast_lift',
+    type: 'prismatic',
+    axis: 'z',
+    role: ROLE_MAST_LIFT,
+    childId: forkObj.uuid,
+  });
+
+  // 预设一条 attach reparent event（给模板提供 fork 名字）；可选跳过以测 auto-detect
+  if (withAttachEvent) {
+    km.addReparentEvent(2.0, 'cargo', 'fork_tine');
+  }
+
   sceneRoot.updateMatrixWorld(true);
-  return { km, sceneRoot };
+  return { km, sceneRoot, forkObj };
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -95,6 +102,41 @@ describe('buildDefaultRhythm', () => {
     const rhythm = buildDefaultRhythm();
     const indices = rhythm.segments.map((s) => s.index).sort((a, b) => a - b);
     expect(indices).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════
+describe('autoDetectForkName', () => {
+  it('mast joint childId 指向有名字对象 → 返回该对象名字', () => {
+    const { km, sceneRoot } = setupScene();
+    const name = autoDetectForkName(km, sceneRoot);
+    expect(name).toBe('fork_tine');
+  });
+
+  it('mast joint childId 指向无名对象，但有命名后代 → 返回后代名字', () => {
+    const km = new KeyframeManager();
+    const sceneRoot = new THREE.Object3D();
+    sceneRoot.name = 'root';
+    const wrapper = new THREE.Object3D(); // 无名
+    const deepChild = new THREE.Object3D();
+    deepChild.name = 'deep_fork';
+    wrapper.add(deepChild);
+    sceneRoot.add(wrapper);
+    km.setJointDef('m', { type: 'prismatic', axis: 'z', role: ROLE_MAST_LIFT, childId: wrapper.uuid });
+    expect(autoDetectForkName(km, sceneRoot)).toBe('deep_fork');
+  });
+
+  it('无 mast joint → null', () => {
+    const km = new KeyframeManager();
+    const sceneRoot = new THREE.Object3D();
+    expect(autoDetectForkName(km, sceneRoot)).toBe(null);
+  });
+
+  it('mast joint childId 在场景里找不到 → null', () => {
+    const km = new KeyframeManager();
+    const sceneRoot = new THREE.Object3D();
+    km.setJointDef('m', { type: 'prismatic', axis: 'z', role: ROLE_MAST_LIFT, childId: 'nonexistent_uuid' });
+    expect(autoDetectForkName(km, sceneRoot)).toBe(null);
   });
 });
 
@@ -123,13 +165,34 @@ describe('collectTemplateContext 要素缺失检测', () => {
     expect(r.missing).toContain('cargo marker（货物占位）');
   });
 
-  it('缺 attach 事件 → 不通过', () => {
-    const { km, sceneRoot } = setupScene();
-    // 删掉 attach 事件
-    km.getReparentEvents().forEach((e) => km.removeReparentEvent(e.event_id));
+  it('无 attach 事件也 ok —— 自动从 mast joint childId 识别 fork', () => {
+    const { km, sceneRoot } = setupScene({ withAttachEvent: false });
+    const r = collectTemplateContext(km, sceneRoot);
+    expect(r.ok).toBe(true);
+    expect(r.data.forkName).toBe('fork_tine');
+    expect(r.data.forkSource).toBe('auto_from_mast_joint');
+  });
+
+  it('已有 attach 事件 → 用事件里的 fork 名字（即使和 mast joint childId 不同）', () => {
+    const { km, sceneRoot } = setupScene({ withAttachEvent: false });
+    // 手动加一条指向不同 fork 对象的 attach event
+    const customFork = new THREE.Object3D();
+    customFork.name = 'custom_fork';
+    sceneRoot.add(customFork);
+    km.addReparentEvent(1.5, 'cargo', 'custom_fork');
+    const r = collectTemplateContext(km, sceneRoot);
+    expect(r.ok).toBe(true);
+    expect(r.data.forkName).toBe('custom_fork');
+    expect(r.data.forkSource).toBe('existing_attach_event');
+  });
+
+  it('无 attach 事件且 mast joint 无 childId → 报 fork 对象缺失', () => {
+    const { km, sceneRoot } = setupScene({ withAttachEvent: false });
+    // 把 mast joint 的 childId 改掉
+    km.jointDefinitions.get('mast_joint_id').childId = null;
     const r = collectTemplateContext(km, sceneRoot);
     expect(r.ok).toBe(false);
-    expect(r.missing.some((m) => m.includes('attach'))).toBe(true);
+    expect(r.missing.some((m) => m.includes('fork'))).toBe(true);
   });
 
   it('缺 role=门架升降 关节', () => {
@@ -148,6 +211,7 @@ describe('collectTemplateContext 要素缺失检测', () => {
     expect(r.data.cargoName).toBe('cargo');
     expect(r.data.dropName).toBe('drop');
     expect(r.data.forkName).toBe('fork_tine');
+    expect(r.data.forkSource).toBe('existing_attach_event');
     // UI Z-up：x/y/z 分别是左右 / 前后 / 高度；setupScene 按 UI 坐标喂入
     expect(r.data.cargoPos.x).toBeCloseTo(1, 3);
     expect(r.data.cargoPos.y).toBeCloseTo(5, 3);

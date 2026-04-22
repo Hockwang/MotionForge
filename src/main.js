@@ -1545,8 +1545,24 @@ ui.aiOneshotBtn?.addEventListener('click', async () => {
         ui.aiOneshotBtn.textContent = '1/3 模板: AI 节奏...';
         setOut('🚀 模板路径 Step 1: 请求 AI 节奏...', '#93c5fd');
 
+        // 如果 fork 是自动识别的（用户没配 attach event），snapshotForkAnchorZero 需要 attach event 才能工作 —
+        // 临时加一个 placeholder reparent event，applyCompiledTemplate 会在最后清掉重写
+        let placeholderEventId = null;
+        if (templateCheck.data.forkSource === 'auto_from_mast_joint') {
+          placeholderEventId = keyframeManager.addReparentEvent(
+            0.5,
+            templateCheck.data.cargoName,
+            templateCheck.data.forkName,
+          );
+          console.info('[oneshot] 模板路径：fork 自动识别为', templateCheck.data.forkName, '（加临时 placeholder 算 fork_anchor_zero）');
+        }
+
         // 先算 fork_anchor_zero（公式要用）
         const forkAnchorZeroTpl = snapshotForkAnchorZero();
+        // 用完 placeholder 就清掉（applyCompiledTemplate 也会清，但双保险防异常路径残留）
+        if (placeholderEventId) {
+          keyframeManager.removeReparentEvent(placeholderEventId);
+        }
 
         // 尝试拿 AI 节奏；拿不到就用默认
         let rhythm;

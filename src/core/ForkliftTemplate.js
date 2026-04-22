@@ -116,15 +116,48 @@ export function buildDefaultRhythm(totalSeconds = 12) {
 }
 
 /**
+ * 自动识别 fork 对象名：从 role="门架升降" 关节的 childId 定位到场景对象，用它作为 attach 目标。
+ * 原因：用户不一定预先配了 attach reparent event（刷新后 in-memory 状态就丢了）。
+ * 没有 mast joint 或 childId 找不到 → 返回 null（caller 降级报 missing）。
+ *
+ * @returns {string | null} fork 对象的 name，或 null
+ */
+export function autoDetectForkName(keyframeManager, sceneRoot) {
+  if (!sceneRoot) return null;
+  const allDefs = keyframeManager.getAllJointDefs
+    ? keyframeManager.getAllJointDefs()
+    : [...keyframeManager.jointDefinitions.values()];
+  const mastJoint = allDefs.find((d) => d.role === ROLE_MAST_LIFT);
+  if (!mastJoint?.childId) return null;
+
+  // childId 是 scene node 的 uuid —— 反向查 sceneRoot
+  let forkObj = null;
+  sceneRoot.traverse((o) => {
+    if (!forkObj && o.uuid === mastJoint.childId) forkObj = o;
+  });
+  if (!forkObj) return null;
+  if (forkObj.name) return forkObj.name;
+
+  // 没 name 的话找第一个有 name 的后代
+  let namedChild = null;
+  forkObj.traverse((o) => {
+    if (!namedChild && o !== forkObj && o.name) namedChild = o;
+  });
+  return namedChild?.name || null;
+}
+
+/**
  * 采集模板编译所需的上下文；缺要素时返回 { ok: false, missing: [...] }。
  *
  * 先决条件（§8.1）：
  *   - 存在 cargo marker → 提供 cargo size + cargo_pos_*
  *   - 存在 drop marker → 提供 drop_pos_*
  *   - 存在 role="车体前进" 关节
- *   - 存在 role="门架升降" 关节
- *   - 存在 attach 型 reparent event → 指明 cargo 名字 + fork 对象名字
- *     （此事件的时间由模板覆写，但 child/parent 名字沿用）
+ *   - 存在 role="门架升降" 关节 → 同时用它自动识别 fork 对象（mastJoint.childId → 对象 name）
+ *
+ * fork 对象识别优先级：
+ *   1. 已有 attach 型 reparent event 的 new_parent_name（用户显式配过）
+ *   2. role="门架升降" 关节的 childId 对应的场景对象（自动识别，无需配 reparent event）
  *
  * @param {KeyframeManager} keyframeManager
  * @param {THREE.Object3D} sceneRoot
@@ -156,10 +189,20 @@ export function collectTemplateContext(keyframeManager, sceneRoot) {
   if (!carJoint) missing.push(`role="${ROLE_CAR_FORWARD}" 的关节`);
   if (!mastJoint) missing.push(`role="${ROLE_MAST_LIFT}" 的关节`);
 
-  // attach reparent event → 找 cargo + fork 名字
+  // fork 对象识别：优先用已有 attach reparent event；否则从 mast joint childId 自动识别
   const events = keyframeManager.getReparentEvents?.() || [];
   const attachEvent = events.find((e) => e.new_parent_name);
-  if (!attachEvent) missing.push('attach 型 reparent event（至少一条 cargo→fork 的附着事件）');
+  let forkName = attachEvent?.new_parent_name || null;
+  let forkSource = 'existing_attach_event'; // 'existing_attach_event' | 'auto_from_mast_joint'
+  if (!forkName) {
+    forkName = autoDetectForkName(keyframeManager, sceneRoot);
+    forkSource = 'auto_from_mast_joint';
+  }
+  if (!forkName) {
+    missing.push(
+      'fork 对象（需 role="门架升降" 关节绑定到叉齿/门架对象，或预先配一条 cargo→fork 的 attach reparent event）',
+    );
+  }
 
   if (missing.length > 0) return { ok: false, missing };
 
@@ -183,7 +226,8 @@ export function collectTemplateContext(keyframeManager, sceneRoot) {
     data: {
       cargoName: cargoMarker.name,
       dropName: dropMarker.name,
-      forkName: attachEvent.new_parent_name,
+      forkName,
+      forkSource, // 'existing_attach_event' | 'auto_from_mast_joint'
       cargoSize: cargoMarker.size || { w: 0, h: 0, d: 0 },
       cargoPos: cargoPosUi,
       dropPos: dropPosUi,
