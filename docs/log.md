@@ -28,3 +28,14 @@ v14.1 tag 后立即接 F4 基建：`vitest ^4.1.5` + 23 个单元测试覆盖 5 
 - 源 3：GPT-5 forklift-pickup-model review sections → 合并后源文档瘦身为纯领域文档
 
 产出：F1-F27 findings + Week 1/2/3 行动路线。Codex 标注的 4 条 P0/P1 bug 已知待修（`aiDecomposeBtn` Y/Z swap、`removeAllReparentEventsForChild` 缓存失效、SelectionManager 材质泄漏、setSceneRoot 不 dispose）。
+
+## [2026-04-22] milestone | #47 吸附姿态升级 + AI 维度兜底（消除 attach teleport）
+
+症状：🚀 一键生成后播放到 t=attach 瞬间 cargo 下跳 ~0.3m。根因两个叠加 —— (1) AI 漏生门架升降 step（只输出前进）→ attach 时 fork z 还在零位 → snap 把 cargo 拽到 fork 高度；(2) center-to-center 吸附不符合"叉齿托底"物理直觉。
+
+修复三层：
+- 吸附语义：`fork_anchor_zero` 从 bbox center 改为 bbox 顶面中心；snap-attach desiredWorldPos 改为 `(center.x, max.y + cargoH/2, center.z)` —— cargo 底面贴叉齿顶面
+- Prompt：L1/L2 门架升降公式加 `- cargo_height/2`；明确三维覆盖强制
+- 前端兜底：新增 `ensurePkfCoversAttachPoint` —— 收到 L2 PKF 后按 x/y/z 目标位移查缺失 step，按 role 自动注入；找不到 role 关节则 warning
+
+CLAUDE.md #47；单元测试 30/30 通过（`computeForkAnchorZero` case 期望从 center.y 改成 max.y）。

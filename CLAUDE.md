@@ -525,6 +525,22 @@ console.log('emissive:', c?.material?.emissive);
 - **修复**：[KeyframeManager.js](src/core/KeyframeManager.js) `applyJointDrive` 去掉 fixed 的 early return，加 `else if (def.type === 'fixed')` 分支：`newWorldPos = baseWorldPos; newWorldQuat = baseWorldQuat;`。等价于 prismatic value=0：每帧根据 joint parent 最新世界矩阵 × base 计算 child 世界位置
 - **经验教训**：**关节类型的语义要一致**。revolute/prismatic 都是"joint parent 说了算"（URDF 风格），fixed 也应该是。早期为了省一点性能给 fixed 走快捷路径，破坏了这个一致性。现在 fixed 符合 URDF 标准：刚性连接到 joint parent，无自由度但跟随运动
 
+#### #47 吸附姿态改为"叉齿顶面托住 cargo 底面" + AI 维度兜底（消除 attach 瞬间 teleport）
+- **症状**：🚀 一键生成后播放到 t=3.98→4.01，cargo 明显下跳到叉齿上。v14.1 已让 approach_gap=0 且 snap-attach 和 fork_anchor_zero 同源，理论上应该零 teleport，但实际仍有 ~0.3m 视觉跳变
+- **根因（两个叠加）**：
+  1. **AI 漏生成维度**：AI 经常只输出"车体前进"step，漏"门架升降"step → attach 时 fork 水平到位但垂直还在零位 → snap 把 cargo 拽到 fork 中心（UI z 方向 ~0.3m 下跳）
+  2. **吸附语义不物理**：center-to-center 对齐（cargo 中心 = fork 中心）让 cargo"陷进"叉齿里，不符合真实叉车"叉齿托底"物理；即使 AI 完整生成 PKF 也有视觉违和
+- **修复**：
+  - [KeyframeManager.js computeForkAnchorZero](src/core/KeyframeManager.js)：锚点从 `box.getCenter()` 改为 `(center.x, box.max.y, center.z)` —— 叉齿**顶面**中心
+  - [KeyframeManager.js applyReparentEventsAtTime](src/core/KeyframeManager.js)：snap desiredWorldPos 改为 `(center.x, box.max.y + cargoH/2, center.z)` —— 让 cargo 底面贴叉齿顶面
+  - [conversion-service.js](tools/conversion-service.js) L1/L2 prompt：门架升降公式加 `- cargo_height/2` 偏移；明确要求 attach 前 x/y/z 三维都覆盖
+  - [main.js ensurePkfCoversAttachPoint](src/main.js)：前端收到 L2 PKF 后**自动检查** x/y/z 目标位移 >THRESHOLD 是否都有 step 覆盖 attach 前时间；缺的按 role 查关节自动注入 step；找不到 role 关节则加 warning
+  - [tests/unit/keyframe-manager.test.js](tests/unit/keyframe-manager.test.js) case #2 期望值从 `bbox.center.y` 改为 `bbox.max.y`
+- **经验教训**：
+  1. **吸附语义应该符合物理直觉**。center-to-center 是数学上简单但视觉上错 —— 真实叉车是叉齿顶面托底。用户的心智模型 = 物理模型；代码的参考点应该和它对齐
+  2. **LLM 输出不能假定完整覆盖**。即使 prompt 里明确要求，AI 仍会偷懒漏某维度。关键数据通路必须有前端兜底（check + auto-fill），不能只靠 prompt 祈祷
+  3. **双保险比单保险稳**。本次 prompt 改和前端兜底两边都做；未来 AI 模型变更或 prompt 退化时，兜底层继续托住；如果哪天 AI 特别强可以关掉兜底当降级
+
 #### #46 F11 + F13：restoreState 保留 role + fork_anchor_zero hash-based 自动失效
 - **F11（DEBT #3）防御**：[KeyframeManager.js restoreState](src/core/KeyframeManager.js) 恢复 joint 时，如果 snapshot 里 `role` **字段缺失**（`Object.prototype.hasOwnProperty.call(d, 'role') === false`）→ 保留当前值，不清空。显式 `role: ''` 仍接受（合法清空）。场景：很老版本序列化的 snapshot 或外部构造的状态缺 role 字段
 - **F13 hash-based cache**：[`_computeForkAnchorInputsHash`](src/core/KeyframeManager.js)（新增私有方法）计算 `reparent events + 叉齿子树 mesh uuids` 的签名。`computeForkAnchorZero` 每次 call 对比 hash——未变直接返回缓存对象；变了才重算。原来 3 处显式 `invalidateForkAnchorZero` 保留作 fallback（兜底 + 清晰）

@@ -201,11 +201,16 @@ export class KeyframeManager {
   }
 
   /**
-   * v14.1（#37）：算叉齿"承载锚点"在**零位**时的世界坐标。
+   * v14.1（#37 / #47）：算叉齿"承载锚点"在**零位**时的世界坐标。
    *
-   * 语义：叉齿尖 mesh 的 bbox 中心 world position（UI Z-up）。
+   * 语义（#47 更新）：叉齿尖 mesh 的 bbox **顶面**中心 world position（UI Z-up）。
+   *   x, z（中轴）= bbox.center.x / z
+   *   y（UI 高度）= bbox.max.y（叉齿顶面，承载 cargo 底面的位置）
    *
-   * 用途：AI 生成 PKF 时写公式 `cargo_pos_y - fork_anchor_zero_y - approach_gap`。
+   * 用途：AI 生成 PKF 时写公式：
+   *   - 车体前进 y：`cargo_pos_y - fork_anchor_zero_y - approach_gap`
+   *   - 门架升降 z：`cargo_pos_z - cargo_height/2 - fork_anchor_zero_z`
+   *     （让叉齿顶面对齐 cargo 底面，符合物理吸附）
    * 因为 runtime 的 prismatic `currentValue` 是**位移**（加到 baseWorldPos 上），
    * 所以公式应该算"要从零位挪到目标的位移"，即：
    *   displacement = target_world - anchor_at_zero - gap
@@ -243,13 +248,15 @@ export class KeyframeManager {
     const tineMesh = this._findForkTineMesh(forkObj) || forkObj;
     const box = new THREE.Box3().setFromObject(tineMesh);
     if (box.isEmpty()) return {};
-    const anchor = box.getCenter(new THREE.Vector3()); // threejs Y-up 世界
+    // #47：承载锚点 = 顶面中心（不是 bbox 中心）。让 cargo 底面贴叉齿顶面
+    const center = box.getCenter(new THREE.Vector3());
+    const anchor = new THREE.Vector3(center.x, box.max.y, center.z); // threejs Y-up
 
     // threejs → UI Z-up（swap y/z）
     const result = {
       fork_anchor_zero_x: +anchor.x.toFixed(3),
       fork_anchor_zero_y: +anchor.z.toFixed(3), // threejs z = UI y(前后)
-      fork_anchor_zero_z: +anchor.y.toFixed(3), // threejs y = UI z(高度)
+      fork_anchor_zero_z: +anchor.y.toFixed(3), // threejs y = UI z(高度) = 叉齿顶面
     };
     this._forkAnchorZeroCached = result;
     this._forkAnchorHash = hash;
@@ -419,8 +426,9 @@ export class KeyframeManager {
         targetParent.attach(child); // 保持世界变换
       }
 
-      // Snap-attach（#36 / #40）：cargo 附着到非世界父级时，贴到**叉齿尖 mesh bbox 中心**。
-      // 参考点和 computeForkAnchorZero 一致（都用 bbox.getCenter()），
+      // Snap-attach（#36 / #40 / #47）：cargo 附着到非世界父级时，贴到**叉齿顶面上方 h/2 处**。
+      // 即：cargo 底面贴叉齿顶面（物理上叉齿托住 cargo）。
+      // 参考点和 computeForkAnchorZero 一致（都用 box.max.y + 水平 center），
       // AI 公式层和 snap 层走同一个几何锚点 → 结构性零 teleport（REVIEW F5）
       if (parentChanged && targetParent !== root) {
         const markerMeta = findMarkerMeta(childName);
@@ -430,8 +438,10 @@ export class KeyframeManager {
           const box = new THREE.Box3().setFromObject(tineMesh);
           let desiredWorldPos;
           if (!box.isEmpty()) {
-            // 和 fork_anchor_zero 同源：纯 bbox 中心
-            desiredWorldPos = box.getCenter(new THREE.Vector3());
+            // #47：叉齿顶面中心 + cargo.h/2 → cargo 底面贴叉齿顶面
+            const cargoHalfHeight = (markerMeta.size?.h ?? 0) / 2;
+            const center = box.getCenter(new THREE.Vector3());
+            desiredWorldPos = new THREE.Vector3(center.x, box.max.y + cargoHalfHeight, center.z);
           } else {
             // fallback：父级原点
             desiredWorldPos = targetParent.getWorldPosition(new THREE.Vector3());
