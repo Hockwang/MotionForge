@@ -1178,6 +1178,37 @@ function snapshotForkAnchorZero() {
  */
 function ensurePkfCoversAttachPoint(pkf, ctx) {
   if (!pkf || typeof pkf !== 'object') return pkf;
+
+  // #50b sanitize AI 常见违规（prompt 屡次要求但 AI 仍犯）：
+  //   (1) approach_gap.default 强制归 0（AI 常写 1 / 0.3）
+  //   (2) 清洗 fork_anchor_zero_* 相关公式末尾凭空加的裸常数（AI 常加 -0.1 / +0.05）
+  const warnings = Array.isArray(pkf.warnings) ? pkf.warnings : (pkf.warnings = []);
+  const apParam = (pkf.parameters || []).find((p) => p.id === 'approach_gap');
+  if (apParam && Number(apParam.default) !== 0) {
+    const oldDefault = apParam.default;
+    apParam.default = 0;
+    warnings.push(`🔧 approach_gap.default 强制覆盖 ${oldDefault}→0（AI 违反 prompt）`);
+  }
+  const cleaned = [];
+  (pkf.steps || []).forEach((s) => {
+    for (const key of ['value_start', 'value_end']) {
+      const raw = s?.[key];
+      if (typeof raw !== 'string' || !raw.includes('fork_anchor_zero_')) continue;
+      // 剥离 `fork_anchor_zero_[xyz] ± <number>` 尾巴里的裸常数（保留 ± 参数名的合法表达式）
+      const stripped = raw.replace(
+        /(fork_anchor_zero_[xyz])\s*[-+]\s*\d+(?:\.\d+)?(?=\s*[-+]|\s*$)/g,
+        '$1',
+      );
+      if (stripped !== raw) {
+        cleaned.push(`${s.joint}.${key}`);
+        s[key] = stripped;
+      }
+    }
+  });
+  if (cleaned.length) {
+    warnings.push(`🧹 清洗 AI 凭空加的常数（${cleaned.length} 处）：${cleaned.slice(0, 3).join(', ')}${cleaned.length > 3 ? '...' : ''}`);
+  }
+
   const events = ctx?.reparentEvents || [];
   const attachEvent = events.find((e) => e.new_parent_name);
   if (!attachEvent) return pkf; // 没 attach event 就无对齐要求
@@ -1202,7 +1233,6 @@ function ensurePkfCoversAttachPoint(pkf, ctx) {
   };
 
   const THRESHOLD = 0.05; // 小于 5cm 视为已对齐，不注入
-  const warnings = Array.isArray(pkf.warnings) ? pkf.warnings : (pkf.warnings = []);
   const rolesByDim = {
     x: ['车体横移', '叉齿侧移'],
     y: ['车体前进'],
