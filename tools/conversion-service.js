@@ -467,69 +467,78 @@ app.post('/api/generate-pkf', aiRateLimit, async (req, res) => {
 
 const TEMPLATE_RHYTHM_SYSTEM_PROMPT = `你是叉车取放动作的节奏编排师。
 
-前端已按行业标准 14 段模板生成了完整的运动结构——每段的几何目标（位移、方向）和 attach/detach 时机都已定死，你不碰数值，只管节奏。
+前端已按行业标准 17 段模板生成了完整的运动结构——每段的几何目标（位移、方向）和 attach/detach 时机都已定死，你不碰数值，只管节奏。
 
 ## 你的任务
 
-1. 为每段决定持续时长（秒，> 0.1）
+1. 为**全部 17 段**每段决定持续时长（秒，> 0.1）
 2. 每段选一个 easing：'linear' | 'ease-in' | 'ease-out' | 'ease-in-out'
 3. 给整个 clip 起个名字（中文，12 字以内）
 
-## 14 段语义（固定）
+即使场景里没有"横移"关节（段 1/9/17 会被前端跳过），你**仍然要返回 17 段完整节奏**——前端编译时会自动跳过用不到的段。
+
+## 17 段语义（固定）
 
 取货阶段：
-  1. 接近（空载前进到安全距离）
-  2. 抬叉到 cargo 叉取面
-  3. 前进插齿（叉齿插入 cargo 孔） — attach 在此段结束瞬间
-  4. 取货（门架微抬 clearance，把 cargo 顶起）
-  5. 抬到运输避让高度
-  6. 后退到安全距离
-  7. 叉齿复位到运输姿态
+  1. 横移对齐 cargo x（横移到 cargo 正侧方，三向车专属；普通叉车无此段）
+  2. 接近（空载前进到安全距离）
+  3. 抬叉到 cargo 叉取面
+  4. 前进插齿（叉齿插入 cargo 孔） — attach 在此段结束瞬间
+  5. 取货（门架微抬 clearance，把 cargo 顶起）
+  6. 抬到运输避让高度
+  7. 后退到安全距离
+  8. 叉齿复位到运输姿态
 
 运输阶段：
-  8. 移动到放货点附近
+  9. 横移到放货点 x（横移对准放货点，三向车专属）
+  10. 移动到放货点附近（前进方向）
 
 放货阶段：
-  9. 抬叉到工作面 + fork_height
-  10. 前进到放货点
-  11. 放货（门架微降 clearance，cargo 落到工作面） — detach 在此段结束瞬间
-  12. 后退到安全距离
-  13. 叉齿复位
-  14. 返回起点
+  11. 抬叉到工作面 + fork_height
+  12. 前进到放货点
+  13. 放货（门架微降 clearance，cargo 落到工作面） — detach 在此段结束瞬间
+  14. 后退到安全距离
+  15. 叉齿复位
+  16. 返回 y=0
+  17. 返回 x=0（三向车专属）
 
 ## 节奏原则
 
-- 插齿段（3）、取货段（4）、放货段（11）通常**慢**（精细操作，0.8–1.5s）
-- 纯移动段（1、6、8、10、12、14）可以**较快**（1–2s，距离远可更长）
-- 抬叉段（2、5、9）中等（0.8–1.2s）
-- 复位段（7、13）可以快（0.5–1s）
-- 整体总时长建议 **10–18 秒**；用户说"快速"走下限，说"小心" / "慢速"走上限
+- 插齿段（4）、取货段（5）、放货段（13）通常**慢**（精细操作，0.8–1.5s）
+- 纯移动段（2、7、10、12、14、16）可以**较快**（1–2s，距离远可更长）
+- 抬叉段（3、6、11）中等（0.8–1.2s）
+- 横移段（1、9、17）一般较快（0.8–1.5s，和前进段类似）
+- 复位段（8、15）可以快（0.5–1s）
+- 整体总时长建议 **12–20 秒**；用户说"快速"走下限，说"小心" / "慢速"走上限
 
 ## 输出格式（严格 JSON，无任何 markdown 或解释文字）
 
 {
   "name": "叉车标准取放",
   "segments": [
-    { "index": 1, "duration": 1.5, "easing": "ease-in-out" },
-    { "index": 2, "duration": 1.0, "easing": "ease-in-out" },
-    { "index": 3, "duration": 1.2, "easing": "ease-in" },
-    { "index": 4, "duration": 1.0, "easing": "ease-out" },
-    { "index": 5, "duration": 1.0, "easing": "ease-in-out" },
-    { "index": 6, "duration": 1.5, "easing": "ease-in-out" },
-    { "index": 7, "duration": 0.8, "easing": "ease-in-out" },
-    { "index": 8, "duration": 2.0, "easing": "ease-in-out" },
-    { "index": 9, "duration": 1.0, "easing": "ease-in-out" },
-    { "index": 10, "duration": 1.2, "easing": "ease-in" },
-    { "index": 11, "duration": 1.0, "easing": "ease-out" },
-    { "index": 12, "duration": 1.5, "easing": "ease-in-out" },
-    { "index": 13, "duration": 0.8, "easing": "ease-in-out" },
-    { "index": 14, "duration": 1.5, "easing": "ease-in-out" }
+    { "index": 1, "duration": 1.0, "easing": "ease-in-out" },
+    { "index": 2, "duration": 1.5, "easing": "ease-in-out" },
+    { "index": 3, "duration": 1.0, "easing": "ease-in-out" },
+    { "index": 4, "duration": 1.2, "easing": "ease-in" },
+    { "index": 5, "duration": 1.0, "easing": "ease-out" },
+    { "index": 6, "duration": 1.0, "easing": "ease-in-out" },
+    { "index": 7, "duration": 1.5, "easing": "ease-in-out" },
+    { "index": 8, "duration": 0.8, "easing": "ease-in-out" },
+    { "index": 9, "duration": 1.2, "easing": "ease-in-out" },
+    { "index": 10, "duration": 2.0, "easing": "ease-in-out" },
+    { "index": 11, "duration": 1.0, "easing": "ease-in-out" },
+    { "index": 12, "duration": 1.2, "easing": "ease-in" },
+    { "index": 13, "duration": 1.0, "easing": "ease-out" },
+    { "index": 14, "duration": 1.5, "easing": "ease-in-out" },
+    { "index": 15, "duration": 0.8, "easing": "ease-in-out" },
+    { "index": 16, "duration": 1.5, "easing": "ease-in-out" },
+    { "index": 17, "duration": 1.0, "easing": "ease-in-out" }
   ]
 }
 
 ## 规则
 
-- 必须返回**全部 14 段**（index 1..14 齐全，不能跳）
+- 必须返回**全部 17 段**（index 1..17 齐全，不能跳，即使场景无横移也照给）
 - 每段 duration ≥ 0.1s
 - 不要加其他字段（parameters、steps、reparent_events 都由前端生成，你不管）
 - 不要输出解释、不要 markdown 代码块围栏`;
@@ -580,10 +589,10 @@ app.post('/api/template-rhythm', aiRateLimit, async (req, res) => {
     }
     const parsed = JSON.parse(match[0]);
 
-    // 基础校验：segments 数组 + 14 项
-    if (!Array.isArray(parsed.segments) || parsed.segments.length !== 14) {
+    // 基础校验：segments 数组 + 17 项
+    if (!Array.isArray(parsed.segments) || parsed.segments.length !== 17) {
       res.status(422).json({
-        error: `AI 返回 segments 必须为 14 项数组，实际 ${parsed.segments?.length || 0} 项`,
+        error: `AI 返回 segments 必须为 17 项数组，实际 ${parsed.segments?.length || 0} 项`,
         raw_response: content,
       });
       return;
@@ -593,7 +602,7 @@ app.post('/api/template-rhythm', aiRateLimit, async (req, res) => {
     const indicesSeen = new Set();
     for (const seg of parsed.segments) {
       const idx = Number(seg.index);
-      if (!Number.isInteger(idx) || idx < 1 || idx > 14) {
+      if (!Number.isInteger(idx) || idx < 1 || idx > 17) {
         res.status(422).json({ error: `段 index 不合法：${seg.index}`, raw_response: content });
         return;
       }
@@ -615,9 +624,9 @@ app.post('/api/template-rhythm', aiRateLimit, async (req, res) => {
       if (!seg.easing) seg.easing = 'ease-in-out';
       seg.duration = +dur.toFixed(3);
     }
-    // 检查 14 项齐全
-    if (indicesSeen.size !== 14) {
-      res.status(422).json({ error: `段 index 不全，缺失的：${[...Array(14).keys()].map((i) => i + 1).filter((i) => !indicesSeen.has(i))}`, raw_response: content });
+    // 检查 17 项齐全
+    if (indicesSeen.size !== 17) {
+      res.status(422).json({ error: `段 index 不全，缺失的：${[...Array(17).keys()].map((i) => i + 1).filter((i) => !indicesSeen.has(i))}`, raw_response: content });
       return;
     }
 

@@ -1,15 +1,15 @@
 /**
- * 叉车取放 14 段模板编译器测试（mvp3 Phase A）
+ * 叉车取放 14/17 段模板编译器测试（mvp3）
  *
  * 覆盖契约（docs/concepts/forklift-pickup-template.md）：
- *  1. buildDefaultRhythm 默认节奏形状
- *  2. collectTemplateContext 缺要素报错
- *  3. collectTemplateContext 完整场景返回 ctx
- *  4. compileTemplate 14 段 / 2 个 reparent 事件
- *  5. compileTemplate 参数注入（新 4 个 + 标准 cargo_pos / drop_pos / fork_anchor_zero）
- *  6. compileTemplate reparent 时间和段 3/11 t_end 对齐
- *  7. compileTemplate 关键公式正确（段 2/3/4/9/11）
- *  8. compileTemplate value_start 从上一段同 role 的 value_end 级联
+ *  1. buildDefaultRhythm 17 段均分
+ *  2. autoDetectForkName（mast joint.childId → 对象 name）
+ *  3. collectTemplateContext 缺要素报错 + lateralJoint 探测
+ *  4. compileTemplate 结构：普通叉车 14 步 / 三向车 17 步；2 个 reparent 事件
+ *  5. compileTemplate 参数注入
+ *  6. compileTemplate 关键段公式正确
+ *  7. compileTemplate value_start 从上一段同 role 的 value_end 级联（跨 optional 段也要级联）
+ *  8. FORKLIFT_TEMPLATE 数据一致性
  */
 import { describe, it, expect, beforeEach } from 'vitest';
 import * as THREE from 'three';
@@ -24,28 +24,29 @@ import {
   compileTemplate,
   ROLE_CAR_FORWARD,
   ROLE_MAST_LIFT,
+  ROLE_CAR_SIDEWAYS_PRIMARY,
+  ROLE_CAR_SIDEWAYS_FALLBACK,
 } from '../../src/core/ForkliftTemplate.js';
 
 // ── 辅助：构造模板编译所需的最小可行 KeyframeManager + sceneRoot ──
-// withAttachEvent=false 时不加 reparent event，走自动识别路径（测 auto-detect）
+// withLateralJoint: 'none' | 'primary' | 'fallback' —— 分别对应无横移 / 车体横移 / 叉齿侧移
 function setupScene({
   cargoPos = [0, 0, 0.5],
   dropPos = [0, 5, 0],
   withAttachEvent = true,
+  withLateralJoint = 'none',
 } = {}) {
   const km = new KeyframeManager();
 
-  // marker
   km.addMarker({ name: 'cargo', type: 'cargo', size: { w: 0.8, h: 0.6, d: 0.8 } });
   km.addMarker({ name: 'drop', type: 'drop' });
 
-  // scene root 和 fork 对象先建，以便 mast joint 用 fork.uuid 作 childId
   const sceneRoot = new THREE.Object3D();
   sceneRoot.name = 'root';
 
   const cargoObj = new THREE.Object3D();
   cargoObj.name = 'cargo';
-  cargoObj.position.set(cargoPos[0], cargoPos[2], cargoPos[1]); // UI→threejs swap
+  cargoObj.position.set(cargoPos[0], cargoPos[2], cargoPos[1]);
   sceneRoot.add(cargoObj);
 
   const dropObj = new THREE.Object3D();
@@ -57,7 +58,6 @@ function setupScene({
   forkObj.name = 'fork_tine';
   sceneRoot.add(forkObj);
 
-  // role 关节：mast joint 的 childId 指向 fork 对象的 uuid（模拟真实场景绑定）
   km.setJointDef('car_joint_id', {
     name: 'car_forward',
     type: 'prismatic',
@@ -72,7 +72,15 @@ function setupScene({
     childId: forkObj.uuid,
   });
 
-  // 预设一条 attach reparent event（给模板提供 fork 名字）；可选跳过以测 auto-detect
+  if (withLateralJoint === 'primary' || withLateralJoint === 'fallback') {
+    km.setJointDef('lat_joint_id', {
+      name: 'car_sideways',
+      type: 'prismatic',
+      axis: 'x',
+      role: withLateralJoint === 'primary' ? ROLE_CAR_SIDEWAYS_PRIMARY : ROLE_CAR_SIDEWAYS_FALLBACK,
+    });
+  }
+
   if (withAttachEvent) {
     km.addReparentEvent(2.0, 'cargo', 'fork_tine');
   }
@@ -81,14 +89,19 @@ function setupScene({
   return { km, sceneRoot, forkObj };
 }
 
+// 找段 helper
+function segByIndex(compiled, idx) {
+  return compiled.steps.find((s) => s.template_segment === idx);
+}
+
 // ═══════════════════════════════════════════════════════════════
 describe('buildDefaultRhythm', () => {
-  it('返回 14 段均分节奏，总时长匹配参数', () => {
-    const rhythm = buildDefaultRhythm(14); // 14 秒 → 每段 1 秒
-    expect(rhythm.segments.length).toBe(14);
+  it('返回 17 段均分节奏，总时长匹配参数', () => {
+    const rhythm = buildDefaultRhythm(17);
+    expect(rhythm.segments.length).toBe(17);
     expect(rhythm.segments[0].duration).toBeCloseTo(1, 3);
     const total = rhythm.segments.reduce((s, seg) => s + seg.duration, 0);
-    expect(total).toBeCloseTo(14, 2);
+    expect(total).toBeCloseTo(17, 2);
   });
 
   it('所有段都是 ease-in-out', () => {
@@ -98,10 +111,10 @@ describe('buildDefaultRhythm', () => {
     });
   });
 
-  it('段 index 覆盖 1–14', () => {
+  it('段 index 覆盖 1–17', () => {
     const rhythm = buildDefaultRhythm();
     const indices = rhythm.segments.map((s) => s.index).sort((a, b) => a - b);
-    expect(indices).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
+    expect(indices).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]);
   });
 });
 
@@ -117,7 +130,7 @@ describe('autoDetectForkName', () => {
     const km = new KeyframeManager();
     const sceneRoot = new THREE.Object3D();
     sceneRoot.name = 'root';
-    const wrapper = new THREE.Object3D(); // 无名
+    const wrapper = new THREE.Object3D();
     const deepChild = new THREE.Object3D();
     deepChild.name = 'deep_fork';
     wrapper.add(deepChild);
@@ -155,7 +168,6 @@ describe('collectTemplateContext 要素缺失检测', () => {
 
   it('缺 cargo marker', () => {
     const { km, sceneRoot } = setupScene();
-    // 删除 cargo marker
     const ids = [...km.sceneMarkers.entries()]
       .filter(([, m]) => m.type === 'cargo')
       .map(([id]) => id);
@@ -173,9 +185,8 @@ describe('collectTemplateContext 要素缺失检测', () => {
     expect(r.data.forkSource).toBe('auto_from_mast_joint');
   });
 
-  it('已有 attach 事件 → 用事件里的 fork 名字（即使和 mast joint childId 不同）', () => {
+  it('已有 attach 事件 → 用事件里的 fork 名字', () => {
     const { km, sceneRoot } = setupScene({ withAttachEvent: false });
-    // 手动加一条指向不同 fork 对象的 attach event
     const customFork = new THREE.Object3D();
     customFork.name = 'custom_fork';
     sceneRoot.add(customFork);
@@ -188,7 +199,6 @@ describe('collectTemplateContext 要素缺失检测', () => {
 
   it('无 attach 事件且 mast joint 无 childId → 报 fork 对象缺失', () => {
     const { km, sceneRoot } = setupScene({ withAttachEvent: false });
-    // 把 mast joint 的 childId 改掉
     km.jointDefinitions.get('mast_joint_id').childId = null;
     const r = collectTemplateContext(km, sceneRoot);
     expect(r.ok).toBe(false);
@@ -197,11 +207,31 @@ describe('collectTemplateContext 要素缺失检测', () => {
 
   it('缺 role=门架升降 关节', () => {
     const { km, sceneRoot } = setupScene();
-    // 把 mast 关节删掉
     km.jointDefinitions.delete('mast_joint_id');
     const r = collectTemplateContext(km, sceneRoot);
     expect(r.ok).toBe(false);
     expect(r.missing.some((m) => m.includes(ROLE_MAST_LIFT))).toBe(true);
+  });
+
+  it('无横移关节 → ctx.lateralJoint = null（14 段降级）', () => {
+    const { km, sceneRoot } = setupScene({ withLateralJoint: 'none' });
+    const r = collectTemplateContext(km, sceneRoot);
+    expect(r.ok).toBe(true);
+    expect(r.data.lateralJoint).toBe(null);
+  });
+
+  it('车体横移 role 存在 → ctx.lateralJoint 命中', () => {
+    const { km, sceneRoot } = setupScene({ withLateralJoint: 'primary' });
+    const r = collectTemplateContext(km, sceneRoot);
+    expect(r.ok).toBe(true);
+    expect(r.data.lateralJoint?.role).toBe(ROLE_CAR_SIDEWAYS_PRIMARY);
+  });
+
+  it('叉齿侧移 role fallback → ctx.lateralJoint 命中', () => {
+    const { km, sceneRoot } = setupScene({ withLateralJoint: 'fallback' });
+    const r = collectTemplateContext(km, sceneRoot);
+    expect(r.ok).toBe(true);
+    expect(r.data.lateralJoint?.role).toBe(ROLE_CAR_SIDEWAYS_FALLBACK);
   });
 
   it('完整场景 → ok=true 且带全部字段', () => {
@@ -212,7 +242,6 @@ describe('collectTemplateContext 要素缺失检测', () => {
     expect(r.data.dropName).toBe('drop');
     expect(r.data.forkName).toBe('fork_tine');
     expect(r.data.forkSource).toBe('existing_attach_event');
-    // UI Z-up：x/y/z 分别是左右 / 前后 / 高度；setupScene 按 UI 坐标喂入
     expect(r.data.cargoPos.x).toBeCloseTo(1, 3);
     expect(r.data.cargoPos.y).toBeCloseTo(5, 3);
     expect(r.data.cargoPos.z).toBeCloseTo(0.6, 3);
@@ -228,49 +257,94 @@ describe('collectTemplateContext 要素缺失检测', () => {
 
 // ═══════════════════════════════════════════════════════════════
 describe('compileTemplate 结构', () => {
-  let ctx;
-  beforeEach(() => {
-    const { km, sceneRoot } = setupScene({ cargoPos: [0, 5, 0.6], dropPos: [0, 10, 0.5] });
-    ctx = collectTemplateContext(km, sceneRoot).data;
+  describe('普通叉车（无横移）→ 14 步', () => {
+    let ctx;
+    beforeEach(() => {
+      const { km, sceneRoot } = setupScene({ cargoPos: [0, 5, 0.6], dropPos: [0, 10, 0.5] });
+      ctx = collectTemplateContext(km, sceneRoot).data;
+    });
+
+    it('生成 14 步 + 2 个 reparent 事件（跳过 3 段 optional）', () => {
+      const compiled = compileTemplate(ctx);
+      expect(compiled.steps.length).toBe(14);
+      expect(compiled.reparent_events.length).toBe(2);
+    });
+
+    it('optional 段（1/9/17）被跳过', () => {
+      const compiled = compileTemplate(ctx);
+      const segs = compiled.steps.map((s) => s.template_segment);
+      expect(segs).not.toContain(1);
+      expect(segs).not.toContain(9);
+      expect(segs).not.toContain(17);
+    });
   });
 
-  it('生成 14 步 + 2 个 reparent 事件', () => {
-    const compiled = compileTemplate(ctx);
-    expect(compiled.steps.length).toBe(14);
-    expect(compiled.reparent_events.length).toBe(2);
+  describe('三向车（有横移）→ 17 步', () => {
+    let ctx;
+    beforeEach(() => {
+      const { km, sceneRoot } = setupScene({
+        cargoPos: [3, 5, 0.6],
+        dropPos: [-2, 10, 0.5],
+        withLateralJoint: 'primary',
+      });
+      ctx = collectTemplateContext(km, sceneRoot).data;
+    });
+
+    it('生成 17 步 + 2 个 reparent 事件', () => {
+      const compiled = compileTemplate(ctx);
+      expect(compiled.steps.length).toBe(17);
+      expect(compiled.reparent_events.length).toBe(2);
+    });
+
+    it('段 1/9/17 都存在且驱动横移关节', () => {
+      const compiled = compileTemplate(ctx);
+      expect(segByIndex(compiled, 1)?.joint).toBe('car_sideways');
+      expect(segByIndex(compiled, 9)?.joint).toBe('car_sideways');
+      expect(segByIndex(compiled, 17)?.joint).toBe('car_sideways');
+    });
+
+    it('叉齿侧移 role（fallback）也能命中', () => {
+      const { km, sceneRoot } = setupScene({
+        cargoPos: [3, 5, 0.6],
+        dropPos: [-2, 10, 0.5],
+        withLateralJoint: 'fallback',
+      });
+      const ctx2 = collectTemplateContext(km, sceneRoot).data;
+      const compiled = compileTemplate(ctx2);
+      expect(compiled.steps.length).toBe(17);
+      expect(segByIndex(compiled, 1)?.joint).toBe('car_sideways');
+    });
   });
 
-  it('meta.template_version 正确写入', () => {
-    const compiled = compileTemplate(ctx);
-    expect(compiled.meta.template_version).toBe(FORKLIFT_TEMPLATE_VERSION);
-  });
+  describe('通用结构', () => {
+    let ctx;
+    beforeEach(() => {
+      const { km, sceneRoot } = setupScene({ cargoPos: [0, 5, 0.6], dropPos: [0, 10, 0.5] });
+      ctx = collectTemplateContext(km, sceneRoot).data;
+    });
 
-  it('attach 事件在段 3 t_end，detach 在段 11 t_end', () => {
-    const compiled = compileTemplate(ctx, buildDefaultRhythm(14));
-    const attach = compiled.reparent_events.find((e) => e.new_parent_name);
-    const detach = compiled.reparent_events.find((e) => e.new_parent_name === null);
+    it('meta.template_version 正确写入', () => {
+      const compiled = compileTemplate(ctx);
+      expect(compiled.meta.template_version).toBe(FORKLIFT_TEMPLATE_VERSION);
+    });
 
-    // 均分 14s 每段 1s，段 3 t_end = 3s，段 11 t_end = 11s
-    expect(attach.t).toBeCloseTo(3, 2);
-    expect(attach.child_name).toBe('cargo');
-    expect(attach.new_parent_name).toBe('fork_tine');
+    it('attach 在段 4 t_end，detach 在段 13 t_end', () => {
+      const compiled = compileTemplate(ctx, buildDefaultRhythm(17));
+      const attach = compiled.reparent_events.find((e) => e.new_parent_name);
+      const detach = compiled.reparent_events.find((e) => e.new_parent_name === null);
+      expect(attach.t).toBeCloseTo(segByIndex(compiled, 4).t_end, 3);
+      expect(detach.t).toBeCloseTo(segByIndex(compiled, 13).t_end, 3);
+      expect(attach.child_name).toBe('cargo');
+      expect(attach.new_parent_name).toBe('fork_tine');
+      expect(detach.new_parent_name).toBe(null);
+    });
 
-    expect(detach.t).toBeCloseTo(11, 2);
-    expect(detach.child_name).toBe('cargo');
-    expect(detach.new_parent_name).toBe(null);
-  });
-
-  it('总时长 = 各段时长之和', () => {
-    const rhythm = buildDefaultRhythm(7); // 7 秒 → 每段 0.5s
-    const compiled = compileTemplate(ctx, rhythm);
-    expect(compiled.meta.total_duration).toBeCloseTo(7, 2);
-  });
-
-  it('段 t_start 严格串行等于前段 t_end', () => {
-    const compiled = compileTemplate(ctx);
-    for (let i = 1; i < compiled.steps.length; i++) {
-      expect(compiled.steps[i].t_start).toBeCloseTo(compiled.steps[i - 1].t_end, 3);
-    }
+    it('段 t_start 严格串行等于前段 t_end', () => {
+      const compiled = compileTemplate(ctx);
+      for (let i = 1; i < compiled.steps.length; i++) {
+        expect(compiled.steps[i].t_start).toBeCloseTo(compiled.steps[i - 1].t_end, 3);
+      }
+    });
   });
 });
 
@@ -333,114 +407,155 @@ describe('compileTemplate 参数注入', () => {
 describe('compileTemplate 公式正确', () => {
   let ctx;
   beforeEach(() => {
-    const { km, sceneRoot } = setupScene({ cargoPos: [0, 5, 0.6], dropPos: [0, 10, 0.3] });
+    const { km, sceneRoot } = setupScene({
+      cargoPos: [3, 5, 0.6],
+      dropPos: [-2, 10, 0.3],
+      withLateralJoint: 'primary',
+    });
     ctx = collectTemplateContext(km, sceneRoot).data;
   });
 
-  it('段 2 抬叉：公式 = cargo_bottom + fork_offset - clearance - anchor', () => {
+  it('段 1 横移对齐 cargo x：公式 = cargo_pos_x - fork_anchor_zero_x', () => {
     const compiled = compileTemplate(ctx);
-    const seg2 = compiled.steps[1];
-    expect(seg2.value_end).toBe('cargo_pos_z - cargo_height / 2 + cargo_fork_height - lift_clearance - fork_anchor_zero_z');
-    expect(seg2.joint).toBe('mast_lift');
+    expect(segByIndex(compiled, 1).value_end).toBe('cargo_pos_x - fork_anchor_zero_x');
   });
 
-  it('段 3 插齿：attach 触发段；公式 = cargo_pos_y - anchor', () => {
+  it('段 2 接近：公式 = cargo_pos_y - anchor - safe_distance', () => {
     const compiled = compileTemplate(ctx);
-    const seg3 = compiled.steps[2];
-    expect(seg3.value_end).toBe('cargo_pos_y - fork_anchor_zero_y');
-    expect(seg3.joint).toBe('car_forward');
+    expect(segByIndex(compiled, 2).value_end).toBe('cargo_pos_y - fork_anchor_zero_y - safe_distance');
   });
 
-  it('段 4 取货：公式 = 段 2 基础上去掉 -lift_clearance（顶起 clearance）', () => {
+  it('段 3 抬叉：公式 = cargo_bottom + fork_offset - clearance - anchor', () => {
     const compiled = compileTemplate(ctx);
-    const seg4 = compiled.steps[3];
-    expect(seg4.value_end).toBe('cargo_pos_z - cargo_height / 2 + cargo_fork_height - fork_anchor_zero_z');
+    expect(segByIndex(compiled, 3).value_end).toBe('cargo_pos_z - cargo_height / 2 + cargo_fork_height - lift_clearance - fork_anchor_zero_z');
   });
 
-  it('段 9 放货前抬叉：公式 = drop_pos_z + cargo_fork_height - anchor', () => {
+  it('段 4 插齿：attach 触发段；公式 = cargo_pos_y - anchor', () => {
     const compiled = compileTemplate(ctx);
-    const seg9 = compiled.steps[8];
-    expect(seg9.value_end).toBe('drop_pos_z + cargo_fork_height - fork_anchor_zero_z');
+    expect(segByIndex(compiled, 4).value_end).toBe('cargo_pos_y - fork_anchor_zero_y');
+    expect(segByIndex(compiled, 4).joint).toBe('car_forward');
   });
 
-  it('段 11 放货：detach 触发段；公式 = 段 9 - lift_clearance', () => {
+  it('段 5 取货：公式 = 段 3 去掉 -lift_clearance', () => {
     const compiled = compileTemplate(ctx);
-    const seg11 = compiled.steps[10];
-    expect(seg11.value_end).toBe('drop_pos_z + cargo_fork_height - lift_clearance - fork_anchor_zero_z');
-    expect(seg11.joint).toBe('mast_lift');
+    expect(segByIndex(compiled, 5).value_end).toBe('cargo_pos_z - cargo_height / 2 + cargo_fork_height - fork_anchor_zero_z');
   });
 
-  it('段 1 接近：公式 = cargo_pos_y - anchor - safe_distance', () => {
+  it('段 9 横移到 drop x：公式 = drop_pos_x - fork_anchor_zero_x', () => {
     const compiled = compileTemplate(ctx);
-    const seg1 = compiled.steps[0];
-    expect(seg1.value_end).toBe('cargo_pos_y - fork_anchor_zero_y - safe_distance');
+    expect(segByIndex(compiled, 9).value_end).toBe('drop_pos_x - fork_anchor_zero_x');
   });
 
-  it('段 13/14 复位：公式 = 0', () => {
+  it('段 11 放货前抬叉：公式 = drop_pos_z + cargo_fork_height - anchor', () => {
     const compiled = compileTemplate(ctx);
-    expect(compiled.steps[12].value_end).toBe('0'); // 段 13 门架复位
-    expect(compiled.steps[13].value_end).toBe('0'); // 段 14 车体返回
+    expect(segByIndex(compiled, 11).value_end).toBe('drop_pos_z + cargo_fork_height - fork_anchor_zero_z');
+  });
+
+  it('段 13 放货：detach 触发段；公式 = 段 11 - lift_clearance', () => {
+    const compiled = compileTemplate(ctx);
+    expect(segByIndex(compiled, 13).value_end).toBe('drop_pos_z + cargo_fork_height - lift_clearance - fork_anchor_zero_z');
+    expect(segByIndex(compiled, 13).joint).toBe('mast_lift');
+  });
+
+  it('段 15/16/17 复位：公式 = 0', () => {
+    const compiled = compileTemplate(ctx);
+    expect(segByIndex(compiled, 15).value_end).toBe('0');
+    expect(segByIndex(compiled, 16).value_end).toBe('0');
+    expect(segByIndex(compiled, 17).value_end).toBe('0');
   });
 });
 
 // ═══════════════════════════════════════════════════════════════
 describe('compileTemplate value_start 级联', () => {
-  let ctx;
-  beforeEach(() => {
-    const { km, sceneRoot } = setupScene();
-    ctx = collectTemplateContext(km, sceneRoot).data;
+  describe('无横移（14 段）', () => {
+    let ctx;
+    beforeEach(() => {
+      const { km, sceneRoot } = setupScene();
+      ctx = collectTemplateContext(km, sceneRoot).data;
+    });
+
+    it('第一段 value_start = "0"', () => {
+      const compiled = compileTemplate(ctx);
+      expect(compiled.steps[0].value_start).toBe('0');
+    });
+
+    it('车体前进与门架升降各自独立级联（不会串扰）', () => {
+      const compiled = compileTemplate(ctx);
+      // 段 2（车体前进首段）value_start = '0'，value_end 是公式
+      // 段 4（车体前进插齿）value_start 应等于段 2 value_end
+      const seg2 = segByIndex(compiled, 2);
+      const seg4 = segByIndex(compiled, 4);
+      expect(seg4.value_start).toBe(seg2.value_end);
+
+      // 段 5（门架升降取货）value_start 应等于段 3（门架升降抬叉）value_end
+      const seg3 = segByIndex(compiled, 3);
+      const seg5 = segByIndex(compiled, 5);
+      expect(seg5.value_start).toBe(seg3.value_end);
+    });
   });
 
-  it('第一段 value_start = "0"', () => {
-    const compiled = compileTemplate(ctx);
-    expect(compiled.steps[0].value_start).toBe('0');
-  });
+  describe('有横移（17 段）', () => {
+    let ctx;
+    beforeEach(() => {
+      const { km, sceneRoot } = setupScene({ withLateralJoint: 'primary' });
+      ctx = collectTemplateContext(km, sceneRoot).data;
+    });
 
-  it('后续段 value_start = 同 role 上一段的 value_end', () => {
-    const compiled = compileTemplate(ctx);
-    // 段 3（车体前进）value_start 应该等于段 1（车体前进）的 value_end
-    const seg1 = compiled.steps[0];
-    const seg3 = compiled.steps[2];
-    expect(seg3.value_start).toBe(seg1.value_end);
+    it('段 9 横移 value_start = 段 1 横移 value_end（跨中间段级联）', () => {
+      const compiled = compileTemplate(ctx);
+      const seg1 = segByIndex(compiled, 1);
+      const seg9 = segByIndex(compiled, 9);
+      expect(seg9.value_start).toBe(seg1.value_end);
+    });
 
-    // 段 4（门架升降）value_start 应该等于段 2（门架升降）的 value_end
-    const seg2 = compiled.steps[1];
-    const seg4 = compiled.steps[3];
-    expect(seg4.value_start).toBe(seg2.value_end);
+    it('段 17 横移 value_start = 段 9 横移 value_end', () => {
+      const compiled = compileTemplate(ctx);
+      const seg9 = segByIndex(compiled, 9);
+      const seg17 = segByIndex(compiled, 17);
+      expect(seg17.value_start).toBe(seg9.value_end);
+    });
 
-    // 段 5（门架升降）value_start = 段 4 的 value_end
-    const seg5 = compiled.steps[4];
-    expect(seg5.value_start).toBe(seg4.value_end);
-  });
-
-  it('车体前进与门架升降各自独立级联（不会串扰）', () => {
-    const compiled = compileTemplate(ctx);
-    // 段 6（车体前进）的 value_start = 段 3 的 value_end（不应该是段 5 门架的 value_end）
-    const seg3 = compiled.steps[2];
-    const seg6 = compiled.steps[5];
-    expect(seg6.value_start).toBe(seg3.value_end);
+    it('叉齿侧移 role（fallback）也能正常级联', () => {
+      const { km, sceneRoot } = setupScene({ withLateralJoint: 'fallback' });
+      const ctx2 = collectTemplateContext(km, sceneRoot).data;
+      const compiled = compileTemplate(ctx2);
+      const seg1 = segByIndex(compiled, 1);
+      const seg9 = segByIndex(compiled, 9);
+      expect(seg9.value_start).toBe(seg1.value_end);
+    });
   });
 });
 
 // ═══════════════════════════════════════════════════════════════
 describe('FORKLIFT_TEMPLATE 数据一致性', () => {
-  it('index 严格递增 1–14', () => {
+  it('index 严格递增 1–17', () => {
     FORKLIFT_TEMPLATE.forEach((seg, i) => {
       expect(seg.index).toBe(i + 1);
     });
+    expect(FORKLIFT_TEMPLATE.length).toBe(17);
   });
 
-  it('role 只使用定义的两种角色', () => {
+  it('role 只使用定义的三种角色', () => {
     FORKLIFT_TEMPLATE.forEach((seg) => {
-      expect([ROLE_CAR_FORWARD, ROLE_MAST_LIFT]).toContain(seg.role);
+      expect([
+        ROLE_CAR_FORWARD,
+        ROLE_MAST_LIFT,
+        ROLE_CAR_SIDEWAYS_PRIMARY,
+      ]).toContain(seg.role);
     });
   });
 
-  it('reparent 事件恰好在段 3 attach 和段 11 detach', () => {
+  it('optional 段恰好 3 段（1/9/17，都是横移）', () => {
+    const optional = FORKLIFT_TEMPLATE.filter((s) => s.optional);
+    expect(optional.map((s) => s.index).sort((a, b) => a - b)).toEqual([1, 9, 17]);
+    optional.forEach((s) => expect(s.role).toBe(ROLE_CAR_SIDEWAYS_PRIMARY));
+  });
+
+  it('reparent 事件恰好在段 4 attach 和段 13 detach', () => {
     const reparents = FORKLIFT_TEMPLATE.filter((s) => s.reparent);
     expect(reparents.length).toBe(2);
-    expect(reparents.find((s) => s.reparent === 'attach').index).toBe(3);
-    expect(reparents.find((s) => s.reparent === 'detach').index).toBe(11);
+    expect(reparents.find((s) => s.reparent === 'attach').index).toBe(4);
+    expect(reparents.find((s) => s.reparent === 'detach').index).toBe(13);
   });
 
   it('公式字符串非空', () => {

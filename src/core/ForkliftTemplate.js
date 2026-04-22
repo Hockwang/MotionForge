@@ -23,63 +23,84 @@ export const FORKLIFT_TEMPLATE_VERSION = 1;
 // ── 角色常量（和 keyframeManager.jointDefinitions[].role 对齐）──
 export const ROLE_CAR_FORWARD = '车体前进';
 export const ROLE_MAST_LIFT = '门架升降';
+// 横移 role 有两种同义命名（三向车的整车横移 vs 叉齿侧移机构），
+// 模板把它们视为等价——取第一个命中的 joint 驱动 x 对齐段。
+export const ROLE_CAR_SIDEWAYS_PRIMARY = '车体横移';
+export const ROLE_CAR_SIDEWAYS_FALLBACK = '叉齿侧移';
 
-// ── 段数据 ──
+// ── 段数据（17 段，其中 3 段 optional 依赖横移 role）──
 // 每段包含：
-//   index:       1-14
+//   index:       1-17
 //   name:        中文显示名
 //   role:        驱动关节 role
 //   formula:     value_end 公式字符串（引用 PKF parameters 里的 id）
 //   reparent:    'attach' | 'detach' | undefined
+//   optional:    true 时若对应 role 关节缺失则编译期跳过（三向车有横移 → 17 段；
+//                普通叉车无横移 → 自动降级 14 段）
 // 公式约定（UI Z-up）：
 //   cargo_bottom_z = cargo_pos_z - cargo_height / 2      （cargo 底面绝对高度）
 //   cargo_fork_z   = cargo_bottom_z + cargo_fork_height  （cargo 上叉齿承载面应对齐的高度）
 // 公式直接展开，不引入中间派生量——中台不用支持额外语法。
+//
+// 历史：原 14 段只驱动前进 + 升降，三向车场景 cargo 在 x 方向偏移时 fork 永远对不齐，
+//      attach 被老 snap-attach 强拽出瞬移。加入 x 对齐段后 cargo 可在任意平面位置。
 export const FORKLIFT_TEMPLATE = [
-  { index: 1,  name: '接近',
+  { index: 1,  name: '横移对齐 cargo x',
+    role: ROLE_CAR_SIDEWAYS_PRIMARY,
+    formula: 'cargo_pos_x - fork_anchor_zero_x',
+    optional: true },
+  { index: 2,  name: '接近',
     role: ROLE_CAR_FORWARD,
     formula: 'cargo_pos_y - fork_anchor_zero_y - safe_distance' },
-  { index: 2,  name: '抬叉到 cargo 叉取面（低 clearance）',
+  { index: 3,  name: '抬叉到 cargo 叉取面（低 clearance）',
     role: ROLE_MAST_LIFT,
     formula: 'cargo_pos_z - cargo_height / 2 + cargo_fork_height - lift_clearance - fork_anchor_zero_z' },
-  { index: 3,  name: '前进插齿',
+  { index: 4,  name: '前进插齿',
     role: ROLE_CAR_FORWARD,
     formula: 'cargo_pos_y - fork_anchor_zero_y',
     reparent: 'attach' },
-  { index: 4,  name: '取货（上顶 lift_clearance）',
+  { index: 5,  name: '取货（上顶 lift_clearance）',
     role: ROLE_MAST_LIFT,
     formula: 'cargo_pos_z - cargo_height / 2 + cargo_fork_height - fork_anchor_zero_z' },
-  { index: 5,  name: '抬到运输避让高度',
+  { index: 6,  name: '抬到运输避让高度',
     role: ROLE_MAST_LIFT,
     formula: 'transport_height - fork_anchor_zero_z' },
-  { index: 6,  name: '后退到安全距离',
+  { index: 7,  name: '后退到安全距离',
     role: ROLE_CAR_FORWARD,
     formula: 'cargo_pos_y - fork_anchor_zero_y - safe_distance' },
-  { index: 7,  name: '叉齿复位（运输姿态）',
+  { index: 8,  name: '叉齿复位（运输姿态）',
     role: ROLE_MAST_LIFT,
     formula: '0' },
-  { index: 8,  name: '移动到放货点',
+  { index: 9,  name: '横移到放货点 x',
+    role: ROLE_CAR_SIDEWAYS_PRIMARY,
+    formula: 'drop_pos_x - fork_anchor_zero_x',
+    optional: true },
+  { index: 10, name: '移动到放货点',
     role: ROLE_CAR_FORWARD,
     formula: 'drop_pos_y - fork_anchor_zero_y - safe_distance' },
-  { index: 9,  name: '抬叉到工作面 + cargo_fork_height',
+  { index: 11, name: '抬叉到工作面 + cargo_fork_height',
     role: ROLE_MAST_LIFT,
     formula: 'drop_pos_z + cargo_fork_height - fork_anchor_zero_z' },
-  { index: 10, name: '前进到放货点',
+  { index: 12, name: '前进到放货点',
     role: ROLE_CAR_FORWARD,
     formula: 'drop_pos_y - fork_anchor_zero_y' },
-  { index: 11, name: '放货（下降 lift_clearance）',
+  { index: 13, name: '放货（下降 lift_clearance）',
     role: ROLE_MAST_LIFT,
     formula: 'drop_pos_z + cargo_fork_height - lift_clearance - fork_anchor_zero_z',
     reparent: 'detach' },
-  { index: 12, name: '后退到安全距离',
+  { index: 14, name: '后退到安全距离',
     role: ROLE_CAR_FORWARD,
     formula: 'drop_pos_y - fork_anchor_zero_y - safe_distance' },
-  { index: 13, name: '叉齿复位',
+  { index: 15, name: '叉齿复位',
     role: ROLE_MAST_LIFT,
     formula: '0' },
-  { index: 14, name: '返回起点',
+  { index: 16, name: '返回 y=0',
     role: ROLE_CAR_FORWARD,
     formula: '0' },
+  { index: 17, name: '返回 x=0',
+    role: ROLE_CAR_SIDEWAYS_PRIMARY,
+    formula: '0',
+    optional: true },
 ];
 
 // 新增的 4 个参数（现有 cargo_pos_*、drop_pos_*、cargo_*、fork_anchor_zero_* 复用 PKF 约定）
@@ -188,6 +209,10 @@ export function collectTemplateContext(keyframeManager, sceneRoot) {
   const mastJoint = allDefs.find((d) => d.role === ROLE_MAST_LIFT);
   if (!carJoint) missing.push(`role="${ROLE_CAR_FORWARD}" 的关节`);
   if (!mastJoint) missing.push(`role="${ROLE_MAST_LIFT}" 的关节`);
+  // 横移关节可选：优先车体横移，fallback 叉齿侧移；都没有 → 降级为 14 段无 x 对齐
+  const lateralJoint = allDefs.find((d) => d.role === ROLE_CAR_SIDEWAYS_PRIMARY)
+    || allDefs.find((d) => d.role === ROLE_CAR_SIDEWAYS_FALLBACK)
+    || null;
 
   // fork 对象识别：优先用已有 attach reparent event；否则从 mast joint childId 自动识别
   const events = keyframeManager.getReparentEvents?.() || [];
@@ -233,6 +258,7 @@ export function collectTemplateContext(keyframeManager, sceneRoot) {
       dropPos: dropPosUi,
       carJoint,
       mastJoint,
+      lateralJoint,  // null 表示场景无横移 → compile 时跳过 optional x 对齐段
     },
   };
 }
@@ -284,7 +310,17 @@ export function compileTemplate(ctx, rhythm, forkAnchorZero = {}) {
   const steps = [];
   const reparentEvents = [];
   let cursor = 0;
+  const roleToJoint = {
+    [ROLE_CAR_FORWARD]: ctx.carJoint,
+    [ROLE_MAST_LIFT]: ctx.mastJoint,
+    [ROLE_CAR_SIDEWAYS_PRIMARY]: ctx.lateralJoint,
+    [ROLE_CAR_SIDEWAYS_FALLBACK]: ctx.lateralJoint,
+  };
   for (const seg of FORKLIFT_TEMPLATE) {
+    const joint = roleToJoint[seg.role];
+    // optional 段：对应 role 关节缺失 → 静默跳过（三向车无横移时降级为 14 段）
+    if (seg.optional && !joint) continue;
+    if (!joint) continue; // 非 optional 但缺 joint：理论 collectTemplateContext 会拦住，防御式保底
     const rSeg = rhythmMap.get(seg.index);
     const duration = Number(rSeg?.duration) || 1;
     const easing = rSeg?.easing || 'ease-in-out';
@@ -292,8 +328,10 @@ export function compileTemplate(ctx, rhythm, forkAnchorZero = {}) {
     const tEnd = +(cursor + duration).toFixed(3);
     cursor = tEnd;
 
-    const joint = seg.role === ROLE_CAR_FORWARD ? ctx.carJoint : ctx.mastJoint;
-    const valueStart = prevValueByRole.get(seg.role) ?? '0';
+    // 横移段用 lateralJoint 实际的 role，这样级联 key 用"真实 role"而不是模板里的 PRIMARY
+    // （用户关节可能标 FALLBACK，模板的 PRIMARY 公式照用）
+    const cascadeKey = joint === ctx.lateralJoint ? 'lateral' : seg.role;
+    const valueStart = prevValueByRole.get(cascadeKey) ?? '0';
     const valueEnd = seg.formula;
 
     steps.push({
@@ -310,7 +348,7 @@ export function compileTemplate(ctx, rhythm, forkAnchorZero = {}) {
       template_segment: seg.index,
       template_segment_name: seg.name,
     });
-    prevValueByRole.set(seg.role, valueEnd);
+    prevValueByRole.set(cascadeKey, valueEnd);
 
     // 绑定 reparent 事件（§4.4 attach 在段 3 末尾，detach 在段 11 末尾）
     if (seg.reparent === 'attach') {
