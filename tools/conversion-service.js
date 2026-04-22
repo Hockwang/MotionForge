@@ -226,9 +226,9 @@ const PKF_SYSTEM_PROMPT = `你是一个工业设备参数化运动规划助手�
 - 默认 easing 为 linear
 - 参数 id 用英文小写 + 下划线命名
 
-**⚠️ 核心语义（放在示例之前）**：prismatic 关节的 `value_end` 是**位移**（从零位开始前进多少米），不是世界绝对坐标。
-Runtime：`newWorldPos = baseWorldPos + axis * currentValue`。所以公式要算"要位移多少才能让目标点到达 target"：
-`displacement = target_world - anchor_at_zero`（+ 可选的 approach_gap）
+**⚠️ 核心语义（放在示例之前）**：prismatic 关节的 \`value_end\` 是**位移**（从零位开始前进多少米），不是世界绝对坐标。
+Runtime：\`newWorldPos = baseWorldPos + axis * currentValue\`。所以公式要算"要位移多少才能让目标点到达 target"：
+\`displacement = target_world - anchor_at_zero\`（+ 可选的 approach_gap）
 
 **学习下面的完整示例**（叉车取货动作 — v14.1 位移语义）：
 
@@ -264,7 +264,7 @@ Runtime：`newWorldPos = baseWorldPos + axis * currentValue`。所以公式要�
   ]
 }
 
-**重要**：示例里的 `EXAMPLE_*` 是占位关节名，**你必须使用用户当前提供的关节列表里的实际关节名**。参考示例学习：位移公式 (cargo.y - fork_anchor_zero_y - approach_gap)、多步串行/并行编排、参数声明规范。
+**重要**：示例里的 \`EXAMPLE_*\` 是占位关节名，**你必须使用用户当前提供的关节列表里的实际关节名**。参考示例学习：位移公式 (cargo.y - fork_anchor_zero_y - approach_gap)、多步串行/并行编排、参数声明规范。
 
 **@关节名锚定语法（精确模式）**：
 - 用户如果在描述里写 \`@关节名\`（例如 \`@_CS19110 顺时针旋转 90 度\`、\`@_____10 抬升 1 米\`），则：
