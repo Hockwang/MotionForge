@@ -753,10 +753,17 @@ async function handleImportPackage(file) {
       const motionData = JSON.parse(await motionFile.async('string'));
       const clipsArr = motionData.clips || [];
 
-      // 检测格式：v2 用 keyframes[].joint_values，v1 用 channels.translate/rotate
-      const isV2 = clipsArr.length > 0 && clipsArr[0].keyframes && Array.isArray(clipsArr[0].keyframes)
-        && clipsArr[0].keyframes.length > 0 && clipsArr[0].keyframes[0].joint_values !== undefined;
-      const isV1 = !isV2 && clipsArr.length > 0 && clipsArr[0].channels !== undefined;
+      // 检测格式：
+      //   v1 = 有 channels.translate/rotate（老 schema，per-object channels）
+      //   v2 = 其余所有带 clips 的情况（包括 keyframes 为空但有 duration / reparent_events 的 PKF-only clip）
+      // bug 修：原来 isV2 要求 keyframes.length > 0，导致 PKF-only 动画（如叉车模板路径生成）
+      //        被误判为非 v2 → 整块恢复代码跳过 → duration 回到默认 10、reparent_events 丢失
+      const isV1 = clipsArr.length > 0 && clipsArr[0].channels !== undefined;
+      const isV2 = !isV1 && clipsArr.length > 0 && (
+        Array.isArray(clipsArr[0].keyframes)
+        || clipsArr[0].duration !== undefined
+        || Array.isArray(clipsArr[0].reparent_events)
+      );
 
       if (isV1) {
         oldMotionDetected = true;
@@ -903,6 +910,11 @@ async function handleImportPackage(file) {
     ui.setLoadStatus(
       `已导入资产包。对象：${editableObjects.length}，片段：${restoredClipCount}，关键帧：${restoredKfCount}${pkfInfo}`,
     );
+    // 同步时间线 UI（duration 已从 motion.json 恢复到 globalClips，UI 也需要跟上）
+    const importedDuration = keyframeManager.getClipDuration();
+    if (ui.setTimelineRange) ui.setTimelineRange(importedDuration);
+    if (ui.durationInput) ui.durationInput.value = String(importedDuration);
+
     refreshObjectTree();
     refreshPkfParamsUI();  // 刷新 PKF 参数 UI
     refreshPkfStepsUI();   // 刷新 PKF 步骤 UI
