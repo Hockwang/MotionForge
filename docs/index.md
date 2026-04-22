@@ -58,7 +58,9 @@ updated: 2026-04-22
 
 ## 其他文档入口
 
-- [CLAUDE.md](../CLAUDE.md) — AI 协作手册（架构约束 + bug 修复历史 + 诊断工具）
+- [CLAUDE.md](../CLAUDE.md) — 协作手册（**只放红线规则 + 钩子**，2026-04-22 瘦身至 ~165 行）
+- **[bugfix-log.md](bugfix-log.md)** — Bug 修复完整历史 #1-#52+（从 CLAUDE.md 拆出）
+- **[diagnostics.md](diagnostics.md)** — 诊断脚本完整指南 7 脚本 + 7 场景（从 CLAUDE.md 拆出）
 - [README.md](../README.md) — 项目概览（3 分钟版）
 - [FLOW.md](../FLOW.md) — 完整产品操作流程
 - [docs/schema/v4.md](schema/v4.md) — ZIP schema v4 详细规范
