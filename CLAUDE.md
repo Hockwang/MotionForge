@@ -525,7 +525,29 @@ console.log('emissive:', c?.material?.emissive);
 - **修复**：[KeyframeManager.js](src/core/KeyframeManager.js) `applyJointDrive` 去掉 fixed 的 early return，加 `else if (def.type === 'fixed')` 分支：`newWorldPos = baseWorldPos; newWorldQuat = baseWorldQuat;`。等价于 prismatic value=0：每帧根据 joint parent 最新世界矩阵 × base 计算 child 世界位置
 - **经验教训**：**关节类型的语义要一致**。revolute/prismatic 都是"joint parent 说了算"（URDF 风格），fixed 也应该是。早期为了省一点性能给 fixed 走快捷路径，破坏了这个一致性。现在 fixed 符合 URDF 标准：刚性连接到 joint parent，无自由度但跟随运动
 
-#### #50 fork_anchor_zero 水平位置改用"朝 cargo 方向的 bbox 前端极值"（合并 mesh 下近似叉齿尖）
+#### #52 fork_anchor_zero 终局：自动算 bbox 底面中心（= "子对象底部"按钮公式，但不写 def.origin）
+- **症状**：#51 读 joint.origin 当承载锚点，用户指出 **origin 是旋转支点**（URDF 关节原点），挪它会破坏关节旋转行为
+- **用户洞察**：既然"子对象底部"按钮的算法（`bbox.center.x / z + bbox.min.y`）就能算出好位置，**自动走一遍这个算法就行，不要写进 def.origin**
+- **修复**：
+  - [KeyframeManager.js computeForkAnchorZero](src/core/KeyframeManager.js)：直接 `Box3().setFromObject(forkObj)` + `anchor = (center.x, min.y, center.z)`（和按钮同公式）
+  - [KeyframeManager.js applyReparentEventsAtTime](src/core/KeyframeManager.js) snap：同逻辑，`desiredWorldPos = (center.x, min.y + cargoH/2, center.z)`
+  - 删 3 个不再用的 helpers：`_findForkTineMesh` / `_computeForkForwardExtreme` / `_computeJointOriginWorld`；删 `_forkForwardDir` 缓存
+  - 测试 31/31 通过（#50 的 3 个 forward-extreme case 改写为"cargo 位置不影响 anchor"）
+- **经验教训（六轮迭代总结）**：
+  1. **承载锚点 ≠ 关节原点**。关节原点有它自己的 URDF 语义（旋转支点 / 自由度参考），不能当"吸附点"复用。两个概念得分开 —— 即使它们**物理上可能在同一位置**
+  2. **UI 按钮的算法就是好的自动化起点**。用户在 UI 里已经接受"子对象底部 = bbox.center + bbox.min.y"这个心智模型；我们代码里用同一公式自动算，用户心里的模型和代码行为一致，不需要学新概念
+  3. **合并 mesh 下 bbox 不代表"叉齿几何"本身**。但对 "demo 演示" 用途，bbox 底面中心已经足够精确 —— 用户真要极致精准，可以手动挪黄球（#51 走过的死路）或在未来引入"承载点 marker" UI（C 方案）
+
+#### #51 误入歧途：读 joint.origin 当承载锚点（已回退）
+- **意图**：让用户通过"子对象底部"按钮 / 手动 X/Y/Z 输入直接控制 fork_anchor_zero 位置
+- **实现**：`_computeJointOriginWorld` 读 `_CS19110.origin`（parent-local UI Z-up），swap y/z 后 `applyMatrix4(jointParent.matrixWorld)` 转世界
+- **致命错误**：`def.origin` 是**关节的旋转/平移支点**（URDF 里 `<origin>`），不是"cargo 吸附点"。点"子对象底部"按钮**同时**改了这两件事，用户以为在调 cargo 对齐其实挪了旋转轴
+- **回退**：#52 改为"自动走按钮同公式 + 不写 origin"，解耦两个概念
+- **经验教训**：**复用 UI 概念时要区分数据来源 vs 数据用途**。按钮 → origin 这条数据流合理（关节旋转支点确实放在子对象底部），但"cargo 承载点"不在这条流里。想复用按钮算法 → 直接抄公式，别抄存储位置
+
+#### #50 fork_anchor_zero 水平位置改用"朝 cargo 方向的 bbox 前端极值"（合并 mesh 下近似叉齿尖，已在 #52 被取代）
+> **注**：#50 经过 `50b`（sanitize AI 违规）→ `50c`（数学 bug 修）→ `50d`（时序 bug 修）三次修正后，#51/#52 进一步改变了承载锚点策略。以下保留原始设计记录做历史对照。
+
 - **症状**：#49 修好 z 方向后，水平方向仍有偏差 —— 三向车.glb 播放到 attach 时 cargo 在叉车**前方**没贴上（bbox.center.z 被门架往后拉 ~0.9m）
 - **根因**：合并 mesh 的 `_CS19110` bbox 覆盖 整车（叉齿+门架+支架），`bbox.center.x/z` = **整车几何中心**，不是叉齿尖位置。PKF 把 bbox.center 对到 cargo → 叉齿尖在 cargo 前方 ~0.9m 处
 - **修复思路（A1 方案，和用户讨论后定的）**：

@@ -1,12 +1,37 @@
 ---
 tags: [concepts, ai, domain-model, forklift]
-updated: 2026-04-21
+updated: 2026-04-22
 ---
 # 叉车取放货模型（领域文档）
 
-> 这篇文档是 v14.1 🚀 一键生成机制的**领域模型契约**：管线图 / 核心抽象 / 运行时假设 / schema / cache 生命周期 / 失效矩阵。接入新模型前必读。
+> 这篇文档是 🚀 一键生成机制的**领域模型契约**：管线图 / 核心抽象 / 运行时假设 / schema / cache 生命周期 / 失效矩阵。接入新模型前必读。
 >
 > **Review 性质的内容（代码气味 / bug finding / 优先级 / 推荐行动）已移到 [docs/REVIEW-v14.md](../REVIEW-v14.md)**。本文档只保留领域知识。
+
+---
+
+## ⚠️ mvp2 更新（2026-04-22）— 承载锚点模型已简化
+
+**本文档剩余内容是 v14.1 状态下的详细设计，部分已被 #52 迭代取代。核心变化如下**：
+
+**承载锚点算法**（#47→#52 六轮迭代后的终态）：
+- **旧设计**：启发式 `_findForkTineMesh` 挑最低 mesh + 双层对齐（PKF 公式层用 bbox center、snap 层用 bbox 底+cargoH/2）→ 天然有 teleport 残差
+- **新设计（#52）**：直接 `Box3.setFromObject(forkObj)` + 两层都用 `(center.x, min.y, center.z)` + snap 加 `cargoH/2` → **结构性零 teleport**
+
+**已删除的代码**（原文档里大量引用的 symbol，查 code 时注意）：
+- `_findForkTineMesh` — 启发式找叉齿尖
+- `_computeForkForwardExtreme` — #50 forward-extreme
+- `_computeJointOriginWorld` — #51 读 joint.origin（误入歧途）
+- `_forkForwardDir` 缓存字段
+
+**承载锚点 vs 关节原点（重要！）**：
+- `fork_anchor_zero` = 运行时自动算的承载锚点（不写进任何持久化字段）
+- `def.origin` = 关节的 URDF 旋转/平移支点（用户通过"子对象底部"按钮 / 手动 X/Y/Z 调整）
+- **两者公式相同但用途不同**，不要把一个当另一个（#51 的教训）
+
+**完整六轮迭代日志**：[CLAUDE.md #47-#52](../../CLAUDE.md) + [gotchas/007-merged-mesh-bbox-trap](../gotchas/007-merged-mesh-bbox-trap.md)
+
+---
 >
 > **谁应该读**：
 >
@@ -222,8 +247,12 @@ flowchart LR
 
 **相关 bug 历史**
 - [gotchas/006-coordinate-swap-forgotten](../gotchas/006-coordinate-swap-forgotten.md) — Y↔Z swap 漏做的坑
+- [gotchas/007-merged-mesh-bbox-trap](../gotchas/007-merged-mesh-bbox-trap.md) — 合并 mesh 下 bbox 不代表子部件（#47→#52 迭代总结）
+- [CLAUDE.md #52](../../CLAUDE.md) — 终局：自动算 bbox 底面中心（承载锚点迭代收官）
+- [CLAUDE.md #51](../../CLAUDE.md) — 误入歧途：读 joint.origin（承载锚点 ≠ 旋转支点）
+- [CLAUDE.md #47-#50](../../CLAUDE.md) — 六轮几何启发式尝试
 - [CLAUDE.md #37](../../CLAUDE.md) — `fork_offset → fork_anchor_zero` 演化
-- [CLAUDE.md #36](../../CLAUDE.md) — `_findForkTineMesh` 启发式的由来
+- [CLAUDE.md #36](../../CLAUDE.md) — `_findForkTineMesh` 启发式的由来（已删）
 - [CLAUDE.md #34](../../CLAUDE.md) — FBX roundtrip root_name bug
 - [CLAUDE.md #35](../../CLAUDE.md) — fixed 关节跟随的一致性修复
 - [CLAUDE.md #22](../../CLAUDE.md) — 链式关节两阶段导入

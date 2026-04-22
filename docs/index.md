@@ -1,5 +1,5 @@
 ---
-updated: 2026-04-21
+updated: 2026-04-22
 ---
 # MotionForge 项目 Wiki 索引
 
@@ -37,6 +37,7 @@ updated: 2026-04-21
 - [004-material-sharing-emissive-bake.md](gotchas/004-material-sharing-emissive-bake.md) — ⚡ MED：共享材质 emissive 被烘焙进 GLB，导入后零件持续发光
 - [005-try-finally-state-restore.md](gotchas/005-try-finally-state-restore.md) — ⚡ MED：临时状态恢复必须用 try/finally，否则异常时卡死
 - [006-coordinate-swap-forgotten.md](gotchas/006-coordinate-swap-forgotten.md) — ⚠️ HIGH：外部序列化漏做 Y↔Z swap 导致 AI 坐标语义错位（高度/距离对调）
+- [007-merged-mesh-bbox-trap.md](gotchas/007-merged-mesh-bbox-trap.md) — ⚠️ HIGH：合并 mesh 下 bbox 不代表"子部件几何"（承载锚点六轮迭代踩坑合集）
 
 ---
 
@@ -45,7 +46,7 @@ updated: 2026-04-21
 - [pkf-parametric-keyframe-formula.md](concepts/pkf-parametric-keyframe-formula.md) — PKF 格式：parameters + steps + 公式求值 + AI 生成流程
 - [zip-output-schema.md](concepts/zip-output-schema.md) — ZIP 包结构（manifest/joints/motion/pkf/model.glb）及各文件格式
 - [scene-marker-system.md](concepts/scene-marker-system.md) — 场景标记（cargo/pickup/dropoff）及 schema v6
-- [forklift-pickup-model.md](concepts/forklift-pickup-model.md) — v14.1 领域模型：fork_anchor_zero + snap-attach + 11 条隐含假设清单（接新模型前读）
+- [forklift-pickup-model.md](concepts/forklift-pickup-model.md) — 叉车取放货领域模型：fork_anchor_zero（mvp2 = auto bbox 底面中心）+ snap-attach + 12 条隐含假设 + 失效矩阵
 
 ---
 

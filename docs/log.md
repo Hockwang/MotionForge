@@ -39,3 +39,31 @@ v14.1 tag 后立即接 F4 基建：`vitest ^4.1.5` + 23 个单元测试覆盖 5 
 - 前端兜底：新增 `ensurePkfCoversAttachPoint` —— 收到 L2 PKF 后按 x/y/z 目标位移查缺失 step，按 role 自动注入；找不到 role 关节则 warning
 
 CLAUDE.md #47；单元测试 30/30 通过（`computeForkAnchorZero` case 期望从 center.y 改成 max.y）。
+
+## [2026-04-22] milestone | mvp2 合主：vitest 基建 + 承载锚点六轮迭代终结
+
+`feature/vitest-infra` → `main`（PR #1，merge commit `d13e852`）。v14.1 以来累计 12 commit，分三块：
+
+**测试基建 + 安全**（#45/#46/F3）：
+- vitest ^4.1.5 + 31 个核心单元测试（`npm test` ~20ms）
+- F11 restoreState 保留 role（DEBT #3）；F13 fork_anchor_zero hash-based 缓存自动失效
+- CORS 白名单 + AI rate limit + express.json size limit
+
+**AI 生成兜底**（#47 / #50b）：
+- 🚀 一键生成：`ensurePkfCoversAttachPoint` 检查 L2 输出三维覆盖，按 role 自动补缺失 step
+- Sanitize：AI 违规 `approach_gap=1` 强制归 0；正则清洗公式里凭空加的常数（如 `-0.1`）
+
+**叉齿承载锚点六轮迭代**（#47 → #52，完整收录 CLAUDE.md）：
+| # | 算法 | 结果 |
+|---|---|---|
+| #47 | bbox.max.y 顶面 | 合并 mesh 穿地 |
+| #48 | 回退 center | cargo 陷 fork |
+| #49 | y 改 min.y | z 对了 |
+| #50 | forward-extreme 朝 cargo | 数学 bug + 时序 bug |
+| #51 | 读 joint.origin | 破坏旋转支点 |
+| **#52** | auto bbox 底面中心（= "子对象底部"按钮公式）| ✓ |
+
+关键教训：**承载锚点 ≠ 关节原点**（URDF 旋转支点），两个概念解耦；**合并 mesh 下 bbox 不等于"叉齿几何"本身**，但对 demo 足够。
+
+新 gotcha：[merged-mesh-bbox-trap](gotchas/007-merged-mesh-bbox-trap.md)。
+tag：`mvp2` 分支保留里程碑状态。
