@@ -299,6 +299,167 @@
       return rows;
     },
 
+    // ═══ 7. 可视化轨迹：在 3D 视口里画出 fork / cargo 走过的路径 ═════
+    drawTrajectory({ samples = 200, showSegmentMarkers = true } = {}) {
+      console.group('🎨 7. 轨迹可视化');
+      const last = mf.lastTemplate;
+      if (!last?.compiled) { console.error('⛔ 无编译结果'); console.groupEnd(); return; }
+
+      // 先清掉之前画的
+      this.clearTrajectory();
+
+      const cargoName = last.compiled.reparent_events.find((e) => e.new_parent_name)?.child_name;
+      const forkName = last.compiled.reparent_events.find((e) => e.new_parent_name)?.new_parent_name;
+      const cargo = cargoName ? sm.sceneRoot.getObjectByName(cargoName) : null;
+      const fork = forkName ? sm.sceneRoot.getObjectByName(forkName) : null;
+      if (!cargo || !fork) {
+        console.error('⛔ 找不到 cargo 或 fork 对象');
+        console.groupEnd();
+        return;
+      }
+
+      const duration = last.compiled.meta.total_duration || 12;
+      const savedTime = km.currentTime;
+      const savedJointValues = km.getAllJointDefs().map((d) => ({ id: d.id, v: d.currentValue }));
+
+      const forkPts = [];
+      const cargoPts = [];
+      const attachIdx = []; // 记录 cargo parent 切换的采样索引
+      let lastCargoParent = null;
+
+      for (let i = 0; i <= samples; i++) {
+        const t = (i / samples) * duration;
+        // 算 PKF 关节值并驱动
+        const pkfResults = km.evaluatePkfAt(t) || [];
+        pkfResults.forEach((r) => {
+          const d = km.jointDefinitions.get(r.joint_def_id);
+          if (d) d.currentValue = r.value;
+        });
+        km.applyAllJointDrives(sm.sceneRoot);
+        km.applyReparentEventsAtTime(t, sm.sceneRoot);
+        sm.sceneRoot.updateMatrixWorld(true);
+
+        forkPts.push(fork.getWorldPosition(new THREE.Vector3()));
+        cargoPts.push(cargo.getWorldPosition(new THREE.Vector3()));
+        const pname = cargo.parent?.name || '(root)';
+        if (lastCargoParent !== null && pname !== lastCargoParent) attachIdx.push(i);
+        lastCargoParent = pname;
+      }
+
+      // 构建可视化 group
+      const group = new THREE.Group();
+      group.name = '__diagTpl_trajectory';
+      group.userData.__isDiagTrajectory = true;
+
+      // fork 轨迹：蓝色
+      const forkGeom = new THREE.BufferGeometry().setFromPoints(forkPts);
+      const forkMat = new THREE.LineBasicMaterial({ color: 0x3b82f6 });
+      const forkLine = new THREE.Line(forkGeom, forkMat);
+      forkLine.name = 'fork_trajectory';
+      group.add(forkLine);
+
+      // cargo 轨迹：橙色
+      const cargoGeom = new THREE.BufferGeometry().setFromPoints(cargoPts);
+      const cargoMat = new THREE.LineBasicMaterial({ color: 0xf97316 });
+      const cargoLine = new THREE.Line(cargoGeom, cargoMat);
+      cargoLine.name = 'cargo_trajectory';
+      group.add(cargoLine);
+
+      // 段边界球（每段 t_end 一个）
+      if (showSegmentMarkers) {
+        const sphereGeom = new THREE.SphereGeometry(0.04, 8, 8);
+        last.compiled.steps.forEach((s) => {
+          const t = s.t_end;
+          const idx = Math.round((t / duration) * samples);
+          // fork 位置
+          if (forkPts[idx]) {
+            const sphere = new THREE.Mesh(sphereGeom, new THREE.MeshBasicMaterial({ color: 0x2563eb }));
+            sphere.position.copy(forkPts[idx]);
+            sphere.name = `seg${s.template_segment}_fork_end`;
+            group.add(sphere);
+          }
+          // cargo 位置
+          if (cargoPts[idx]) {
+            const sphere = new THREE.Mesh(sphereGeom, new THREE.MeshBasicMaterial({ color: 0xea580c }));
+            sphere.position.copy(cargoPts[idx]);
+            sphere.name = `seg${s.template_segment}_cargo_end`;
+            group.add(sphere);
+          }
+        });
+      }
+
+      // attach/detach 点加大球（更显眼）
+      const bigGeom = new THREE.SphereGeometry(0.08, 16, 16);
+      const events = last.compiled.reparent_events;
+      events.forEach((ev) => {
+        const idx = Math.round((ev.t / duration) * samples);
+        if (!cargoPts[idx]) return;
+        const color = ev.new_parent_name ? 0xdc2626 : 0x16a34a; // 红=attach 绿=detach
+        const sphere = new THREE.Mesh(bigGeom, new THREE.MeshBasicMaterial({ color }));
+        sphere.position.copy(cargoPts[idx]);
+        sphere.name = ev.new_parent_name ? 'attach_marker' : 'detach_marker';
+        group.add(sphere);
+      });
+
+      sm.sceneRoot.add(group);
+
+      // ── 文字版轨迹表：每段 t_end 的坐标，方便把结果贴给外部排查 ──
+      const textRows = last.compiled.steps.map((s) => {
+        const idx = Math.round((s.t_end / duration) * samples);
+        const fp = forkPts[idx];
+        const cp = cargoPts[idx];
+        return {
+          seg: s.template_segment,
+          name: s.template_segment_name,
+          joint: s.joint,
+          t_end: fmt(s.t_end),
+          value_end: s.value_end,
+          'fork(threejs)': fp ? `(${fmt(fp.x)}, ${fmt(fp.y)}, ${fmt(fp.z)})` : '-',
+          'cargo(threejs)': cp ? `(${fmt(cp.x)}, ${fmt(cp.y)}, ${fmt(cp.z)})` : '-',
+          'cargo-fork.dy': (fp && cp) ? fmt(cp.y - fp.y) : '-',
+        };
+      });
+      console.table(textRows);
+
+      // 恢复状态
+      savedJointValues.forEach((s) => {
+        const d = km.jointDefinitions.get(s.id);
+        if (d) d.currentValue = s.v;
+      });
+      km.currentTime = savedTime;
+      km.applyAllJointDrives(sm.sceneRoot);
+      km.applyReparentEventsAtTime(savedTime, sm.sceneRoot);
+
+      console.log(`✅ 已绘制 ${samples + 1} 采样点 + 14 段文字表`);
+      console.log('图例：');
+      console.log('  🔵 蓝线 = fork 承载面世界轨迹，🔵 小球 = 每段 t_end 时 fork 位置');
+      console.log('  🟠 橙线 = cargo 世界轨迹，🟠 小球 = 每段 t_end 时 cargo 位置');
+      console.log('  🔴 大红球 = attach 瞬间 cargo 位置');
+      console.log('  🟢 大绿球 = detach 瞬间 cargo 位置');
+      console.log(`  检测到 cargo parent 切换 ${attachIdx.length} 次 (预期 2：attach + detach)`);
+      console.log('坐标是 Three.js Y-up（y=高度 up）。UI 里显示的 z 对应这里的 y。');
+      console.log('清除：__diagTpl.clearTrajectory()');
+      console.groupEnd();
+      return { samples, forkPts, cargoPts, textRows };
+    },
+
+    // ═══ 清除已绘制的轨迹 ═════════════════════════════════════════════
+    clearTrajectory() {
+      const toRemove = [];
+      sm.sceneRoot.traverse((o) => {
+        if (o.userData?.__isDiagTrajectory) toRemove.push(o);
+      });
+      toRemove.forEach((o) => {
+        o.parent?.remove(o);
+        o.traverse((n) => {
+          n.geometry?.dispose?.();
+          if (Array.isArray(n.material)) n.material.forEach((m) => m.dispose?.());
+          else n.material?.dispose?.();
+        });
+      });
+      return toRemove.length;
+    },
+
     // ═══ 全部跑 ═══════════════════════════════════════════════════
     all() {
       console.clear();
@@ -326,4 +487,6 @@
   console.log('  __diagTpl.formulas()           公式求值 + 限位');
   console.log('  __diagTpl.loopBoundary()       循环回零验证');
   console.log('  __diagTpl.playbackSample([t1, t2, ...])  时间采样');
+  console.log('  __diagTpl.drawTrajectory()     🎨 在 3D 视口画出 fork/cargo 轨迹');
+  console.log('  __diagTpl.clearTrajectory()    清掉已画的轨迹');
 })();

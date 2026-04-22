@@ -269,7 +269,25 @@ __diagTpl.formulas()            // 逐段 eval value_end + 对比关节 limits�
 __diagTpl.loopBoundary()        // seek t=0 后 cargo 偏移应 < 0.01m
 __diagTpl.playbackSample()      // 每段末尾 cargo/fork 世界位置采样（默认 14 点，attach/detach 连续性）
 __diagTpl.playbackSample([3.0, 3.01, 3.99, 4.0])  // 自定义采样 attach 前后
+
+// 🎨 可视化：直接在 3D 视口画出轨迹（最直观，肉眼判断"哪一段走得不对"）
+__diagTpl.drawTrajectory()                   // 默认 200 采样点画 fork+cargo 轨迹
+__diagTpl.drawTrajectory({ samples: 500 })   // 更密采样
+__diagTpl.clearTrajectory()                  // 清掉
 ```
+
+**轨迹可视化图例**：
+- 🔵 蓝色线 = **fork 承载面**（从它的 Three.js 对象世界位置读）
+- 🟠 橙色线 = **cargo 对象**（挂载前后都跟踪）
+- 小球 = 每段 t_end 时刻的位置（蓝=fork，橙=cargo）
+- 🔴 大红球 = attach 瞬间 cargo 位置（预期落在 fork 承载面附近）
+- 🟢 大绿球 = detach 瞬间 cargo 位置（预期落在 drop 面上）
+
+**诊断思路**：
+- 🔵 fork 轨迹应该是**先 y 再 z 再 y 再 z 再 y** 的分段折线（串行段、一次动一轴）
+- 🟠 cargo 应该：段 1-3 静止在原位（红大球附近）→ 段 4-10 跟 fork 一起动 → 段 11 后停在 drop 面（绿大球附近）
+- 看 attach 瞬间红大球有没有跳远；看 cargo 段 4-10 和 fork 是否**平行**（差一个 cargo_fork_height）
+
 
 **关注输出**
 - **compiled → steps 表**：每段 seg/joint/value_start/value_end/easing——对照 §4 模板表确认公式正确
