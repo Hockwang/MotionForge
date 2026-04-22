@@ -151,6 +151,50 @@ describe('autoDetectForkName', () => {
     km.setJointDef('m', { type: 'prismatic', axis: 'z', role: ROLE_MAST_LIFT, childId: 'nonexistent_uuid' });
     expect(autoDetectForkName(km, sceneRoot)).toBe(null);
   });
+
+  it('有 "叉齿*" role 关节时优先用它（而不是门架升降）', () => {
+    const km = new KeyframeManager();
+    const sceneRoot = new THREE.Object3D();
+    // 建两个场景对象，分别代表 门架 和 叉齿
+    const mastMesh = new THREE.Object3D();
+    mastMesh.name = 'mast_mesh';
+    sceneRoot.add(mastMesh);
+    const forkMesh = new THREE.Object3D();
+    forkMesh.name = 'fork_tines';
+    sceneRoot.add(forkMesh);
+    // 两个关节都给：门架升降 指向 mast，叉齿旋转 指向 fork
+    km.setJointDef('mast_id', {
+      type: 'prismatic', axis: 'z', role: ROLE_MAST_LIFT, childId: mastMesh.uuid,
+    });
+    km.setJointDef('fork_rot_id', {
+      type: 'revolute', axis: 'z', role: '叉齿旋转', childId: forkMesh.uuid,
+    });
+    expect(autoDetectForkName(km, sceneRoot)).toBe('fork_tines');
+  });
+
+  it('"叉齿侧移" / "叉齿前伸" 等其他叉齿 role 也被识别', () => {
+    const km = new KeyframeManager();
+    const sceneRoot = new THREE.Object3D();
+    const mastMesh = new THREE.Object3D();
+    mastMesh.name = 'mast_mesh';
+    sceneRoot.add(mastMesh);
+    const forkMesh = new THREE.Object3D();
+    forkMesh.name = 'fork_side';
+    sceneRoot.add(forkMesh);
+    km.setJointDef('mast_id', {
+      type: 'prismatic', axis: 'z', role: ROLE_MAST_LIFT, childId: mastMesh.uuid,
+    });
+    km.setJointDef('fork_side_id', {
+      type: 'prismatic', axis: 'x', role: '叉齿侧移', childId: forkMesh.uuid,
+    });
+    expect(autoDetectForkName(km, sceneRoot)).toBe('fork_side');
+  });
+
+  it('无叉齿 role 时退化用门架升降', () => {
+    const { km, sceneRoot } = setupScene();
+    const name = autoDetectForkName(km, sceneRoot);
+    expect(name).toBe('fork_tine'); // 来自 setupScene 的 mast joint childId
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════

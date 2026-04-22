@@ -137,9 +137,17 @@ export function buildDefaultRhythm(totalSeconds = 12) {
 }
 
 /**
- * 自动识别 fork 对象名：从 role="门架升降" 关节的 childId 定位到场景对象，用它作为 attach 目标。
- * 原因：用户不一定预先配了 attach reparent event（刷新后 in-memory 状态就丢了）。
- * 没有 mast joint 或 childId 找不到 → 返回 null（caller 降级报 missing）。
+ * 自动识别 fork 对象名：从合适的关节 childId 定位到场景对象，用它作为 attach 目标。
+ *
+ * 优先级（越靠前越具体，bbox 越只含叉齿而不含门架/车体）：
+ *   1. role 以"叉齿"开头（叉齿旋转/叉齿侧移/叉齿前伸/等）——运动链最深端，childId 指叉齿 mesh
+ *   2. role === "门架升降"——兜底，可能把整个门架 bbox 当"叉齿"导致 x 对齐穿帮
+ *
+ * 没命中或 childId 找不到场景对象 → 返回 null（caller 降级报 missing）。
+ *
+ * 历史：最初只找门架升降，三向车场景下 bbox 包含整个门架（5.3m 高），
+ *      车体横移对到 cargo.x 时把车身穿进 cargo（用户反馈"cargo 到车体里面了"）。
+ *      改为优先找"叉齿*" role 后，bbox 只含叉齿 mesh（~1m × 0.5m × 1.6m），几何正确。
  *
  * @returns {string | null} fork 对象的 name，或 null
  */
@@ -148,13 +156,19 @@ export function autoDetectForkName(keyframeManager, sceneRoot) {
   const allDefs = keyframeManager.getAllJointDefs
     ? keyframeManager.getAllJointDefs()
     : [...keyframeManager.jointDefinitions.values()];
+
+  // 优先级 1：role 以"叉齿"开头的任一关节（最深、最具体）
+  //         用 .filter 兼容同时有多个叉齿 role 的情况（如 叉齿侧移 + 叉齿旋转），取第一个命中
+  const forkSpecificJoint = allDefs.find((d) => typeof d.role === 'string' && d.role.startsWith('叉齿'));
+  // 优先级 2：门架升降（兜底）
   const mastJoint = allDefs.find((d) => d.role === ROLE_MAST_LIFT);
-  if (!mastJoint?.childId) return null;
+  const candidate = forkSpecificJoint || mastJoint;
+  if (!candidate?.childId) return null;
 
   // childId 是 scene node 的 uuid —— 反向查 sceneRoot
   let forkObj = null;
   sceneRoot.traverse((o) => {
-    if (!forkObj && o.uuid === mastJoint.childId) forkObj = o;
+    if (!forkObj && o.uuid === candidate.childId) forkObj = o;
   });
   if (!forkObj) return null;
   if (forkObj.name) return forkObj.name;
