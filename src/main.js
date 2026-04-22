@@ -857,6 +857,9 @@ async function handleImportPackage(file) {
         });
       });
       restoredPkfSteps = (pkfData.steps || []).length;
+      // mvp3：恢复模板标记，让 applyReparentEventsAtTime 禁用 snap-attach 强制对齐
+      // （老 ZIP 无此字段 → null → snap-attach 照常走，行为不变）
+      keyframeManager._pkfTemplateMeta = pkfData.template_meta || null;
     }
 
     // ── schema v6: 恢复场景标记 metadata ──
@@ -2333,6 +2336,7 @@ ui.exportPackageBtn.addEventListener('click', async () => {
       clips,
       pkfParameters: keyframeManager.getAllPkfParameters(),
       pkfSteps: keyframeManager.getAllPkfSteps(),
+      pkfTemplateMeta: keyframeManager._pkfTemplateMeta || null, // mvp3：序列化模板标记
       sceneMarkers: keyframeManager.getAllMarkers(),
     });
 

@@ -76,6 +76,7 @@ export class ResultPackageExporter {
     clips,
     pkfParameters,
     pkfSteps,
+    pkfTemplateMeta, // mvp3: 叉车模板路径生成的 PKF 带此 meta；import 时据此还原 runtime 状态禁用 snap-attach
     sceneMarkers,
     editorName = 'MotionForge',
   }) {
@@ -183,6 +184,9 @@ export class ResultPackageExporter {
     const pkf = hasPkf
       ? {
           _comment: '参数化关键帧公式：parameters 声明输入参数，steps 定义公式驱动的运动步骤。joint 字段引用 joints.json 的 name。',
+          // mvp3：模板路径生成的 PKF 带 template_meta；import 时据此还原 runtime 状态禁用 snap-attach
+          // 不是模板路径生成的 PKF 此字段为 null，下游按常规 snap-attach 走（兼容老 ZIP）
+          template_meta: pkfTemplateMeta || null,
           parameters: (pkfParameters || []).map((p) => ({
             id: p.id,
             type: p.type || 'number',
