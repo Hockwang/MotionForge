@@ -299,26 +299,90 @@
       return rows;
     },
 
+    // ═══ 导入后状态检查（单条命令看所有关键字段） ═════════════════
+    postImportCheck() {
+      console.group('📥 导入后状态快照');
+      const clip = km.getActiveGlobalClip();
+      const reparentEvents = km.getReparentEvents();
+      const data = {
+        'clip.duration': clip?.duration ?? '(无 clip)',
+        'clip.keyframes': clip?.keyframes?.length ?? 0,
+        reparent_events: reparentEvents.length,
+        reparent_events_detail: reparentEvents,
+        pkf_parameters: km.pkfParameters.size,
+        pkf_steps: km.pkfSteps.length,
+        pkf_steps_maxT: km.pkfSteps.reduce((m, s) => Math.max(m, Number(s.t_end) || 0), 0),
+        'markers(metadata)': km.sceneMarkers.size,
+        'markers(detail)': [...km.sceneMarkers.values()].map((m) => ({
+          name: m.name, type: m.type, size: m.size,
+        })),
+        _pkfTemplateMeta: km._pkfTemplateMeta,
+        pkfPlaybackMode: window.pkfPlaybackMode ?? '(未暴露到 window)',
+      };
+      console.table([data].map((d) => Object.fromEntries(
+        Object.entries(d).map(([k, v]) => [k, typeof v === 'object' ? JSON.stringify(v).slice(0, 120) : v]),
+      )));
+      console.log('完整数据:', data);
+      console.groupEnd();
+
+      // 给快速判断
+      if (data.pkf_steps === 0) {
+        console.error('❌ PKF steps 为 0 → 导入时 PKF 没恢复');
+      } else if (data.pkf_steps_maxT > data['clip.duration']) {
+        console.warn(`⚠ clip.duration (${data['clip.duration']}) < PKF maxT (${data.pkf_steps_maxT}) → 时间线卡住后面步骤跑不完`);
+      }
+      if (data.reparent_events === 0 && data.pkf_steps > 0) {
+        console.error('❌ PKF 存在但 reparent_events 为 0 → cargo 不会 attach 到 fork，只会原地不动');
+      }
+      if (data['markers(metadata)'] === 0) {
+        console.warn('⚠ 无 marker metadata → cargo_width/height/depth 参数无法自动注入');
+      }
+      return data;
+    },
+
     // ═══ 7. 可视化轨迹：在 3D 视口里画出 fork / cargo 走过的路径 ═════
+    // 优先用 lastTemplate（含 compiled，最精确）；没有就降级用当前 PKF + reparent 状态（导入后也能跑）
     drawTrajectory({ samples = 200, showSegmentMarkers = true } = {}) {
       console.group('🎨 7. 轨迹可视化');
-      const last = mf.lastTemplate;
-      if (!last?.compiled) { console.error('⛔ 无编译结果'); console.groupEnd(); return; }
 
       // 先清掉之前画的
       this.clearTrajectory();
 
-      const cargoName = last.compiled.reparent_events.find((e) => e.new_parent_name)?.child_name;
-      const forkName = last.compiled.reparent_events.find((e) => e.new_parent_name)?.new_parent_name;
-      const cargo = cargoName ? sm.sceneRoot.getObjectByName(cargoName) : null;
-      const fork = forkName ? sm.sceneRoot.getObjectByName(forkName) : null;
-      if (!cargo || !fork) {
-        console.error('⛔ 找不到 cargo 或 fork 对象');
+      // 建"virtual context" —— 优先从 lastTemplate 读；否则从 live PKF 状态构造
+      const last = mf.lastTemplate;
+      let reparentEvents, pkfSteps, duration, mode;
+      if (last?.compiled) {
+        reparentEvents = last.compiled.reparent_events;
+        pkfSteps = last.compiled.steps;
+        duration = last.compiled.meta?.total_duration || 12;
+        mode = 'lastTemplate（模板路径）';
+      } else {
+        reparentEvents = km.getReparentEvents();
+        pkfSteps = km.pkfSteps;
+        // 时长优先用 clip.duration，退化用 PKF 最大 t_end
+        const clip = km.getActiveGlobalClip();
+        const maxStepT = pkfSteps.reduce((m, s) => Math.max(m, Number(s.t_end) || 0), 0);
+        duration = Math.max(clip?.duration || 0, maxStepT, 1);
+        mode = `live PKF（导入场景 / 非模板路径）—— ${pkfSteps.length} 步骤, clip=${clip?.duration}s, maxT=${maxStepT}s`;
+      }
+      console.log('数据源:', mode);
+
+      if (pkfSteps.length === 0) {
+        console.error('⛔ PKF steps 为空，无法画轨迹（可能导入后 PKF 没恢复）。先跑 __diagTpl.postImportCheck()');
         console.groupEnd();
         return;
       }
 
-      const duration = last.compiled.meta.total_duration || 12;
+      const attachEvent = reparentEvents.find((e) => e.new_parent_name);
+      const cargoName = attachEvent?.child_name;
+      const forkName = attachEvent?.new_parent_name;
+      const cargo = cargoName ? sm.sceneRoot.getObjectByName(cargoName) : null;
+      const fork = forkName ? sm.sceneRoot.getObjectByName(forkName) : null;
+      if (!cargo || !fork) {
+        console.error(`⛔ 找不到 cargo (${cargoName}) 或 fork (${forkName}) 对象`);
+        console.groupEnd();
+        return;
+      }
       const savedTime = km.currentTime;
       const savedJointValues = km.getAllJointDefs().map((d) => ({ id: d.id, v: d.currentValue }));
 
@@ -365,24 +429,25 @@
       cargoLine.name = 'cargo_trajectory';
       group.add(cargoLine);
 
-      // 段边界球（每段 t_end 一个）
+      // 段边界球（每步 t_end 一个）
       if (showSegmentMarkers) {
         const sphereGeom = new THREE.SphereGeometry(0.04, 8, 8);
-        last.compiled.steps.forEach((s) => {
+        pkfSteps.forEach((s, idx0) => {
           const t = s.t_end;
           const idx = Math.round((t / duration) * samples);
+          const segLabel = s.template_segment ?? idx0 + 1; // 非模板路径用序号
           // fork 位置
           if (forkPts[idx]) {
             const sphere = new THREE.Mesh(sphereGeom, new THREE.MeshBasicMaterial({ color: 0x2563eb }));
             sphere.position.copy(forkPts[idx]);
-            sphere.name = `seg${s.template_segment}_fork_end`;
+            sphere.name = `seg${segLabel}_fork_end`;
             group.add(sphere);
           }
           // cargo 位置
           if (cargoPts[idx]) {
             const sphere = new THREE.Mesh(sphereGeom, new THREE.MeshBasicMaterial({ color: 0xea580c }));
             sphere.position.copy(cargoPts[idx]);
-            sphere.name = `seg${s.template_segment}_cargo_end`;
+            sphere.name = `seg${segLabel}_cargo_end`;
             group.add(sphere);
           }
         });
@@ -390,8 +455,7 @@
 
       // attach/detach 点加大球（更显眼）
       const bigGeom = new THREE.SphereGeometry(0.08, 16, 16);
-      const events = last.compiled.reparent_events;
-      events.forEach((ev) => {
+      reparentEvents.forEach((ev) => {
         const idx = Math.round((ev.t / duration) * samples);
         if (!cargoPts[idx]) return;
         const color = ev.new_parent_name ? 0xdc2626 : 0x16a34a; // 红=attach 绿=detach
@@ -403,14 +467,14 @@
 
       sm.sceneRoot.add(group);
 
-      // ── 文字版轨迹表：每段 t_end 的坐标，方便把结果贴给外部排查 ──
-      const textRows = last.compiled.steps.map((s) => {
+      // ── 文字版轨迹表：每步 t_end 的坐标，方便把结果贴给外部排查 ──
+      const textRows = pkfSteps.map((s, idx0) => {
         const idx = Math.round((s.t_end / duration) * samples);
         const fp = forkPts[idx];
         const cp = cargoPts[idx];
         return {
-          seg: s.template_segment,
-          name: s.template_segment_name,
+          seg: s.template_segment ?? idx0 + 1,
+          name: s.template_segment_name ?? '-',
           joint: s.joint,
           t_end: fmt(s.t_end),
           value_end: s.value_end,
@@ -430,7 +494,7 @@
       km.applyAllJointDrives(sm.sceneRoot);
       km.applyReparentEventsAtTime(savedTime, sm.sceneRoot);
 
-      console.log(`✅ 已绘制 ${samples + 1} 采样点 + 14 段文字表`);
+      console.log(`✅ 已绘制 ${samples + 1} 采样点 + ${pkfSteps.length} 步骤文字表`);
       console.log('图例：');
       console.log('  🔵 蓝线 = fork 承载面世界轨迹，🔵 小球 = 每段 t_end 时 fork 位置');
       console.log('  🟠 橙线 = cargo 世界轨迹，🟠 小球 = 每段 t_end 时 cargo 位置');
@@ -487,6 +551,7 @@
   console.log('  __diagTpl.formulas()           公式求值 + 限位');
   console.log('  __diagTpl.loopBoundary()       循环回零验证');
   console.log('  __diagTpl.playbackSample([t1, t2, ...])  时间采样');
-  console.log('  __diagTpl.drawTrajectory()     🎨 在 3D 视口画出 fork/cargo 轨迹');
+  console.log('  __diagTpl.drawTrajectory()     🎨 在 3D 视口画出 fork/cargo 轨迹（导入后也能跑）');
   console.log('  __diagTpl.clearTrajectory()    清掉已画的轨迹');
+  console.log('  __diagTpl.postImportCheck()    📥 导入后一条命令看所有关键字段（duration/PKF/reparent/markers）');
 })();
