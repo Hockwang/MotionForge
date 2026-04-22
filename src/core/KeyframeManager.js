@@ -489,30 +489,25 @@ export class KeyframeManager {
       if (!child) continue;
       const targetParent = targetParentName ? (nameMap.get(targetParentName) || root) : root;
       const parentChanged = child.parent !== targetParent;
-      if (parentChanged) {
-        targetParent.attach(child); // 保持世界变换
-      }
 
-      // Snap-attach（#36 / #40 / #49 / #50）：cargo 底面中心对齐叉齿前端底面中心。
-      // 水平位置用缓存的 forward 方向（在 computeForkAnchorZero 时算出）投影当前 bbox 的前端极值；
-      // 垂直用 bbox.min.y + cargoH/2 让 cargo 底面贴叉齿底面。
-      // AI 公式层和 snap 层走同源几何锚点 → 结构性零 teleport（REVIEW F5）
+      // Snap-attach（#36 / #40 / #49 / #50 / #50d）：cargo 底面中心对齐叉齿前端底面中心。
+      // 水平位置用缓存 forward 方向投影 fork bbox 的前端极值，垂直用 min.y + cargoH/2。
+      // ⚠️ #50d：bbox 计算**必须在 attach 之前**，否则 setFromObject 会递归包含刚 attach 上来的 cargo
+      // mesh 使 bbox 扩大，导致 forward extreme 飞出正常位置（曾让 cargo 瞬移 0.5m）
+      let desiredWorldPos = null;
       if (parentChanged && targetParent !== root) {
         const markerMeta = findMarkerMeta(childName);
         if (markerMeta?.type === 'cargo') {
           targetParent.updateMatrixWorld(true);
           const tineMesh = this._findForkTineMesh(targetParent) || targetParent;
           const box = new THREE.Box3().setFromObject(tineMesh);
-          let desiredWorldPos;
           if (!box.isEmpty()) {
             const cargoHalfHeight = (markerMeta.size?.h ?? 0) / 2;
             const bboxCenter = box.getCenter(new THREE.Vector3());
-            // #50：优先用缓存 forward 方向算前端极值；没缓存时退化到 bbox 中心
             const forward = this._forkForwardDir;
             let horizX = bboxCenter.x;
             let horizZ = bboxCenter.z;
             if (forward && forward.lengthSq() > 0.5) {
-              // 射线-bbox 相交（和 _computeForkForwardExtreme 保持同一算法）
               const bboxHalf = box.getSize(new THREE.Vector3()).multiplyScalar(0.5);
               const absX = Math.abs(forward.x);
               const absZ = Math.abs(forward.z);
@@ -524,22 +519,27 @@ export class KeyframeManager {
             }
             desiredWorldPos = new THREE.Vector3(horizX, box.min.y + cargoHalfHeight, horizZ);
           } else {
-            // fallback：父级原点
             desiredWorldPos = targetParent.getWorldPosition(new THREE.Vector3());
           }
-          // world → targetParent local
-          const localPos = targetParent.worldToLocal(desiredWorldPos.clone());
-          child.position.copy(localPos);
-          child.quaternion.identity();
-          // scale 补偿：防止 attach/detach roundtrip 的 matrix decompose 精度累积
-          // 让 cargo.world.scale 稳定 = (1,1,1)，不管父级世界 scale 是多少
-          const parentWorldScale = targetParent.getWorldScale(new THREE.Vector3());
-          child.scale.set(
-            1 / (parentWorldScale.x || 1),
-            1 / (parentWorldScale.y || 1),
-            1 / (parentWorldScale.z || 1),
-          );
         }
+      }
+
+      // 算好目标位置后再 attach（保持世界变换）
+      if (parentChanged) {
+        targetParent.attach(child);
+      }
+
+      // 应用 snap（attach 之后写 local position 到 child）
+      if (desiredWorldPos) {
+        const localPos = targetParent.worldToLocal(desiredWorldPos.clone());
+        child.position.copy(localPos);
+        child.quaternion.identity();
+        const parentWorldScale = targetParent.getWorldScale(new THREE.Vector3());
+        child.scale.set(
+          1 / (parentWorldScale.x || 1),
+          1 / (parentWorldScale.y || 1),
+          1 / (parentWorldScale.z || 1),
+        );
       }
       // 循环边界修复：如果当前时间早于该 child 的第一个事件，
       // 把 child 重置到原始世界变换（否则循环回来 cargo 会卡在 drop 位置）
