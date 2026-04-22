@@ -459,6 +459,179 @@ app.post('/api/generate-pkf', aiRateLimit, async (req, res) => {
 });
 
 // ══════════════════════════════════════════════════════════════
+//  模板节奏编排（mvp3 / Phase B）
+//  前端已用"叉车取放 14 段模板"生成几何结构，后端只负责出节奏（时长 + easing + 命名）。
+//  关系：与 /api/generate-pkf 正交——模板路径**不**调 generate-pkf，只调此接口。
+//  契约：docs/concepts/forklift-pickup-template.md §7
+// ══════════════════════════════════════════════════════════════
+
+const TEMPLATE_RHYTHM_SYSTEM_PROMPT = `你是叉车取放动作的节奏编排师。
+
+前端已按行业标准 14 段模板生成了完整的运动结构——每段的几何目标（位移、方向）和 attach/detach 时机都已定死，你不碰数值，只管节奏。
+
+## 你的任务
+
+1. 为每段决定持续时长（秒，> 0.1）
+2. 每段选一个 easing：'linear' | 'ease-in' | 'ease-out' | 'ease-in-out'
+3. 给整个 clip 起个名字（中文，12 字以内）
+
+## 14 段语义（固定）
+
+取货阶段：
+  1. 接近（空载前进到安全距离）
+  2. 抬叉到 cargo 叉取面
+  3. 前进插齿（叉齿插入 cargo 孔） — attach 在此段结束瞬间
+  4. 取货（门架微抬 clearance，把 cargo 顶起）
+  5. 抬到运输避让高度
+  6. 后退到安全距离
+  7. 叉齿复位到运输姿态
+
+运输阶段：
+  8. 移动到放货点附近
+
+放货阶段：
+  9. 抬叉到工作面 + fork_height
+  10. 前进到放货点
+  11. 放货（门架微降 clearance，cargo 落到工作面） — detach 在此段结束瞬间
+  12. 后退到安全距离
+  13. 叉齿复位
+  14. 返回起点
+
+## 节奏原则
+
+- 插齿段（3）、取货段（4）、放货段（11）通常**慢**（精细操作，0.8–1.5s）
+- 纯移动段（1、6、8、10、12、14）可以**较快**（1–2s，距离远可更长）
+- 抬叉段（2、5、9）中等（0.8–1.2s）
+- 复位段（7、13）可以快（0.5–1s）
+- 整体总时长建议 **10–18 秒**；用户说"快速"走下限，说"小心" / "慢速"走上限
+
+## 输出格式（严格 JSON，无任何 markdown 或解释文字）
+
+{
+  "name": "叉车标准取放",
+  "segments": [
+    { "index": 1, "duration": 1.5, "easing": "ease-in-out" },
+    { "index": 2, "duration": 1.0, "easing": "ease-in-out" },
+    { "index": 3, "duration": 1.2, "easing": "ease-in" },
+    { "index": 4, "duration": 1.0, "easing": "ease-out" },
+    { "index": 5, "duration": 1.0, "easing": "ease-in-out" },
+    { "index": 6, "duration": 1.5, "easing": "ease-in-out" },
+    { "index": 7, "duration": 0.8, "easing": "ease-in-out" },
+    { "index": 8, "duration": 2.0, "easing": "ease-in-out" },
+    { "index": 9, "duration": 1.0, "easing": "ease-in-out" },
+    { "index": 10, "duration": 1.2, "easing": "ease-in" },
+    { "index": 11, "duration": 1.0, "easing": "ease-out" },
+    { "index": 12, "duration": 1.5, "easing": "ease-in-out" },
+    { "index": 13, "duration": 0.8, "easing": "ease-in-out" },
+    { "index": 14, "duration": 1.5, "easing": "ease-in-out" }
+  ]
+}
+
+## 规则
+
+- 必须返回**全部 14 段**（index 1..14 齐全，不能跳）
+- 每段 duration ≥ 0.1s
+- 不要加其他字段（parameters、steps、reparent_events 都由前端生成，你不管）
+- 不要输出解释、不要 markdown 代码块围栏`;
+
+app.post('/api/template-rhythm', aiRateLimit, async (req, res) => {
+  const { intent, template_segments: templateSegments } = req.body || {};
+  if (!intent) {
+    res.status(400).json({ error: '缺少 intent 字段' });
+    return;
+  }
+  if (!AI_API_KEY) {
+    res.status(500).json({ error: 'AI_API_KEY 未配置，请在 .env 文件中设置' });
+    return;
+  }
+  try {
+    const segmentList = (templateSegments || []).length
+      ? (templateSegments || []).map((s) => `  ${s.index}. ${s.name}`).join('\n')
+      : '（前端未传 template_segments，请按 system prompt 里的 14 段语义）';
+    const userMessage = `用户意图：${intent}\n\n模板段列表（仅作参考，语义以 system prompt 为准）：\n${segmentList}\n\n请返回 14 段的节奏 JSON。`;
+
+    const response = await fetch(`${AI_BASE_URL}/v1/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${AI_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: AI_MODEL,
+        messages: [
+          { role: 'system', content: TEMPLATE_RHYTHM_SYSTEM_PROMPT },
+          { role: 'user', content: userMessage },
+        ],
+        temperature: 0.3,
+      }),
+    });
+    if (!response.ok) {
+      const detail = await response.text().catch(() => '');
+      res.status(502).json({ error: `AI API 返回错误 (${response.status})`, detail });
+      return;
+    }
+    const data = await response.json();
+    const content = data.choices?.[0]?.message?.content || '';
+    console.log('\n[RHYTHM] ═══ AI 原始返回 ═══\n' + content + '\n═══════════════════\n');
+    const match = content.match(/\{[\s\S]*\}/);
+    if (!match) {
+      res.status(422).json({ error: 'AI 返回内容中未找到有效 JSON', raw_response: content });
+      return;
+    }
+    const parsed = JSON.parse(match[0]);
+
+    // 基础校验：segments 数组 + 14 项
+    if (!Array.isArray(parsed.segments) || parsed.segments.length !== 14) {
+      res.status(422).json({
+        error: `AI 返回 segments 必须为 14 项数组，实际 ${parsed.segments?.length || 0} 项`,
+        raw_response: content,
+      });
+      return;
+    }
+    // 校验每段 index/duration/easing
+    const validEasings = new Set(['linear', 'ease-in', 'ease-out', 'ease-in-out']);
+    const indicesSeen = new Set();
+    for (const seg of parsed.segments) {
+      const idx = Number(seg.index);
+      if (!Number.isInteger(idx) || idx < 1 || idx > 14) {
+        res.status(422).json({ error: `段 index 不合法：${seg.index}`, raw_response: content });
+        return;
+      }
+      if (indicesSeen.has(idx)) {
+        res.status(422).json({ error: `段 index 重复：${idx}`, raw_response: content });
+        return;
+      }
+      indicesSeen.add(idx);
+      const dur = Number(seg.duration);
+      if (!(dur > 0) || !Number.isFinite(dur)) {
+        res.status(422).json({ error: `段 ${idx} duration 非法：${seg.duration}`, raw_response: content });
+        return;
+      }
+      if (seg.easing && !validEasings.has(seg.easing)) {
+        // 不合法的 easing 默认降级为 ease-in-out（不中断）
+        console.warn(`[RHYTHM] 段 ${idx} 未知 easing "${seg.easing}"，降级为 ease-in-out`);
+        seg.easing = 'ease-in-out';
+      }
+      if (!seg.easing) seg.easing = 'ease-in-out';
+      seg.duration = +dur.toFixed(3);
+    }
+    // 检查 14 项齐全
+    if (indicesSeen.size !== 14) {
+      res.status(422).json({ error: `段 index 不全，缺失的：${[...Array(14).keys()].map((i) => i + 1).filter((i) => !indicesSeen.has(i))}`, raw_response: content });
+      return;
+    }
+
+    parsed.name = String(parsed.name || '叉车取放').trim() || '叉车取放';
+    // 按 index 排序返回（前端也会再 map 一次，但排好序更整齐）
+    parsed.segments.sort((a, b) => a.index - b.index);
+    res.json(parsed);
+  } catch (error) {
+    console.error('[MotionForge] AI template-rhythm error:', error.message);
+    res.status(500).json({ error: `AI 请求失败: ${error.message}` });
+  }
+});
+
+// ══════════════════════════════════════════════════════════════
 //  L1：高级意图 → 时间表（"去 a 取货" → markdown 表格行）
 //  与 /api/generate-pkf 的关系：L1 拆出时间表，用户审核后再调 L2 生成 PKF
 // ══════════════════════════════════════════════════════════════

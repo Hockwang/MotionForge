@@ -37,9 +37,9 @@ status: approved  # 契约审过（§11），待实现（§10 阶段 A → B）
 🚀 一键生成触发
   ↓
 [前端 · 场景扫描]
-  读 cargo marker（pickup_point、cargo size）
-  读 dropoff marker（place_point、place_surface_height）
-  读 fork role 关节（fork_anchor_zero、car_init_y）
+  读 cargo marker（cargo_pos_*、cargo size）
+  读 drop marker（drop_pos_*，其中 drop_pos_z = 放货面高度）
+  读 attach reparent event（fork 对象名）+ 算 fork_anchor_zero_*
   ↓
 [前端 · 参数注入]
   组装 7 个参数（见 §3）
@@ -64,23 +64,30 @@ status: approved  # 契约审过（§11），待实现（§10 阶段 A → B）
 
 ## 3. 参数契约（7 个）
 
-### 3.1 清单（7 → 8 个参数）
+### 3.1 清单（新增 4 个模板专属参数 + 复用现有 PKF 约定）
+
+为了不和现有 PKF 约定撕裂，**cargo / drop 位置沿用现有命名**：`cargo_pos_*` / `drop_pos_*`（不引入 `pickup_point_*` / `place_point_*`）。中台看到的还是一套命名。
+
+**新增的 4 个参数**（模板专属）：
 
 | 参数 id | 类型 | default | 来源 | UI 可调 |
 |---|---|---|---|---|
-| `pickup_point_x` | number | cargo marker 世界 x | 场景扫描 | ✗（随 cargo 位置变） |
-| `pickup_point_y` | number | cargo marker 世界 y | 场景扫描 | ✗ |
-| `pickup_point_z` | number | cargo marker 世界 z | 场景扫描 | ✗ |
-| `place_point_x` | number | dropoff marker 世界 x | 场景扫描 | ✗ |
-| `place_point_y` | number | dropoff marker 世界 y | 场景扫描 | ✗ |
-| `place_point_z` | number | dropoff marker 世界 z | 场景扫描 | ✗ |
 | `cargo_fork_height` | number | `0` | cargo marker 属性 / UI 覆盖 | ✓ |
 | `safe_distance` | number | `0.8` | 默认 / UI 覆盖 | ✓ |
 | `lift_clearance` | number | `0.1` | 默认 / UI 覆盖 | ✓ |
 | `transport_height` | number | `0.2` | 默认 / UI 覆盖 | ✓ |
 
+**复用的现有参数**（模板公式直接引用）：
+
+| 参数 id | 来源 | 备注 |
+|---|---|---|
+| `cargo_pos_x/y/z` | cargo marker 位置，场景扫描 | 和现有 AI 管道同名 |
+| `drop_pos_x/y/z` | drop marker 位置，场景扫描 | 同上 |
+| `cargo_width/height/depth` | cargo marker size（schema v6）| `getCargoSizeParams` 自动注入 |
+| `fork_anchor_zero_x/y/z` | `computeForkAnchorZero` 缓存 | 在关节零位算的叉齿承载面世界坐标 |
+
 **语义**：
-- `pickup_point` / `place_point`：UI Z-up 世界坐标（和现有 `cargo_pos_*` 一致坐标系）
+- `cargo_pos` / `drop_pos`：UI Z-up 世界坐标
 - `cargo_fork_height`：**cargo 自身属性**——叉齿承载面相对于 cargo 底面的偏移，m
   - 简单箱子（直接从底部托起，叉齿贴 cargo 底面）：`0`
   - 带托盘的货物（叉齿插入托盘底部，cargo 主体在托盘顶）：`-(托盘厚度)`，负值
@@ -89,13 +96,14 @@ status: approved  # 契约审过（§11），待实现（§10 阶段 A → B）
 - `lift_clearance`：取货/放货时叉齿微抬/微降的距离（托离地面、落到工作面），m
 - `transport_height`：**叉齿承载面离地高度**（更精确的机械量，不用 cargo 底面——不同货物底部结构不同），m
 
-### 3.2 派生量（非独立参数，模板内公式直接用）
+### 3.2 派生量（文档内部简写，不出现在 pkf.json）
 
-- `cargo_bottom_height` = `pickup_point_z - cargo_height / 2`
-- `place_surface_height` = `place_point_z`（dropoff marker 的位置即放置面高度）
-- `fork_anchor_zero_{x,y,z}`：已有参数，沿用（见 [forklift-pickup-model.md](forklift-pickup-model.md)）
-- `cargo_{width,height,depth}`：已有参数，沿用
-- `car_init_y`：车体前进关节的零位对应的世界 y（= 场景里叉车的初始前后位置），已在 `buildDefaultParamValues` 自动注入
+文档公式里会用两个"派生量"提升可读性，它们**不是**独立 PKF parameter：
+
+- `cargo_bottom` = `cargo_pos_z - cargo_height / 2`（cargo 底面绝对高度）
+- `place_surface` = `drop_pos_z`（放货面高度 = drop marker 的 z 坐标）
+
+模板编译时**直接展开为基础参数**（例如段 2 的 value_end 编译后是 `cargo_pos_z - cargo_height / 2 + cargo_fork_height - lift_clearance - fork_anchor_zero_z`，没有 `cargo_bottom` 字样）。中台只需支持基础 PKF 参数引用，不需要任何派生量语法。
 
 ### 3.3 坐标约定
 
@@ -105,34 +113,38 @@ status: approved  # 契约审过（§11），待实现（§10 阶段 A → B）
 
 ## 4. 14 段模板
 
-**约定**：下表"目标位移"表示该段末尾 joint 的 `currentValue`（相对零位的位移）。中间派生量 `cargo_bottom_height = pickup_point_z - cargo_height/2`、`place_surface_height = place_point_z` 在编译期展开为 pickup_point/place_point + cargo_height 的组合。
+**约定**：
+- 下表"目标位移"= 该段末尾 joint 的 `currentValue`（相对零位的位移，prismatic 的现有 PKF 语义）
+- `cargo_bottom` 是派生量（= `cargo_pos_z - cargo_height/2`），实际公式里展开为基础参数
+- `fork_anchor_zero_y` 作为车体前进轴的"零位世界 y"，displacement = target - fork_anchor_zero_y
+  （`cargo_pos_y - fork_anchor_zero_y` 的物理含义 = 车体需要前进多少使叉齿到 cargo_y）
 
 ### 4.1 取货阶段（段 1–7）
 
 | # | 名称 | 角色关节（role）| 目标位移（公式） | reparent |
 |---|---|---|---|---|
-| 1 | 接近 | 车体前进 | `pickup_point_y - safe_distance - car_init_y` | — |
-| 2 | 抬叉到 cargo 叉取面（低 clearance） | 门架升降 | `cargo_bottom_height + cargo_fork_height - lift_clearance - fork_anchor_zero_z` | — |
-| 3 | 前进插齿 | 车体前进 | `pickup_point_y - car_init_y` | **attach 在此段末尾** |
-| 4 | 取货（上顶 lift_clearance）| 门架升降 | `cargo_bottom_height + cargo_fork_height - fork_anchor_zero_z` | — |
+| 1 | 接近 | 车体前进 | `cargo_pos_y - fork_anchor_zero_y - safe_distance` | — |
+| 2 | 抬叉到 cargo 叉取面（低 clearance） | 门架升降 | `cargo_pos_z - cargo_height / 2 + cargo_fork_height - lift_clearance - fork_anchor_zero_z` | — |
+| 3 | 前进插齿 | 车体前进 | `cargo_pos_y - fork_anchor_zero_y` | **attach 在此段末尾** |
+| 4 | 取货（上顶 lift_clearance）| 门架升降 | `cargo_pos_z - cargo_height / 2 + cargo_fork_height - fork_anchor_zero_z` | — |
 | 5 | 抬到运输避让高度 | 门架升降 | `transport_height - fork_anchor_zero_z` | — |
-| 6 | 后退到安全距离 | 车体前进 | `pickup_point_y - safe_distance - car_init_y` | — |
+| 6 | 后退到安全距离 | 车体前进 | `cargo_pos_y - fork_anchor_zero_y - safe_distance` | — |
 | 7 | 叉齿复位（运输姿态） | 门架升降 | `0` | — |
 
 ### 4.2 运输阶段（段 8）
 
 | # | 名称 | 角色关节 | 目标位移 |
 |---|---|---|---|
-| 8 | 移动到放货点 | 车体前进 | `place_point_y - safe_distance - car_init_y` |
+| 8 | 移动到放货点 | 车体前进 | `drop_pos_y - fork_anchor_zero_y - safe_distance` |
 
 ### 4.3 放货阶段（段 9–14，取货的逆过程）
 
 | # | 名称 | 角色关节 | 目标位移 | reparent |
 |---|---|---|---|---|
-| 9 | 抬叉到工作面 + cargo_fork_height | 门架升降 | `place_surface_height + cargo_fork_height - fork_anchor_zero_z` | — |
-| 10 | 前进到放货点 | 车体前进 | `place_point_y - car_init_y` | — |
-| 11 | 放货（下降 lift_clearance） | 门架升降 | `place_surface_height + cargo_fork_height - lift_clearance - fork_anchor_zero_z` | **detach 在此段末尾** |
-| 12 | 后退到安全距离 | 车体前进 | `place_point_y - safe_distance - car_init_y` | — |
+| 9 | 抬叉到工作面 + cargo_fork_height | 门架升降 | `drop_pos_z + cargo_fork_height - fork_anchor_zero_z` | — |
+| 10 | 前进到放货点 | 车体前进 | `drop_pos_y - fork_anchor_zero_y` | — |
+| 11 | 放货（下降 lift_clearance） | 门架升降 | `drop_pos_z + cargo_fork_height - lift_clearance - fork_anchor_zero_z` | **detach 在此段末尾** |
+| 12 | 后退到安全距离 | 车体前进 | `drop_pos_y - fork_anchor_zero_y - safe_distance` | — |
 | 13 | 叉齿复位 | 门架升降 | `0` | — |
 | 14 | 返回起点 | 车体前进 | `0` | — |
 
@@ -153,9 +165,11 @@ status: approved  # 契约审过（§11），待实现（§10 阶段 A → B）
 ### 5.1 attach 瞬间（段 3 末尾）
 
 状态：
-- 段 2 完成 → fork 承载面世界 z = `cargo_bottom_height + cargo_fork_height - lift_clearance`
-- 段 3 完成 → fork 承载面世界 (x, y) = `(pickup_point_x, pickup_point_y)`
-- cargo 未被动：cargo 底面 = `(pickup_point_x, pickup_point_y, cargo_bottom_height)`
+- 段 2 完成 → fork 承载面世界 z = `cargo_bottom + cargo_fork_height - lift_clearance`
+- 段 3 完成 → fork 承载面世界 (x, y) = `(cargo_pos_x, cargo_pos_y)`
+- cargo 未被动：cargo 底面 = `(cargo_pos_x, cargo_pos_y, cargo_bottom)`
+
+（下文 `cargo_bottom` = `cargo_pos_z - cargo_height / 2` 简写）
 
 此时 fork 承载面和 cargo 底面**故意不重合**（z 差 `lift_clearance - cargo_fork_height`），对应物理现实：叉齿插入孔内但还没托起货物。
 
@@ -165,23 +179,23 @@ status: approved  # 契约审过（§11），待实现（§10 阶段 A → B）
 
 ### 5.2 取货段 4（上顶 lift_clearance）
 
-段 4 完成 → 门架升降 value = `cargo_bottom_height + cargo_fork_height - fork_anchor_zero_z`
-→ fork 承载面世界 z = `cargo_bottom_height + cargo_fork_height`
-→ cargo 底面 = fork 承载面 + 局部偏移 = `cargo_bottom_height + cargo_fork_height + lift_clearance - cargo_fork_height` = `cargo_bottom_height + lift_clearance`
+段 4 完成 → 门架升降 value = `cargo_bottom + cargo_fork_height - fork_anchor_zero_z`
+→ fork 承载面世界 z = `cargo_bottom + cargo_fork_height`
+→ cargo 底面 = fork 承载面 + 局部偏移 = `cargo_bottom + cargo_fork_height + lift_clearance - cargo_fork_height` = `cargo_bottom + lift_clearance`
 
 cargo 被抬起 `lift_clearance` ✓（符合"取货：托起一小段"语义）
 
 ### 5.3 detach 瞬间（段 11 末尾）
 
 状态：
-- 段 9 完成 → fork 承载面 z = `place_surface_height + cargo_fork_height`
-- 段 10 完成 → fork 承载面 (x, y) = `(place_point_x, place_point_y)`
-- 段 11 完成 → fork 承载面 z = `place_surface_height + cargo_fork_height - lift_clearance`
-  - cargo 底面 = fork + 局部偏移 = `place_surface_height + cargo_fork_height - lift_clearance + lift_clearance - cargo_fork_height` = `place_surface_height`
+- 段 9 完成 → fork 承载面 z = `drop_pos_z + cargo_fork_height`
+- 段 10 完成 → fork 承载面 (x, y) = `(drop_pos_x, drop_pos_y)`
+- 段 11 完成 → fork 承载面 z = `drop_pos_z + cargo_fork_height - lift_clearance`
+  - cargo 底面 = fork + 局部偏移 = `drop_pos_z + cargo_fork_height - lift_clearance + lift_clearance - cargo_fork_height` = `drop_pos_z`
 
 **cargo 底面 ≡ 工作面** ✓
 
-**detach 操作**：`worldRoot.attach(cargo)` 保持世界 transform，cargo 底面仍在 `place_surface_height`。detach 后 cargo 脱离 fork 的后续运动（段 12–14 fork 后退 / 复位时，cargo 不再跟随）。
+**detach 操作**：`worldRoot.attach(cargo)` 保持世界 transform，cargo 底面仍在 `drop_pos_z`。detach 后 cargo 脱离 fork 的后续运动（段 12–14 fork 后退 / 复位时，cargo 不再跟随）。
 
 ### 5.4 关键实现要求
 
@@ -210,7 +224,7 @@ cargo 被抬起 `lift_clearance` ✓（符合"取货：托起一小段"语义）
   "t_start": <前一段 t_end>,
   "t_end": <t_start + 本段时长>,
   "value_start": "0",
-  "value_end": "cargo_bottom_height - fork_anchor_zero_z",
+  "value_end": "cargo_pos_z - cargo_height / 2 - fork_anchor_zero_z",
   "easing": "<AI 返回的 easing>"
 }
 ```
@@ -223,14 +237,14 @@ cargo 被抬起 `lift_clearance` ✓（符合"取货：托起一小段"语义）
 
 ### 6.3 派生量处理
 
-`cargo_bottom_height` / `place_surface_height` 不作为独立 parameter 声明，而是**在编译期展开为完整公式**：
+`cargo_bottom` / `place_surface` 只是文档内部的可读性简写，**不作为独立 parameter 声明**，编译期直接展开为完整公式：
 
 ```
-段 2 value_end = "cargo_bottom_height - fork_anchor_zero_z"
-编译后 = "pickup_point_z - cargo_height/2 - fork_anchor_zero_z"
+文档写：段 2 value_end = "cargo_bottom + cargo_fork_height - lift_clearance - fork_anchor_zero_z"
+编译后：value_end = "cargo_pos_z - cargo_height / 2 + cargo_fork_height - lift_clearance - fork_anchor_zero_z"
 ```
 
-这样中台看到的 PKF 公式引用的都是显式 parameter，不需要支持派生量。
+这样中台看到的 PKF 公式引用的都是显式 parameter（cargo_pos_z、cargo_height、cargo_fork_height、lift_clearance、fork_anchor_zero_z），不需要支持派生量语法。
 
 ### 6.4 reparent_events 生成
 
@@ -294,13 +308,14 @@ LLM 的**几何出错可能性消失**（它不碰公式），**结构删改权�
 ### 8.1 场景完整性检查
 
 模板编译前校验：
-- 存在 cargo marker（提供 pickup_point、cargo size）
-- 存在 dropoff marker（提供 place_point）
+- 存在 cargo marker（提供 cargo_pos_*、cargo size）
+- 存在 drop marker（提供 drop_pos_*）
 - 存在 role="车体前进" 的关节
 - 存在 role="门架升降" 的关节
+- 存在至少一条 attach 型 reparent event（指明 cargo→fork 对应关系；时间由模板覆写）
 - 可选 role="叉齿侧移" / "叉齿前伸"（当前模板未用，二期预留）
 
-任一缺失 → 编译失败，UI 提示用户修正场景。
+任一缺失 → 编译失败，UI 提示用户修正场景（返回 `{ ok:false, missing:[...] }`）。
 
 ### 8.2 关节 limit 冲突
 

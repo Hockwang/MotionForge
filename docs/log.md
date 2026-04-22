@@ -67,3 +67,26 @@ CLAUDE.md #47；单元测试 30/30 通过（`computeForkAnchorZero` case 期望�
 
 新 gotcha：[merged-mesh-bbox-trap](gotchas/007-merged-mesh-bbox-trap.md)。
 tag：`mvp2` 分支保留里程碑状态。
+
+## [2026-04-22] milestone | mvp3 叉车 14 段模板（Phase A + B 实现）
+
+`feature/pickup-template` 分支。契约文档（[forklift-pickup-template.md](concepts/forklift-pickup-template.md)）审过后一次性落地前后端。
+
+**设计动机**：六轮承载锚点迭代后，attach 基本正确但 AI 生成的 PKF 仍有几何精度问题（approach_gap 被偷偷改回 1、公式漏项、凭空加常数）。把"节奏"和"几何精度"从 AI 手里分开——前端持有行业标准 14 段模板 + 几何公式，AI 只出节奏和 easing。
+
+**实现**：
+- 新增 [src/core/ForkliftTemplate.js](../src/core/ForkliftTemplate.js)：`FORKLIFT_TEMPLATE` 14 段数据 + `collectTemplateContext` 场景扫描 + `compileTemplate` 编译器
+- 新增 [tests/unit/forklift-template.test.js](../tests/unit/forklift-template.test.js)：32 个测试（几何对齐、参数注入、公式正确、value_start 级联）
+- 新增后端 `/api/template-rhythm` 端点（[tools/conversion-service.js](../tools/conversion-service.js)）：简化 prompt，只出节奏；严格校验返回 14 段齐全
+- [src/main.js](../src/main.js) 🚀 按钮路由：场景满足四要素（cargo + drop + 两 role + attach 事件）弹窗让用户选"模板 / 自由"；选模板则 AI 出节奏（失败降级默认匀速）→ 编译 → 应用
+- [src/core/KeyframeManager.js](../src/core/KeyframeManager.js) `_pkfTemplateMeta` 模板标记；`applyReparentEventsAtTime` 模板路径禁用 snap-attach（靠 Three.js attach 原生保世界坐标）
+
+**新增 4 个 PKF 参数**（复用 cargo_pos / drop_pos / fork_anchor_zero 不改命名）：
+- `cargo_fork_height`（cargo 叉齿孔相对 cargo 底面的偏移，default 0）
+- `safe_distance`（0.8m）
+- `lift_clearance`（0.1m）
+- `transport_height`（0.2m，叉齿承载面离地高度）
+
+**契约保证**：输出 ZIP 格式不变，schema 不升版本。pkf.json 的 parameters 数组多 4 条，steps 从 ~5–10 涨到 ~14（严格串行），中台评估逻辑不用改。
+
+测试：全部 63 个单元测试通过（31 老 + 32 新）。实机验证待用户🚀触发确认。

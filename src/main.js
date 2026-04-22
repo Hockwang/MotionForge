@@ -7,6 +7,12 @@ import { ResultPackageExporter } from './core/ResultPackageExporter.js';
 import { SceneManager } from './core/SceneManager.js';
 import { SelectionManager } from './core/SelectionManager.js';
 import { EditorUI } from './ui/EditorUI.js';
+import {
+  collectTemplateContext,
+  compileTemplate,
+  buildDefaultRhythm,
+  FORKLIFT_TEMPLATE,
+} from './core/ForkliftTemplate.js';
 
 const appRoot = document.querySelector('#app');
 const ui = new EditorUI(appRoot);
@@ -1412,6 +1418,92 @@ ui.aiDecomposeBtn?.addEventListener('click', async () => {
 });
 
 // ══════════════════════════════════════════════════════════════
+//  叉车取放 14 段模板路径（mvp3 / Phase A+B）
+// ══════════════════════════════════════════════════════════════
+
+/**
+ * 请求后端 /api/template-rhythm 拿 AI 节奏（Phase B）。
+ * 后端返回 { name, segments: [{index, duration, easing}] }。
+ * 失败时 throw，调用方决定是否降级到默认节奏。
+ */
+async function requestTemplateRhythm(intent, templateSegments) {
+  const resp = await fetch(`${AI_SERVICE_URL}/api/template-rhythm`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ intent, template_segments: templateSegments }),
+  });
+  if (!resp.ok) {
+    const body = await resp.json().catch(() => ({}));
+    throw new Error(body.error || `后端 ${resp.status}`);
+  }
+  return resp.json();
+}
+
+/**
+ * 把模板编译结果写入 keyframeManager 并切到 PKF 播放模式。
+ * 复用和 L1/L2 路径一样的落地过程（clear → addParameter / addStep → reparent）。
+ *
+ * @param {Object} compiled  compileTemplate 的返回值
+ */
+function applyCompiledTemplate(compiled) {
+  // 1. PKF 参数 + 步骤
+  keyframeManager.pkfParameters.clear();
+  (compiled.parameters || []).forEach((p) => {
+    keyframeManager.addPkfParameter({
+      id: p.id,
+      type: p.type || 'number',
+      unit: p.unit || '',
+      desc: p.desc || '',
+      default: p.default ?? 0,
+    });
+  });
+  keyframeManager.pkfSteps = [];
+  (compiled.steps || []).forEach((s) => {
+    keyframeManager.addPkfStep({
+      joint: s.joint || '',
+      joint_def_id: s.joint_def_id || '',
+      channel: s.channel || 'translate',
+      axis: s.axis || 'z',
+      t_start: Number(s.t_start) || 0,
+      t_end: Number(s.t_end) || 1,
+      value_start: String(s.value_start ?? '0'),
+      value_end: String(s.value_end ?? '0'),
+      easing: s.easing || 'ease-in-out',
+      // 附带模板元数据（applyReparentEventsAtTime 用 meta 识别模板路径禁用 snap-attach）
+      template_segment: s.template_segment,
+      template_segment_name: s.template_segment_name,
+    });
+  });
+
+  // 2. reparent 事件（清空旧的 + 重新添加）
+  const existingEvents = keyframeManager.getReparentEvents();
+  existingEvents.forEach((e) => keyframeManager.removeReparentEvent(e.event_id));
+  (compiled.reparent_events || []).forEach((e) => {
+    keyframeManager.addReparentEvent(e.t, e.child_name, e.new_parent_name);
+  });
+
+  // 3. 写入模板标记（runtime 按此禁用 snap-attach）
+  keyframeManager._pkfTemplateMeta = compiled.meta || null;
+
+  // 4. 时间线与 UI
+  const totalDuration = compiled.meta?.total_duration ?? 12;
+  const timelineDuration = +(totalDuration + 0.5).toFixed(3);
+  keyframeManager.setClipDuration(timelineDuration);
+  ui.setTimelineRange(timelineDuration);
+  refreshPkfParamsUI();
+  refreshPkfStepsUI();
+  refreshReparentEventList();
+
+  // 5. 切到 PKF 播放模式 + 从 0 开始
+  pkfPlaybackMode = true;
+  if (ui.pkfPlaybackModeInput) ui.pkfPlaybackModeInput.checked = true;
+  keyframeManager.currentTime = 0;
+  applyPkfAtTime(0);
+  keyframeManager.applyReparentEventsAtTime(0, sceneManager.sceneRoot);
+  keyframeManager.applyAllJointDrives(sceneManager.sceneRoot);
+}
+
+// ══════════════════════════════════════════════════════════════
 //  v14: 🚀 一键生成完整动画（L1 → apply reparent → L2 → 播放）
 // ══════════════════════════════════════════════════════════════
 
@@ -1435,7 +1527,68 @@ ui.aiOneshotBtn?.addEventListener('click', async () => {
   try {
     pushUndoSnapshot();
 
-    // ── Step 1: L1 拆解 ──
+    // ── 路由：先尝试叉车模板路径 ──
+    // 四要素（cargo + drop + 两 role + attach 事件）满足时弹窗让用户选精确模板 vs 自由生成。
+    // 不满足直接走老 L1/L2 管道（行为不变）。
+    //
+    // 读位置前先把 reparent 状态回退到 t=0：如果用户之前跑过一次 🚀 并停在动画中间，
+    // cargo 可能还挂在 fork 下 → 读到的"cargo 世界坐标"是动画态不是初始态。
+    keyframeManager.applyReparentEventsAtTime(0, sceneManager.sceneRoot);
+    const templateCheck = collectTemplateContext(keyframeManager, sceneManager.sceneRoot);
+    if (templateCheck.ok) {
+      const useTemplate = window.confirm(
+        '检测到叉车取放场景（cargo + drop + 车体前进 + 门架升降 + attach 事件）。\n\n'
+        + '确定 = 用【叉车取放 14 段模板】（结构性零瞬移，AI 只管节奏）\n'
+        + '取消 = 走自由生成（AI 按高级意图自由输出，支持非标准动作）',
+      );
+      if (useTemplate) {
+        ui.aiOneshotBtn.textContent = '1/3 模板: AI 节奏...';
+        setOut('🚀 模板路径 Step 1: 请求 AI 节奏...', '#93c5fd');
+
+        // 先算 fork_anchor_zero（公式要用）
+        const forkAnchorZeroTpl = snapshotForkAnchorZero();
+
+        // 尝试拿 AI 节奏；拿不到就用默认
+        let rhythm;
+        const segmentsForAi = FORKLIFT_TEMPLATE.map((s) => ({ index: s.index, name: s.name }));
+        try {
+          rhythm = await requestTemplateRhythm(intent, segmentsForAi);
+        } catch (err) {
+          console.warn('[template] AI 节奏请求失败，降级默认匀速:', err.message);
+          rhythm = buildDefaultRhythm();
+          rhythm.name = `(默认节奏：AI 不可用 - ${err.message})`;
+        }
+
+        ui.aiOneshotBtn.textContent = '2/3 模板: 编译 PKF...';
+        setOut(`✅ 节奏: ${rhythm.name || '(未命名)'}<br>🚀 Step 2: 编译模板 → PKF...`, '#93c5fd');
+        const compiled = compileTemplate(templateCheck.data, rhythm, forkAnchorZeroTpl);
+        window.__mf = window.__mf || {};
+        window.__mf.lastTemplate = { intent, rhythm, compiled };
+
+        ui.aiOneshotBtn.textContent = '3/3 模板: 应用...';
+        applyCompiledTemplate(compiled);
+
+        setOut(
+          `✅ 模板路径完成<br>`
+          + `· 节奏: ${rhythm.name || '(未命名)'}<br>`
+          + `· 参数: ${compiled.parameters.length}，步骤: ${compiled.steps.length}，reparent: ${compiled.reparent_events.length}<br>`
+          + `· 总时长: ${compiled.meta.total_duration}s<br>`
+          + `按下方"播放"键开始`,
+          '#34d399',
+        );
+        ui.setLoadStatus('🚀 叉车模板生成完成！按下方"播放"键看动画');
+        return;
+      }
+      // 用户选了"取消" → 走自由生成（继续走 L1/L2）
+    } else {
+      // 模板不适用：把缺的要素打印出来（不 alert，只 console，避免打扰用户）
+      console.info('[oneshot] 模板路径不适用，缺:', templateCheck.missing);
+      keyframeManager._pkfTemplateMeta = null; // 清掉老模板标记（若存在）
+    }
+
+    // ── Step 1: L1 拆解（老路径） ──
+    // 进入老管道前清掉模板标记——后续 reparent 走 snap-attach 兜底
+    keyframeManager._pkfTemplateMeta = null;
     ui.aiOneshotBtn.textContent = '1/4 AI 拆解意图...';
     setOut('🪄 Step 1: 让 AI 拆解时间表...', '#93c5fd');
 

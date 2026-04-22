@@ -55,6 +55,12 @@ export class KeyframeManager {
     // metadata（type/size/color）单独存这里，对应 scene 里的 Object3D 通过 name 查找。
     /** @type {Map<string, {id, name, type, size?, color?}>} */
     this.sceneMarkers = new Map();
+
+    // ── 模板路径标记（mvp3 / forklift-pickup-template）──
+    // 非空时表示当前 PKF 由叉车模板编译生成；applyReparentEventsAtTime 据此禁用 snap-attach
+    // 强制位置对齐（因为模板本身保证了 fork/cargo 几何连续）。
+    // 结构：{ template_version: number, rhythm_name?: string, total_duration?: number }
+    this._pkfTemplateMeta = null;
   }
 
   reset() {
@@ -68,6 +74,7 @@ export class KeyframeManager {
     this.pkfSteps = [];           // 清空 PKF 步骤
     this.originalParentMap.clear(); // 清空初始 parent 快照
     this.sceneMarkers.clear();      // 清空场景标记
+    this._pkfTemplateMeta = null;   // 清空模板标记
   }
 
   // ══════════════════════════════════════════════════════════════
@@ -415,8 +422,14 @@ export class KeyframeManager {
       // Snap-attach（#36 ~ #52）：cargo 底面中心对齐 fork bbox 底面中心。
       // #52：和 computeForkAnchorZero 同公式 —— bbox.center.x/z + bbox.min.y，自动算（不读 joint origin）
       // ⚠️ #50d：bbox 计算**必须在 attach 之前**，否则 setFromObject 会包含刚 attach 上的 cargo
+      //
+      // 模板路径分流（forklift-pickup-template §5.4）：
+      //   当前 PKF 带 _pkfTemplateMeta 时，attach 由模板保证几何连续（fork 和 cargo 在 attach 前后位置关系已正确），
+      //   靠 Three.js 原生 parent.attach(child) 保持世界坐标，不需要强制位置对齐。
+      //   走此分支则不算 desiredWorldPos（下面 snap 写入段自然跳过）。
       let desiredWorldPos = null;
-      if (parentChanged && targetParent !== root) {
+      const inTemplateMode = !!this._pkfTemplateMeta;
+      if (!inTemplateMode && parentChanged && targetParent !== root) {
         const markerMeta = findMarkerMeta(childName);
         if (markerMeta?.type === 'cargo') {
           targetParent.updateMatrixWorld(true);
