@@ -226,9 +226,9 @@ const PKF_SYSTEM_PROMPT = `你是一个工业设备参数化运动规划助手�
 - 默认 easing 为 linear
 - 参数 id 用英文小写 + 下划线命名
 
-**⚠️ 核心语义（放在示例之前）**：prismatic 关节的 `value_end` 是**位移**（从零位开始前进多少米），不是世界绝对坐标。
-Runtime：`newWorldPos = baseWorldPos + axis * currentValue`。所以公式要算"要位移多少才能让目标点到达 target"：
-`displacement = target_world - anchor_at_zero`（+ 可选的 approach_gap）
+**⚠️ 核心语义（放在示例之前）**：prismatic 关节的 \`value_end\` 是**位移**（从零位开始前进多少米），不是世界绝对坐标。
+Runtime：\`newWorldPos = baseWorldPos + axis * currentValue\`。所以公式要算"要位移多少才能让目标点到达 target"：
+\`displacement = target_world - anchor_at_zero\`（+ 可选的 approach_gap）
 
 **学习下面的完整示例**（叉车取货动作 — v14.1 位移语义）：
 
@@ -254,17 +254,17 @@ Runtime：`newWorldPos = baseWorldPos + axis * currentValue`。所以公式要�
       "easing": "ease-in-out" },
     { "joint": "EXAMPLE_mast_lift", "channel": "translate", "axis": "z",
       "t_start": 3.0, "t_end": 4.0,
-      "value_start": "0", "value_end": "cargo_pos_z - fork_anchor_zero_z",
+      "value_start": "0", "value_end": "cargo_pos_z - cargo_height/2 - fork_anchor_zero_z",
       "easing": "ease-in-out" },
     { "joint": "EXAMPLE_mast_lift", "channel": "translate", "axis": "z",
       "t_start": 4.0, "t_end": 5.0,
-      "value_start": "cargo_pos_z - fork_anchor_zero_z",
-      "value_end": "cargo_pos_z - fork_anchor_zero_z + lift_height",
+      "value_start": "cargo_pos_z - cargo_height/2 - fork_anchor_zero_z",
+      "value_end": "cargo_pos_z - cargo_height/2 - fork_anchor_zero_z + lift_height",
       "easing": "ease-out" }
   ]
 }
 
-**重要**：示例里的 `EXAMPLE_*` 是占位关节名，**你必须使用用户当前提供的关节列表里的实际关节名**。参考示例学习：位移公式 (cargo.y - fork_anchor_zero_y - approach_gap)、多步串行/并行编排、参数声明规范。
+**重要**：示例里的 \`EXAMPLE_*\` 是占位关节名，**你必须使用用户当前提供的关节列表里的实际关节名**。参考示例学习：位移公式 (cargo.y - fork_anchor_zero_y - approach_gap)、多步串行/并行编排、参数声明规范。
 
 **@关节名锚定语法（精确模式）**：
 - 用户如果在描述里写 \`@关节名\`（例如 \`@_CS19110 顺时针旋转 90 度\`、\`@_____10 抬升 1 米\`），则：
@@ -302,12 +302,17 @@ prismatic 关节的 value_end 写的是**位移**（从零位开始前进多少�
 - 例：cargo.y=5, fork_anchor_zero_y=2.13, approach_gap=0 → value_end = 5 - 2.13 = 2.87（车体前进 2.87m，叉齿到 cargo 位置，snap-attach 精准对齐）
 - Runtime 接着 add 到 baseWorldPos=2.93 → fork 世界 y = 5.0（= cargo.y，无缓冲）
 
-**fork_anchor_zero 使用规则（组合 approach_gap）**：
-- 有"叉齿零位锚点"区块：value_end 应写 \`cargo_pos_y - fork_anchor_zero_y - approach_gap\`
-- 横移：\`cargo_pos_x - fork_anchor_zero_x\`（不加 approach_gap）
-- 放货段：\`drop_pos_y - fork_anchor_zero_y - approach_gap\`
+**fork_anchor_zero 使用规则（#49：fork_anchor_zero_z 是叉齿**底面**高度）**：
+- **车体前进**（y 方向）：value_end 应写 \`cargo_pos_y - fork_anchor_zero_y - approach_gap\`
+- **横移**（x 方向）：\`cargo_pos_x - fork_anchor_zero_x\`（不加 approach_gap）
+- **门架升降**（z 方向）：\`cargo_pos_z - cargo_height/2 - fork_anchor_zero_z\`
+  （cargo 底面（= cargo_pos_z - cargo_height/2）对齐叉齿底面）
+- **放货段 y**：\`drop_pos_y - fork_anchor_zero_y - approach_gap\`
+- **放货段 z**：\`drop_pos_z - cargo_height/2 - fork_anchor_zero_z\`
+- **⚠️ 必须三个维度都覆盖**（若 cargo 和 fork 不在同一点）：attach 前若 y / x / z 任一维度未到位，snap-attach 会瞬间把 cargo 拉到 fork 位置，造成视觉跳变
+- **⛔ 禁止凭空加常数**：不要在公式里加 \`- 0.1\` / \`+ 0.05\` 这种"缓冲"数字 —— approach_gap 是唯一合法的缓冲参数，其他常数会让算出来的位移偏离预期
 - **必须声明 approach_gap 参数**：\`{ "id": "approach_gap", "type": "number", "unit": "m", "desc": "叉齿离货物缓冲距离（0=贴合，snap-attach 精准对齐；正值=留安全距离）", "default": 0 }\`
-- fork_anchor_zero_* 是自动注入（不用声明），approach_gap 要声明（用户可调）
+- fork_anchor_zero_* 和 cargo_height 是自动注入（不用声明），approach_gap 要声明（用户可调）
 - 没"叉齿零位锚点"区块 → 退化用 \`cargo_pos_y - approach_gap\`（default=1）
 
 **关节角色（role）优先匹配规则**：
@@ -466,11 +471,11 @@ const DECOMPOSE_SYSTEM_PROMPT = `你是 AGV/叉车动作时序拆解助手。把
 {
   "rows": [
     { "time": "0-3s", "op": "车体前进到 y=cargo.y - fork_anchor_zero_y - approach_gap, 同时横移到 x=cargo.x - fork_anchor_zero_x（并行）" },
-    { "time": "3-4s", "op": "门架下降到 z=cargo.z - fork_anchor_zero_z 对齐 cargo 高度" },
+    { "time": "3-4s", "op": "门架下降到 z=cargo.z - cargo_height/2 - fork_anchor_zero_z（cargo 底面对齐叉齿底面）" },
     { "time": "4s",   "op": "cargo 附着到叉齿" },
     { "time": "4-5s", "op": "门架抬升 lift_height（抬离地面）" },
     { "time": "5-8s", "op": "车体继续前进到 y=drop.y - fork_anchor_zero_y - approach_gap, 横移到 x=drop.x - fork_anchor_zero_x" },
-    { "time": "8-9s", "op": "门架下降到 z=drop.z - fork_anchor_zero_z" },
+    { "time": "8-9s", "op": "门架下降到 z=drop.z - cargo_height/2 - fork_anchor_zero_z" },
     { "time": "9s",   "op": "cargo 脱离" }
   ],
   "reparent_events": [
@@ -507,9 +512,13 @@ const DECOMPOSE_SYSTEM_PROMPT = `你是 AGV/叉车动作时序拆解助手。把
 **⚠️ 叉齿零位锚点规则（#37，必须遵守）**：
 如果 user message 里有"叉齿零位锚点"区块：
 - ⛔ **禁止**在 rows 里写 "留 Xm 间距" / 具体数值（y=4.0 那种）
-- ✅ 必须写**字面位移公式**："y=cargo.y - fork_anchor_zero_y - approach_gap"
-- 横移："x=cargo.x - fork_anchor_zero_x"（不加 approach_gap）
-- 放货同理："y=drop.y - fork_anchor_zero_y - approach_gap"
+- ✅ 必须写**字面位移公式**：
+  - 前进：\`y=cargo.y - fork_anchor_zero_y - approach_gap\`
+  - 横移：\`x=cargo.x - fork_anchor_zero_x\`（不加 approach_gap）
+  - 升降：\`z=cargo.z - cargo_height/2 - fork_anchor_zero_z\`（cargo 底面对齐叉齿底面）
+- 放货同理：\`y=drop.y - fork_anchor_zero_y - approach_gap\` / \`z=drop.z - cargo_height/2 - fork_anchor_zero_z\`
+- **⚠️ 必须覆盖 attach 前的三个维度**：x/y/z 任一维度若 attach 时未到位，snap 会瞬间拉 cargo 到 fork 位置，产生视觉跳变。没有对应关节（比如没"车体横移"）必须在 warnings 里声明
+- **⛔ 禁止凭空加常数**：只能用 approach_gap 做缓冲；不要自己加 \`- 0.1\` / \`+ 0.05\` 这种数字
 - **approach_gap 默认 0**（叉齿直接到 cargo 位置，由 snap-attach 精准对齐；用户可调大到 0.3 / 0.5 留缓冲）
 - **关键语义**：这是**位移公式**（prismatic 关节的 value 是从零位开始的位移），**不是绝对坐标**
 

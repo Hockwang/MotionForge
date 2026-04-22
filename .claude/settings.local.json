@@ -3,7 +3,13 @@
     "allow": [
       "Bash(npx vite:*)",
       "Bash(node tools/conversion-service.js)",
-      "Bash(curl -s http://localhost:8091/health)"
+      "Bash(curl -s http://localhost:8091/health)",
+      "Bash(ls -la c:/Users/Administrator/Desktop/cursor/MotionForge/*.md)",
+      "Bash(git mv *)"
+    ],
+    "additionalDirectories": [
+      "C:\\Users\\Administrator\\Desktop\\cursor\\obsidian\\knowledge-vault",
+      "C:\\Users\\Administrator\\Desktop\\cursor\\knowledge-system\\scripts"
     ]
   }
 }

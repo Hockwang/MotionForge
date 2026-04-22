@@ -525,6 +525,136 @@ console.log('emissive:', c?.material?.emissive);
 - **修复**：[KeyframeManager.js](src/core/KeyframeManager.js) `applyJointDrive` 去掉 fixed 的 early return，加 `else if (def.type === 'fixed')` 分支：`newWorldPos = baseWorldPos; newWorldQuat = baseWorldQuat;`。等价于 prismatic value=0：每帧根据 joint parent 最新世界矩阵 × base 计算 child 世界位置
 - **经验教训**：**关节类型的语义要一致**。revolute/prismatic 都是"joint parent 说了算"（URDF 风格），fixed 也应该是。早期为了省一点性能给 fixed 走快捷路径，破坏了这个一致性。现在 fixed 符合 URDF 标准：刚性连接到 joint parent，无自由度但跟随运动
 
+#### #50 fork_anchor_zero 水平位置改用"朝 cargo 方向的 bbox 前端极值"（合并 mesh 下近似叉齿尖）
+- **症状**：#49 修好 z 方向后，水平方向仍有偏差 —— 三向车.glb 播放到 attach 时 cargo 在叉车**前方**没贴上（bbox.center.z 被门架往后拉 ~0.9m）
+- **根因**：合并 mesh 的 `_CS19110` bbox 覆盖 整车（叉齿+门架+支架），`bbox.center.x/z` = **整车几何中心**，不是叉齿尖位置。PKF 把 bbox.center 对到 cargo → 叉齿尖在 cargo 前方 ~0.9m 处
+- **修复思路（A1 方案，和用户讨论后定的）**：
+  - 不硬编码"前进轴在 x 还是 y"（不同模型约定不同）
+  - 不依赖 role="车体前进" joint axis（避免关节坐标系转换复杂度）
+  - **用 cargo 世界位置相对 fork bbox 中心的方向作 forward**：朝哪方向有 cargo，就把 bbox 往哪边推
+- **实现**：
+  - [KeyframeManager.js](src/core/KeyframeManager.js) 新增 `_computeForkForwardExtreme(box, cargoWorldPos)` helper：
+    - forward = `normalize(cargoPos_xz - bboxCenter_xz)`
+    - 水平极值点 = `bboxCenter + forward × (|half.x × dir.x| + |half.z × dir.z|)`（投影定理算 bbox 沿任意方向的半长）
+    - 返回 `{x, z, forwardDir}`；cargo 缺失或重合时退化到 bbox 中心
+  - `computeForkAnchorZero`：x/z 用 forward 极值，y 保持 min.y（#49）；缓存 `_forkForwardDir` 供 snap 复用
+  - `applyReparentEventsAtTime` snap-attach：读缓存 `_forkForwardDir`，对**当前** fork bbox（post-motion）算前端极值 → cargo 底中心落在那里
+  - `invalidateForkAnchorZero`：一并清 `_forkForwardDir`
+  - [tests/unit/keyframe-manager.test.js](tests/unit/keyframe-manager.test.js)：32/32（+2 case：cargo 缺失退化 center、斜对角 cargo 验归一化方向）
+- **三向车.glb 验算**：
+  - fork bbox center (threejs) = (0.484, ?, 2.125)；size = (1.188, ?, 1.571)
+  - cargo (threejs) = (5, ?, 5)（UI Z-up swap 前）
+  - forward (xz) = normalize(4.516, 2.875) ≈ (0.843, 0.538)
+  - extent = 0.594 × 0.843 + 0.785 × 0.538 ≈ 0.923
+  - 新 anchor_x = 0.484 + 0.843 × 0.923 ≈ **1.26**
+  - 新 anchor_z = 2.125 + 0.538 × 0.923 ≈ **2.62**（UI y）
+  - 相比老 anchor (0.484, 2.125) 往 cargo 方向推进 0.923m → fork 少走 0.92m → 叉齿尖正好到 cargo 位置
+- **snap-attach 对应调整**：
+  - attach 时 fork 已经到 cargo 附近，此时"从 fork 到 cargo"向量接近 0，方向退化
+  - 所以 snap 读的是**生成时缓存的 forward 方向**，配合**当前**（post-motion）fork bbox → 得到 cargo 方向的前端极值
+  - 零 teleport 成立的前提：snap 的水平位置算法和 PKF 公式目标同源
+- **已知局限**：
+  - forward 方向由 cargo 位置决定 → cargo marker 移动后需重新 🚀 生成 PKF（这其实是合理的，移了 cargo 本来就该重新规划）
+  - 对 "cargo 在 fork 正上方/正下方"（水平方向完全重合）退化到 bbox.center — 这种场景很少见
+  - 不处理"多个 cargo"：`reparentEvents` 里第一个 attach event 的 child 决定 forward 方向
+- **下一步**（如果还有偏差，用户已表态偏向 C 方案）：UI 加"承载点标记"让用户在叉齿上拖一个红点，彻底替代所有几何启发式
+- **经验教训**：
+  1. **纯几何启发式的极限：4 次迭代（#37 center → #47 max → #49 min.y for z → #50 forward extreme for x/z）才摸到能用的形状**。每一次都暴露一种模型建模方式的反例。这说明自动推断"叉齿在哪"本质上是**有损的**，靠假设堆积
+  2. **决定让 cargo 参与几何计算的时机**。#50 让 fork_anchor_zero 依赖 cargo 位置（之前是纯 fork 属性）。增加了耦合，但换来对任何模型朝向（x/y/z/斜着）都 work 的鲁棒性。这是合理权衡：生成 PKF 本来就是"为这个 cargo 规划这次动作"，fork anchor 为此 cargo 而定合情合理
+  3. **缓存 forward 方向给 snap 用的巧思**。snap 时 cargo 已经被 fork "吸"过去了，方向信息在那个时刻会退化。缓存生成时的方向让 snap 和 PKF 公式层共用同一个"前端"语义
+
+#### #49 fork_anchor_zero 改用 bbox.min.y（叉齿底面）—— 复用 UI "子对象底部" 概念
+- **背景**：#47/#48 两次失败后，探索出 bbox.min.y 是比 center.y / max.y 都更稳健的启发式。这是**第三种几何语义尝试**，留作经验档案
+- **动机**（用户 insight）：关节配置 UI 里早就有"**子对象底部**"按钮（基于 bbox.min.y），AI 打关节用户已经很习惯这个概念；直接复用，一致性好
+- **选型推理**：
+  - `bbox.center.y`（v14.1 初版 / #48）：cargo 视觉陷 fork ~h/2 米
+  - `bbox.max.y`（#47 尝试）：假设"max.y = 叉齿顶面"；对合并 mesh（三向车）失败，max.y 是**门架顶**
+  - `bbox.min.y`（#49 当前）：假设"min.y = 叉齿底面"；对合并 mesh 成立（min.y ≈ 贴地的叉齿底），对标准叉车都对
+- **改动**：
+  - [KeyframeManager.js computeForkAnchorZero](src/core/KeyframeManager.js)：锚点 y 从 `center.y` 改为 `min.y`
+  - [KeyframeManager.js applyReparentEventsAtTime](src/core/KeyframeManager.js)：snap-attach `desiredWorldPos.y = min.y + cargoH/2` → cargo 底面贴叉齿底面
+  - [tools/conversion-service.js](tools/conversion-service.js)：L1/L2 prompt 的 z 公式改回 `cargo_pos_z - cargo_height/2 - fork_anchor_zero_z`；说明"fork_anchor_zero_z 是叉齿底面"
+  - [src/main.js ensurePkfCoversAttachPoint](src/main.js)：z 目标恢复 `cargoObj.position.z - cargoHeight/2 - faz`
+  - [tests/unit/keyframe-manager.test.js](tests/unit/keyframe-manager.test.js)：期望值 `-0.2`（threejs.min.y for box size 1 at y=0.3）
+- **三向车.glb 验算**（合并 mesh 模型）：
+  - bbox.min.y = 0.042（叉齿底面贴地）
+  - PKF value_end = 0.6 - 0.5 - 0.042 = 0.058（门架升降 5.8cm）
+  - 运行后叉齿底面到达 cargo 底面高度（0.1m）→ snap-attach 零 teleport
+- **已知假设与局限**（遇到失败再升级）：
+  - 假设 "叉齿是 fork 子树的最底部 mesh" —— 对标准立式叉车都成立
+  - **可能失效场景**：
+    1. 关节 parent 包含轮子 / 底盘 mesh → bbox.min.y 是轮底，不是叉齿底
+    2. 侧挂叉齿（min.y 不代表承载面）
+    3. 倒挂夹爪（min.y 意义完全不同）
+  - **极薄叉齿视觉**：bbox.min.y = 叉齿底面，cargo 底贴叉齿底 = 叉齿穿进 cargo 几厘米（≈叉齿厚度）。视觉上叉齿基本看不见（尖端插入 cargo 底部 1-2cm），符合叉车物理
+  - **厚叉齿 / 合并 mesh 视觉**：cargo 底贴整个 fork 结构底，fork 上部分（门架）会穿进 cargo 里显形
+- **升级路径**（如果遇到不 work 的模型）：
+  - 短期：在 `computeForkAnchorZero` 加可配置 `TINE_THICKNESS_OFFSET`（默认 0，需要时调 0.05）
+  - 长期：UI 加"承载高度偏移"输入框到 joint 配置面板（就在"子对象底部/中心"按钮旁），让用户显式指定 → 彻底结束猜
+- **经验教训**：
+  1. **先复用已有 UI 概念，再发明新概念**。"子对象底部"按钮是用户已验证好用的心智模型；fork_anchor_zero 用同源逻辑 → 一致性和可解释性都更强
+  2. **启发式要分层**：`bbox.center`（无假设，保守）→ `bbox.min`（假设叉齿在底，标准叉车对）→ `bbox.max`（假设叉齿在顶，特殊场景）。当前选中间偏保守的 min（比 center 更贴近物理，比 max 更稳）
+  3. **第三次尝试（#47/#48/#49）教会的**：**几何启发式注定在某些模型失败**。最终解法是 UI 让人做判断 —— 但在做 UI 前，min.y 是三者里最可靠的默认值
+  4. **记录失败也是资产**。#47 / #48 / #49 这三轮迭代的 bug log 一起看，就能让未来的我（或另一个 AI）避免再走同样的路
+
+#### #48 回退 #47 "叉齿顶面"语义（保留 AI 维度兜底）—— 合并 mesh 模型下 bbox.max.y 指向门架顶不是叉齿顶
+- **症状**：#47 上线后，三向车.glb 🚀 一键生成播放时**叉齿下沉穿地 0.55m，cargo 飘空**
+- **排查**（tests/diag-fork-anchor.js + Console 片段）：
+  - `_CS19110` 子树只有**一个 mesh**（叉齿+支架+门架合并建模），bbox：min.y=0.042 / max.y=0.592 / size.y=0.549
+  - 新语义 `fork_anchor_zero_z = max.y = 0.592` → **是整个门架顶端高度**，不是叉齿顶面
+  - PKF 求值：`cargo_pos_z(0.6) - cargo_height/2(0.5) - fork_anchor_zero_z(0.592) - 0.1(AI 自加) = -0.592` → 门架升降关节下降 0.592m → 穿地
+- **根因**：`_findForkTineMesh` 的 "min.y 最小 mesh" 启发式在**没拆子 mesh 的模型上无效**（只有一个 mesh 可挑），那个 mesh 的 bbox 覆盖整个叉齿+门架结构，`max.y` 是门架顶不是叉齿顶 → #47 改用 bbox.max.y 当承载面是错的
+- **修复**：
+  - [KeyframeManager.js](src/core/KeyframeManager.js) `computeForkAnchorZero` + `applyReparentEventsAtTime` snap-attach 回退到 `box.getCenter()`（v14.1 语义）
+  - [tools/conversion-service.js](tools/conversion-service.js) L1/L2 prompt 的 z 方向公式回退到 `cargo_pos_z - fork_anchor_zero_z`（不减 cargo_height/2）；加"禁止凭空加常数"警告（AI 这次自己在公式里加了 `- 0.1`，把下沉加剧 10cm）
+  - [src/main.js](src/main.js) `ensurePkfCoversAttachPoint` z 目标位移去掉 `- cargoHeight/2`（#47 的偏移）
+  - [tests/unit/keyframe-manager.test.js](tests/unit/keyframe-manager.test.js) case #2 期望回退到 `bbox.center.y` —— 30/30 通过
+  - **保留** `ensurePkfCoversAttachPoint` 前端兜底（#47 的另一半，不受本回退影响，仍有价值：AI 漏生成维度时自动补）
+- **代价**（已接受）：cargo 视觉上 center-to-center 对齐（陷进叉齿 ~cargo_h/2 米），不符合真实叉车托底物理。**彻底解决**需要另一条路径：让用户在 cargo marker 或 joint 配置里直接指定"承载高度偏移"（把物理对齐参数下放到人，而不是从几何启发式猜）
+- **经验教训**：
+  1. **启发式 = 对部分模型的假设，不是通用方案**。`_findForkTineMesh` 的 min.y 挑法只在"叉齿是独立 mesh"时有效；合并 mesh 的模型上这个挑法退化成"挑唯一那个"
+  2. **依赖 bbox 分量语义要先验证前提**。`bbox.max.y = 叉齿顶面` 只有在 mesh 恰好只含叉齿时成立；含了门架就变成门架顶。改几何语义前必须确认所有可能的输入形态
+  3. **AI 在公式里自加常数是隐藏风险**。即使 prompt 不提及，AI 会"想当然"地加 `- 0.1` 做"缓冲"。必须在 prompt 里**显式禁止**凭空常数，只留 approach_gap 作为可调缓冲
+  4. **回退不等于失败**。#47 的前端兜底（`ensurePkfCoversAttachPoint`）是独立价值的改动，单独保留；只回退几何语义部分。**分层回退**比全部回退更稳
+
+#### #47 吸附姿态改为"叉齿顶面托住 cargo 底面" + AI 维度兜底（消除 attach 瞬间 teleport）
+- **症状**：🚀 一键生成后播放到 t=3.98→4.01，cargo 明显下跳到叉齿上。v14.1 已让 approach_gap=0 且 snap-attach 和 fork_anchor_zero 同源，理论上应该零 teleport，但实际仍有 ~0.3m 视觉跳变
+- **根因（两个叠加）**：
+  1. **AI 漏生成维度**：AI 经常只输出"车体前进"step，漏"门架升降"step → attach 时 fork 水平到位但垂直还在零位 → snap 把 cargo 拽到 fork 中心（UI z 方向 ~0.3m 下跳）
+  2. **吸附语义不物理**：center-to-center 对齐（cargo 中心 = fork 中心）让 cargo"陷进"叉齿里，不符合真实叉车"叉齿托底"物理；即使 AI 完整生成 PKF 也有视觉违和
+- **修复**：
+  - [KeyframeManager.js computeForkAnchorZero](src/core/KeyframeManager.js)：锚点从 `box.getCenter()` 改为 `(center.x, box.max.y, center.z)` —— 叉齿**顶面**中心
+  - [KeyframeManager.js applyReparentEventsAtTime](src/core/KeyframeManager.js)：snap desiredWorldPos 改为 `(center.x, box.max.y + cargoH/2, center.z)` —— 让 cargo 底面贴叉齿顶面
+  - [conversion-service.js](tools/conversion-service.js) L1/L2 prompt：门架升降公式加 `- cargo_height/2` 偏移；明确要求 attach 前 x/y/z 三维都覆盖
+  - [main.js ensurePkfCoversAttachPoint](src/main.js)：前端收到 L2 PKF 后**自动检查** x/y/z 目标位移 >THRESHOLD 是否都有 step 覆盖 attach 前时间；缺的按 role 查关节自动注入 step；找不到 role 关节则加 warning
+  - [tests/unit/keyframe-manager.test.js](tests/unit/keyframe-manager.test.js) case #2 期望值从 `bbox.center.y` 改为 `bbox.max.y`
+- **经验教训**：
+  1. **吸附语义应该符合物理直觉**。center-to-center 是数学上简单但视觉上错 —— 真实叉车是叉齿顶面托底。用户的心智模型 = 物理模型；代码的参考点应该和它对齐
+  2. **LLM 输出不能假定完整覆盖**。即使 prompt 里明确要求，AI 仍会偷懒漏某维度。关键数据通路必须有前端兜底（check + auto-fill），不能只靠 prompt 祈祷
+  3. **双保险比单保险稳**。本次 prompt 改和前端兜底两边都做；未来 AI 模型变更或 prompt 退化时，兜底层继续托住；如果哪天 AI 特别强可以关掉兜底当降级
+
+#### #46 F11 + F13：restoreState 保留 role + fork_anchor_zero hash-based 自动失效
+- **F11（DEBT #3）防御**：[KeyframeManager.js restoreState](src/core/KeyframeManager.js) 恢复 joint 时，如果 snapshot 里 `role` **字段缺失**（`Object.prototype.hasOwnProperty.call(d, 'role') === false`）→ 保留当前值，不清空。显式 `role: ''` 仍接受（合法清空）。场景：很老版本序列化的 snapshot 或外部构造的状态缺 role 字段
+- **F13 hash-based cache**：[`_computeForkAnchorInputsHash`](src/core/KeyframeManager.js)（新增私有方法）计算 `reparent events + 叉齿子树 mesh uuids` 的签名。`computeForkAnchorZero` 每次 call 对比 hash——未变直接返回缓存对象；变了才重算。原来 3 处显式 `invalidateForkAnchorZero` 保留作 fallback（兜底 + 清晰）
+- **覆盖原来漏的**失效触发点：叉齿子树增删 mesh（roundtrip / insertGroup）、undo 跨步撤销 reparent、场景 reload 后 mesh uuid 变
+- **测试**：tests/unit/keyframe-manager.test.js 加 `restoreState role 保留` 3 case + `fork_anchor_zero hash` 4 case。总共 30/30 通过
+- **经验教训**：**hash-based cache 比显式 invalidate 更健壮**。显式 invalidate 依赖"每个 mutator 都记得调"，漏一处就 stale。hash 把"脏"的判定移到读侧（每次 compute 都算），代价是每次多算一次 hash（微不足道），换来的是**无法漏**。类似 React 的 `key` prop、Git 的 content-addressed——让状态本身自证新鲜
+
+#### #45 vitest 基建 + 23 个核心单元测试（F4 解决）
+- **背景**：review F4 指出项目**零单元测试**，所有 37+ 条已修 bug 没有回归防线；最糟的情况是 `tests/test-pkf-p4.js` 断言已和当前语义相反，如果拿来回归会误导维护者
+- **修复**：
+  - 加 `vitest ^4.1.5` devDep + `npm test` / `test:watch` 脚本
+  - [vitest.config.js](vitest.config.js)：node 环境，只跑 `tests/unit/**/*.test.js`（不碰 `tests/diag-*.js` / `test-pkf-p*.js` 浏览器脚本）
+  - [tests/unit/keyframe-manager.test.js](tests/unit/keyframe-manager.test.js) 5 个 describe × 23 个 test case，覆盖：
+    - `setJointDef` 环检测（bug #33）— 4 case
+    - `buildDefaultParamValues` 参数注入（cargo size + fork_anchor_zero + 退化）— 5 case
+    - `_interpolateJointValueAtTime` 关键帧插值（bug #22/#31 语义基础）— 5 case
+    - `computeForkAnchorZero`（bug #36/#37，用真 THREE.Mesh+BoxGeometry 构最小 scene）— 4 case
+    - `addReparentEvent` / `removeReparentEvent` / `removeAllReparentEventsForChild` 缓存失效（bug #39）— 5 case
+  - 全部通过（23/23）；运行 ~300ms
+  - CONTRIBUTING.md 加"单元测试"章节 + 冒烟流程前置 `npm test`
+- **经验教训**：**有测试就能改得更狠**。之前改 KeyframeManager 每次都要"改→冒烟→祈祷"，现在 `npm test` 11ms 直接验证核心语义没被破坏。5 个 describe 每个都对应一个历史 bug——**bug 回归防线本质是把经验教训变成自动化约束**
+
 #### #44 批量清理：AI prompt v14.1 对齐 + 测试断言过时 + 代码 dead code + 文档版本漂移
 - **内容**（v14.1 review F9 / F10 / F12 / F14 / F15 / F16 / F22 / F23 合并条目）：
   - AI prompt：L2 PKF few-shot 旧 `pickup_point_x - safe_distance` 替换为 v14.1 位移语义 `cargo_pos_y - fork_anchor_zero_y - approach_gap`；L1 rows 示例从具体数值替换为字面公式。关节名占位符改成 `EXAMPLE_*` 降低 AI 误用

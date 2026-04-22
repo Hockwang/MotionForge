@@ -26,7 +26,7 @@ updated: 2026-04-21
 |---|---|---|
 | 架构 | **B+** | FK / roundtrip / PKF / reparent / oneshot 职责清晰，`v14.1` 的 `fork_anchor_zero` 方向正确；`main.js` 2083 行是短板 |
 | 代码质量 | **B** | 无 TODO/FIXME 说明规范严格；但同一概念**双实现**开始分叉（`aiDecomposeBtn` vs `collectSceneForAi`），局部缓存失效语义不统一 |
-| 测试覆盖 | **D** | **零单元测试**。12 个 `tests/*.js` 全是手动粘控制台的诊断脚本，其中 `test-pkf-p4.js` 断言已过时会反向误导 |
+| 测试覆盖 | **C**（改善中）| 新增 vitest + 23 个核心单元测试（F4 ✅）；`tests/diag-*.js` 浏览器脚本仍保留作交互诊断。剩余空白：main.js/UI 路径 |
 | 安全 | **C+** | 本地开发 OK；放公网**立刻有问题**（CORS 通配、无 rate limit、无认证、`express.json` 无 limit） |
 | 依赖 | **B** | 量少版本较新；USDZLoader 已 deprecated 警告；three caret range 小版本可能破兼容 |
 | 文档 | **A-** | CLAUDE.md + docs/ + ROADMAP 体系罕见完善；但**版本漂移**（README 仍写 v12+、诊断脚本数仍写 5 实际 7）开始误导维护者 |
@@ -110,13 +110,19 @@ tests/ 12 个纯 console 粘贴脚本
   app.use(apiKeyMiddleware);  // 生产需要
   ```
 
-#### F4. 零单元测试（新发现，DEBT 也提到）
-- **现状**：`tests/` 12 文件全是 console 粘贴脚本；`package.json` 无 `test` script；37 个已修 bug 无一个有回归测试
-- **最惨结果**：`tests/test-pkf-p4.js:190-192` 断言 `t=3` 时 `results.length === 0`，但 `KeyframeManager.js:1337-1356` 已改为 `progress=1` 保末态（bug #31 修复）→ **如果真拿来回归，会把"正确行为"判断成失败 → 误导维护者重新引入同类 bug**
-- **修**：
-  1. `npm install -D vitest`
-  2. 先删/改 `test-pkf-p*.js` 过时断言（1 小时）
-  3. 5 个关键路径写 vitest：`setJointDef` 环检测、`buildDefaultParamValues`、`_interpolateJointValueAtTime`、`computeForkAnchorZero`（mock Object3D）、`addReparentEvent` 排序+失效（2 小时）
+#### F4. ~~零单元测试~~ ✅ 已修 @ 2026-04-21（CLAUDE.md #45）
+- **现状**（原）：`tests/` 12 文件全是 console 粘贴脚本；`package.json` 无 `test` script；37 个已修 bug 无一个有回归测试
+- **修复**：
+  - 引入 `vitest ^4.1.5`
+  - `npm test` / `npm run test:watch` 脚本
+  - [vitest.config.js](../vitest.config.js)：node 环境，只跑 `tests/unit/**`
+  - [tests/unit/keyframe-manager.test.js](../tests/unit/keyframe-manager.test.js) 23 test cases，5 个 describe block：
+    1. `setJointDef` 环检测（bug #33）
+    2. `buildDefaultParamValues` 注入（cargo size + fork_anchor_zero）
+    3. `_interpolateJointValueAtTime` 关键帧插值
+    4. `computeForkAnchorZero`（bug #36/#37，用真 THREE 构建最小 scene）
+    5. `addReparentEvent` 排序 + 缓存失效（bug #39）
+  - 运行时间 ~300ms，全部通过
 
 ---
 
@@ -178,8 +184,7 @@ tests/ 12 个纯 console 粘贴脚本
 - **影响**：新接手的人在"代码 v14.1 但文档 v12+"状态下做错误推断
 - **修**：一轮对齐（半小时）
 
-#### F11. Undo 覆盖 role 字段为空（DEBT #3）
-已在 DEBT.md 详述，本 review 不重复。P0 ↓ P1（因为实际触发要操作很多步）。
+#### F11. ~~Undo 覆盖 role 字段为空~~（DEBT #3）✅ 已修 @ 2026-04-22（CLAUDE.md #46）—— 防御性：snapshot 缺 role 字段时保留当前 role
 
 ---
 
@@ -187,14 +192,7 @@ tests/ 12 个纯 console 粘贴脚本
 
 #### F12. ~~`test-pkf-p4.js` 过时断言~~（Codex M6）✅ 已修 @ 2026-04-21（CLAUDE.md #44）—— 断言 `t=3 results.length === 1 && value === 100`（保末态语义）
 
-#### F13. Cache invalidation 时机不全（forklift 8-code-smell-4）
-`invalidateForkAnchorZero` 目前只在 `addReparentEvent`/`removeReparentEvent` 触发。未覆盖：
-- 叉齿子树内 mesh 增删
-- `rebindJointBaseTransform` 重置 baseTransform
-- undo/redo 跨步撤销 reparent
-- 整场景 reload（已在 reset 里 clear，OK）
-
-当前无真实触发，但加新入口时会踩。**修**：加 `_forkAnchorInputsHash` 自动失效，或补齐 invalidate 调用点。
+#### F13. ~~Cache invalidation 时机不全~~（forklift 8-code-smell-4）✅ 已修 @ 2026-04-22（CLAUDE.md #46）—— `_computeForkAnchorInputsHash` 覆盖 reparent events + 叉齿子树 mesh uuids，自动失效
 
 #### F14. ~~`_lastSceneRoot` 是 dead code~~（forklift 8-code-smell-2）✅ 已修 @ 2026-04-21（CLAUDE.md #44）
 
@@ -267,18 +265,20 @@ Three.js r184 可能删。**修**：按 warning 提示换 API 或 pin three 版�
 - F23 role 去重（CLAUDE.md #44）
 
 ### 🟡 仍未做（按优先级）
-**P1（v14.1 tag 前补完）**
+**P1（v14.2 前补完）**
 - **F11** Undo 覆盖 role 字段（DEBT #3）— 需要 restoreState 里保守合并
 - **F13** cache invalidation 补齐（hash-based 方案）
 
 **P2（有真实触发再做）**
-- **F4** vitest 基建 + 5 个核心单元测试（1-2 小时）
 - **F17** 全局 listener cleanup / RAF cancel（HMR 累积场景）
 - **F18** `crypto.randomUUID` 统一 id 生成
 - **F24** main.js 拆分（2083 行 god file）
 - **F25** alert() → toast
 - **F26** 依赖 pin（three 版本锁）
 - **F27** USDZLoader 迁移
+
+### ✅ 已完成（feature/vitest-infra @ 本次）
+- **F4** vitest 基建 + 23 个核心单元测试（5 个 describe × 23 case）
 
 ### 不在规划（等真需求触发）
 - forklift R11/R12 多 anchor / approach_axis

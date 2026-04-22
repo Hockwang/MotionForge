@@ -1168,6 +1168,111 @@ function snapshotForkAnchorZero() {
 }
 
 /**
+ * #47：attach 前必须三维都到位，否则 snap-attach 会把 cargo 瞬间拉到 fork 位置 → 视觉跳变。
+ * AI 生成的 PKF 经常漏某个方向（多半是门架升降）。此函数检查 x/y/z 三维目标位移，
+ * 缺失的自动注入一段 step；找不到对应 role 关节则加 warning。
+ *
+ * @param {Object} pkf    {parameters, steps, warnings?}（会 mutate）
+ * @param {Object} ctx    {sceneList, forkAnchorZero, reparentEvents}（UI Z-up）
+ * @returns {Object} 同一个 pkf（方便链式）
+ */
+function ensurePkfCoversAttachPoint(pkf, ctx) {
+  if (!pkf || typeof pkf !== 'object') return pkf;
+
+  // #50b sanitize AI 常见违规（prompt 屡次要求但 AI 仍犯）：
+  //   (1) approach_gap.default 强制归 0（AI 常写 1 / 0.3）
+  //   (2) 清洗 fork_anchor_zero_* 相关公式末尾凭空加的裸常数（AI 常加 -0.1 / +0.05）
+  const warnings = Array.isArray(pkf.warnings) ? pkf.warnings : (pkf.warnings = []);
+  const apParam = (pkf.parameters || []).find((p) => p.id === 'approach_gap');
+  if (apParam && Number(apParam.default) !== 0) {
+    const oldDefault = apParam.default;
+    apParam.default = 0;
+    warnings.push(`🔧 approach_gap.default 强制覆盖 ${oldDefault}→0（AI 违反 prompt）`);
+  }
+  const cleaned = [];
+  (pkf.steps || []).forEach((s) => {
+    for (const key of ['value_start', 'value_end']) {
+      const raw = s?.[key];
+      if (typeof raw !== 'string' || !raw.includes('fork_anchor_zero_')) continue;
+      // 剥离 `fork_anchor_zero_[xyz] ± <number>` 尾巴里的裸常数（保留 ± 参数名的合法表达式）
+      const stripped = raw.replace(
+        /(fork_anchor_zero_[xyz])\s*[-+]\s*\d+(?:\.\d+)?(?=\s*[-+]|\s*$)/g,
+        '$1',
+      );
+      if (stripped !== raw) {
+        cleaned.push(`${s.joint}.${key}`);
+        s[key] = stripped;
+      }
+    }
+  });
+  if (cleaned.length) {
+    warnings.push(`🧹 清洗 AI 凭空加的常数（${cleaned.length} 处）：${cleaned.slice(0, 3).join(', ')}${cleaned.length > 3 ? '...' : ''}`);
+  }
+
+  const events = ctx?.reparentEvents || [];
+  const attachEvent = events.find((e) => e.new_parent_name);
+  if (!attachEvent) return pkf; // 没 attach event 就无对齐要求
+  const tAttach = Number(attachEvent.t) || 0;
+  const cargoName = attachEvent.child_name;
+  const cargoObj = (ctx?.sceneList || []).find((o) => o.name === cargoName);
+  if (!cargoObj) return pkf;
+  const { fork_anchor_zero_x: fax, fork_anchor_zero_y: fay, fork_anchor_zero_z: faz } = ctx?.forkAnchorZero || {};
+  if (fax === undefined || fay === undefined || faz === undefined) return pkf;
+
+  // #49：fork_anchor_zero_z 是叉齿底面，z 公式要减 cargo_height/2 让 cargo 底面对齐
+  const cargoSize = keyframeManager.getCargoSizeParams?.() || {};
+  const cargoHeight = cargoSize.cargo_height ?? 0;
+  const approachGapParam = (pkf.parameters || []).find((p) => p.id === 'approach_gap');
+  const approachGap = approachGapParam ? Number(approachGapParam.default) || 0 : 0;
+
+  // attach 前各维目标位移（UI Z-up 世界位移，直接作为 joint value）
+  const target = {
+    x: cargoObj.position.x - fax,
+    y: cargoObj.position.y - fay - approachGap,
+    z: cargoObj.position.z - cargoHeight / 2 - faz,
+  };
+
+  const THRESHOLD = 0.05; // 小于 5cm 视为已对齐，不注入
+  const rolesByDim = {
+    x: ['车体横移', '叉齿侧移'],
+    y: ['车体前进'],
+    z: ['门架升降'],
+  };
+  const allDefs = keyframeManager.getAllJointDefs();
+  if (!Array.isArray(pkf.steps)) pkf.steps = [];
+
+  for (const dim of ['x', 'y', 'z']) {
+    if (Math.abs(target[dim]) < THRESHOLD) continue;
+    const candidateRoles = rolesByDim[dim];
+    const joint = allDefs.find((d) => candidateRoles.includes(d.role));
+    if (!joint) {
+      warnings.push(
+        `⚠️ 缺 role=${candidateRoles.join('/')} 的关节，attach 时 cargo ${dim} 方向可能跳 ${target[dim].toFixed(2)}m`,
+      );
+      continue;
+    }
+    const covered = pkf.steps.some((s) => (
+      s.joint === joint.name && Number(s.t_end) <= tAttach + 0.01
+    ));
+    if (covered) continue;
+    pkf.steps.push({
+      joint: joint.name,
+      channel: joint.type === 'revolute' ? 'rotate' : 'translate',
+      axis: joint.axis || 'z',
+      t_start: 0,
+      t_end: tAttach,
+      value_start: '0',
+      value_end: String(+target[dim].toFixed(3)),
+      easing: 'ease-in-out',
+    });
+    warnings.push(
+      `🔧 自动补 ${dim} 方向 step: ${joint.name} 0→${target[dim].toFixed(3)}（AI 漏写；attach 前已到位）`,
+    );
+  }
+  return pkf;
+}
+
+/**
  * 请求后端 /api/generate-pkf 接口
  * 传入当前关节定义列表 + 场景对象世界坐标 + 用户自然语言描述，返回 { parameters, steps } PKF 格式
  * @param {string} prompt - 用户的动作描述
@@ -1412,6 +1517,14 @@ ui.aiOneshotBtn?.addEventListener('click', async () => {
     if (!l2Resp.ok) {
       throw new Error(`L2 PKF 生成失败: ${l2Body.error || l2Resp.statusText}`);
     }
+
+    // #47 兜底：AI 若漏了某个方向的 step，自动注入 → 保证 attach 瞬间零 teleport
+    ensurePkfCoversAttachPoint(l2Body, {
+      sceneList: scene,
+      forkAnchorZero: forkAnchorZeroForL2,
+      reparentEvents: l1Body.reparent_events || [],
+    });
+    if (window.__mf?.lastOneshot) window.__mf.lastOneshot.l2Patched = l2Body;
 
     // 应用 PKF（和现有 ai-apply-btn 逻辑一致）
     if (Array.isArray(l2Body.parameters)) {
