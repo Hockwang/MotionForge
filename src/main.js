@@ -1188,7 +1188,9 @@ function ensurePkfCoversAttachPoint(pkf, ctx) {
   const { fork_anchor_zero_x: fax, fork_anchor_zero_y: fay, fork_anchor_zero_z: faz } = ctx?.forkAnchorZero || {};
   if (fax === undefined || fay === undefined || faz === undefined) return pkf;
 
-  // approach_gap 从 PKF 自身读（#48：center-to-center 语义，z 方向不减 cargo_height/2）
+  // #49：fork_anchor_zero_z 是叉齿底面，z 公式要减 cargo_height/2 让 cargo 底面对齐
+  const cargoSize = keyframeManager.getCargoSizeParams?.() || {};
+  const cargoHeight = cargoSize.cargo_height ?? 0;
   const approachGapParam = (pkf.parameters || []).find((p) => p.id === 'approach_gap');
   const approachGap = approachGapParam ? Number(approachGapParam.default) || 0 : 0;
 
@@ -1196,7 +1198,7 @@ function ensurePkfCoversAttachPoint(pkf, ctx) {
   const target = {
     x: cargoObj.position.x - fax,
     y: cargoObj.position.y - fay - approachGap,
-    z: cargoObj.position.z - faz,
+    z: cargoObj.position.z - cargoHeight / 2 - faz,
   };
 
   const THRESHOLD = 0.05; // 小于 5cm 视为已对齐，不注入

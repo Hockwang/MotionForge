@@ -525,6 +525,40 @@ console.log('emissive:', c?.material?.emissive);
 - **修复**：[KeyframeManager.js](src/core/KeyframeManager.js) `applyJointDrive` 去掉 fixed 的 early return，加 `else if (def.type === 'fixed')` 分支：`newWorldPos = baseWorldPos; newWorldQuat = baseWorldQuat;`。等价于 prismatic value=0：每帧根据 joint parent 最新世界矩阵 × base 计算 child 世界位置
 - **经验教训**：**关节类型的语义要一致**。revolute/prismatic 都是"joint parent 说了算"（URDF 风格），fixed 也应该是。早期为了省一点性能给 fixed 走快捷路径，破坏了这个一致性。现在 fixed 符合 URDF 标准：刚性连接到 joint parent，无自由度但跟随运动
 
+#### #49 fork_anchor_zero 改用 bbox.min.y（叉齿底面）—— 复用 UI "子对象底部" 概念
+- **背景**：#47/#48 两次失败后，探索出 bbox.min.y 是比 center.y / max.y 都更稳健的启发式。这是**第三种几何语义尝试**，留作经验档案
+- **动机**（用户 insight）：关节配置 UI 里早就有"**子对象底部**"按钮（基于 bbox.min.y），AI 打关节用户已经很习惯这个概念；直接复用，一致性好
+- **选型推理**：
+  - `bbox.center.y`（v14.1 初版 / #48）：cargo 视觉陷 fork ~h/2 米
+  - `bbox.max.y`（#47 尝试）：假设"max.y = 叉齿顶面"；对合并 mesh（三向车）失败，max.y 是**门架顶**
+  - `bbox.min.y`（#49 当前）：假设"min.y = 叉齿底面"；对合并 mesh 成立（min.y ≈ 贴地的叉齿底），对标准叉车都对
+- **改动**：
+  - [KeyframeManager.js computeForkAnchorZero](src/core/KeyframeManager.js)：锚点 y 从 `center.y` 改为 `min.y`
+  - [KeyframeManager.js applyReparentEventsAtTime](src/core/KeyframeManager.js)：snap-attach `desiredWorldPos.y = min.y + cargoH/2` → cargo 底面贴叉齿底面
+  - [tools/conversion-service.js](tools/conversion-service.js)：L1/L2 prompt 的 z 公式改回 `cargo_pos_z - cargo_height/2 - fork_anchor_zero_z`；说明"fork_anchor_zero_z 是叉齿底面"
+  - [src/main.js ensurePkfCoversAttachPoint](src/main.js)：z 目标恢复 `cargoObj.position.z - cargoHeight/2 - faz`
+  - [tests/unit/keyframe-manager.test.js](tests/unit/keyframe-manager.test.js)：期望值 `-0.2`（threejs.min.y for box size 1 at y=0.3）
+- **三向车.glb 验算**（合并 mesh 模型）：
+  - bbox.min.y = 0.042（叉齿底面贴地）
+  - PKF value_end = 0.6 - 0.5 - 0.042 = 0.058（门架升降 5.8cm）
+  - 运行后叉齿底面到达 cargo 底面高度（0.1m）→ snap-attach 零 teleport
+- **已知假设与局限**（遇到失败再升级）：
+  - 假设 "叉齿是 fork 子树的最底部 mesh" —— 对标准立式叉车都成立
+  - **可能失效场景**：
+    1. 关节 parent 包含轮子 / 底盘 mesh → bbox.min.y 是轮底，不是叉齿底
+    2. 侧挂叉齿（min.y 不代表承载面）
+    3. 倒挂夹爪（min.y 意义完全不同）
+  - **极薄叉齿视觉**：bbox.min.y = 叉齿底面，cargo 底贴叉齿底 = 叉齿穿进 cargo 几厘米（≈叉齿厚度）。视觉上叉齿基本看不见（尖端插入 cargo 底部 1-2cm），符合叉车物理
+  - **厚叉齿 / 合并 mesh 视觉**：cargo 底贴整个 fork 结构底，fork 上部分（门架）会穿进 cargo 里显形
+- **升级路径**（如果遇到不 work 的模型）：
+  - 短期：在 `computeForkAnchorZero` 加可配置 `TINE_THICKNESS_OFFSET`（默认 0，需要时调 0.05）
+  - 长期：UI 加"承载高度偏移"输入框到 joint 配置面板（就在"子对象底部/中心"按钮旁），让用户显式指定 → 彻底结束猜
+- **经验教训**：
+  1. **先复用已有 UI 概念，再发明新概念**。"子对象底部"按钮是用户已验证好用的心智模型；fork_anchor_zero 用同源逻辑 → 一致性和可解释性都更强
+  2. **启发式要分层**：`bbox.center`（无假设，保守）→ `bbox.min`（假设叉齿在底，标准叉车对）→ `bbox.max`（假设叉齿在顶，特殊场景）。当前选中间偏保守的 min（比 center 更贴近物理，比 max 更稳）
+  3. **第三次尝试（#47/#48/#49）教会的**：**几何启发式注定在某些模型失败**。最终解法是 UI 让人做判断 —— 但在做 UI 前，min.y 是三者里最可靠的默认值
+  4. **记录失败也是资产**。#47 / #48 / #49 这三轮迭代的 bug log 一起看，就能让未来的我（或另一个 AI）避免再走同样的路
+
 #### #48 回退 #47 "叉齿顶面"语义（保留 AI 维度兜底）—— 合并 mesh 模型下 bbox.max.y 指向门架顶不是叉齿顶
 - **症状**：#47 上线后，三向车.glb 🚀 一键生成播放时**叉齿下沉穿地 0.55m，cargo 飘空**
 - **排查**（tests/diag-fork-anchor.js + Console 片段）：

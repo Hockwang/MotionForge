@@ -151,17 +151,18 @@ describe('computeForkAnchorZero（bug #37）', () => {
     expect(result).toEqual({});
   });
 
-  it('有 reparent event → 返回叉齿 bbox 中心（threejs → UI Z-up swap）', () => {
+  it('有 reparent event → 返回叉齿 bbox 底面中心（#49：threejs.min.y → UI Z-up swap）', () => {
     const { sceneRoot } = buildMinScene({ forkWorldPos: [0.5, 0.3, 2.1], boxSize: [1, 1, 1] });
     km.addReparentEvent(5, 'cargo', '_CS19110');
     const r = km.computeForkAnchorZero(sceneRoot);
-    // BoxGeometry(1,1,1) 默认以中心 (0,0,0) 为 pivot
-    // fork 放在 threejs (0.5, 0.3, 2.1) → bbox.center = (0.5, 0.3, 2.1)
+    // BoxGeometry(1,1,1) pivot 在中心 → 放在 threejs (0.5, 0.3, 2.1)
+    // bbox.min = (0, -0.2, 1.6)；bbox.center = (0.5, 0.3, 2.1)
+    // #49: 承载锚点 = (center.x, min.y, center.z) = threejs (0.5, -0.2, 2.1)
     // UI Z-up swap: UI.x = threejs.x, UI.y = threejs.z, UI.z = threejs.y
-    // (#47 曾试顶面语义但对合并 mesh 失效，#48 已回退到 center)
+    // (历程：v14.1 center.y → #47 max.y(对合并 mesh 失败) → #48 回退 center.y → #49 min.y)
     expect(r.fork_anchor_zero_x).toBeCloseTo(0.5, 3);
-    expect(r.fork_anchor_zero_y).toBeCloseTo(2.1, 3); // threejs.z
-    expect(r.fork_anchor_zero_z).toBeCloseTo(0.3, 3); // threejs.y
+    expect(r.fork_anchor_zero_y).toBeCloseTo(2.1, 3); // threejs.z（前后不变）
+    expect(r.fork_anchor_zero_z).toBeCloseTo(-0.2, 3); // threejs.min.y（叉齿底面）
   });
 
   it('computeForkAnchorZero 后 getForkAnchorZero 读到缓存', () => {
