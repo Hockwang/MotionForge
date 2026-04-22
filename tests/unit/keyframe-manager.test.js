@@ -158,65 +158,41 @@ describe('computeForkAnchorZero（bug #37）', () => {
     expect(result).toEqual({});
   });
 
-  it('没 cargo 参考 → 水平退化到 bbox 中心，y 仍用 min.y（#49）', () => {
+  it('#52：anchor = forkObj bbox 底面中心（和"子对象底部"按钮同公式）', () => {
     const { sceneRoot } = buildMinScene({ forkWorldPos: [0.5, 0.3, 2.1], boxSize: [1, 1, 1] });
-    km.addReparentEvent(5, 'cargo', '_CS19110'); // cargo 名字被 reparent 引用但场景里没有 cargo 对象
+    km.addReparentEvent(5, 'cargo', '_CS19110');
     const r = km.computeForkAnchorZero(sceneRoot);
-    // cargo 对象不在 scene → forward 方向 null → 水平退化到 bbox.center
-    // bbox.center = threejs (0.5, 0.3, 2.1)；bbox.min.y = -0.2
+    // bbox (threejs): min (0, -0.2, 1.6), max (1, 0.8, 2.6), center (0.5, 0.3, 2.1)
+    // #52 anchor = (center.x, min.y, center.z) = (0.5, -0.2, 2.1)
+    // UI Z-up swap: _x=center.x, _y=center.z, _z=min.y
     expect(r.fork_anchor_zero_x).toBeCloseTo(0.5, 3);
-    expect(r.fork_anchor_zero_y).toBeCloseTo(2.1, 3); // threejs.z = UI y（不变）
-    expect(r.fork_anchor_zero_z).toBeCloseTo(-0.2, 3); // threejs.min.y（叉齿底面）
+    expect(r.fork_anchor_zero_y).toBeCloseTo(2.1, 3);
+    expect(r.fork_anchor_zero_z).toBeCloseTo(-0.2, 3);
   });
 
-  it('#50：有 cargo 时水平位置是"朝 cargo 方向的 bbox 前端极值"', () => {
-    // fork 在 threejs (0, 0, 0)，cargo 在 +x 方向 (3, 0, 0) → forward = +x
-    // bbox = BoxGeometry(1,1,1) → bbox.center=(0,0,0), half=(0.5,0.5,0.5)
-    // 沿 +x 方向的 extent = 0.5 → anchor.x = 0 + 1*0.5 = 0.5
-    const { sceneRoot } = buildMinScene({
-      forkWorldPos: [0, 0, 0],
-      boxSize: [1, 1, 1],
+  it('#52：cargo 位置不影响 anchor（纯 fork 几何，不依赖 cargo 方向）', () => {
+    // 验证 #52 回退到纯 bbox center，不再受 cargo 位置影响
+    const sceneA = buildMinScene({
+      forkWorldPos: [0, 0, 0], boxSize: [1, 1, 1],
       cargoWorldPos: [3, 0, 0],
     });
     km.addReparentEvent(5, 'cargo', '_CS19110');
-    const r = km.computeForkAnchorZero(sceneRoot);
-    expect(r.fork_anchor_zero_x).toBeCloseTo(0.5, 3); // +x 前端极值
-    expect(r.fork_anchor_zero_y).toBeCloseTo(0, 3); // z 不变（forward 在 x 方向）
-    expect(r.fork_anchor_zero_z).toBeCloseTo(-0.5, 3); // min.y
-  });
+    const rA = km.computeForkAnchorZero(sceneA.sceneRoot);
 
-  it('#50：斜对角 cargo → forward 归一化 (1,0,1)/√2，anchor 落在 bbox 表面上', () => {
-    // cargo 在 +x,+z 方向 → forward = (1/√2, 0, 1/√2)
-    // 射线-bbox 相交：t = min(0.5/(1/√2), 0.5/(1/√2)) = 0.5·√2 ≈ 0.707
-    // anchor.x = (1/√2) × 0.707 = 0.5（bbox 角点上）
-    // anchor.z 同理 = 0.5
-    const { sceneRoot } = buildMinScene({
-      forkWorldPos: [0, 0, 0],
-      boxSize: [1, 1, 1],
-      cargoWorldPos: [3, 0, 3],
+    const km2 = new KeyframeManager();
+    const sceneB = buildMinScene({
+      forkWorldPos: [0, 0, 0], boxSize: [1, 1, 1],
+      cargoWorldPos: [3, 0, 3], // 斜对角 cargo
     });
-    km.addReparentEvent(5, 'cargo', '_CS19110');
-    const r = km.computeForkAnchorZero(sceneRoot);
-    expect(r.fork_anchor_zero_x).toBeCloseTo(0.5, 2);
-    expect(r.fork_anchor_zero_y).toBeCloseTo(0.5, 2);
-  });
+    km2.addReparentEvent(5, 'cargo', '_CS19110');
+    const rB = km2.computeForkAnchorZero(sceneB.sceneRoot);
 
-  it('#50 数学修正：anchor 始终在 bbox 表面（不超出）', () => {
-    // 非对称 bbox + 非对角方向：确保 anchor 不会飞出 bbox
-    // size=(1, ?, 2), cargo 在 (10, 0, 2) 方向
-    // forward = (10, 0, 2) normalized ≈ (0.981, 0, 0.196)
-    // half = (0.5, ?, 1). 射线 t = min(0.5/0.981, 1/0.196) = min(0.510, 5.10) = 0.510
-    // anchor.x = 0.981 × 0.510 = 0.5（正好 bbox.max.x）
-    // anchor.z = 0.196 × 0.510 = 0.1（远小于 half.z=1，在 bbox 内）
-    const { sceneRoot } = buildMinScene({
-      forkWorldPos: [0, 0, 0],
-      boxSize: [1, 1, 2],
-      cargoWorldPos: [10, 0, 2],
-    });
-    km.addReparentEvent(5, 'cargo', '_CS19110');
-    const r = km.computeForkAnchorZero(sceneRoot);
-    expect(r.fork_anchor_zero_x).toBeCloseTo(0.5, 2); // 正好 max.x
-    expect(r.fork_anchor_zero_y).toBeCloseTo(0.1, 2); // bbox 内（不是外）
+    // A 和 B anchor 应该相同（都是 bbox 中心 + min.y），和 cargo 位置无关
+    expect(rA.fork_anchor_zero_x).toBeCloseTo(rB.fork_anchor_zero_x, 3);
+    expect(rA.fork_anchor_zero_y).toBeCloseTo(rB.fork_anchor_zero_y, 3);
+    expect(rA.fork_anchor_zero_z).toBeCloseTo(rB.fork_anchor_zero_z, 3);
+    expect(rA.fork_anchor_zero_x).toBeCloseTo(0, 3);
+    expect(rA.fork_anchor_zero_z).toBeCloseTo(-0.5, 3);
   });
 
   it('computeForkAnchorZero 后 getForkAnchorZero 读到缓存', () => {

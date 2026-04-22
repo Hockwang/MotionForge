@@ -153,118 +153,6 @@ export class KeyframeManager {
   }
 
   /**
-   * 找叉齿尖 mesh —— forkObj 子树里 world bbox min.y 最小的那个 mesh。
-   * 启发式：叉齿尖是整个 fork 组件里最贴地面的部分（门架/支架都在它上面）。
-   * 用整个 subtree bbox 会被高层 mesh 拉偏（#36 修复）。
-   *
-   * @param {THREE.Object3D} forkObj
-   * @returns {THREE.Mesh|null}
-   */
-  _findForkTineMesh(forkObj) {
-    let bestMesh = null;
-    let bestMinY = Infinity;
-    forkObj.traverse((o) => {
-      if (!o.isMesh) return;
-      const box = new THREE.Box3().setFromObject(o);
-      if (box.isEmpty()) return;
-      if (box.min.y < bestMinY) {
-        bestMinY = box.min.y;
-        bestMesh = o;
-      }
-    });
-    return bestMesh;
-  }
-
-  /**
-   * #50：算 fork bbox 在"朝向 cargo 方向"上的水平前端极值位置（叉齿尖近似点）。
-   *
-   * 背景：对合并 mesh 模型（三向车.glb 把叉齿+门架建在一个 mesh），
-   * bbox.center 是整车中心（含门架往后拉的偏移），不是叉齿尖的真实位置。
-   * 这个 helper 把 bbox 沿"朝 cargo 方向"推到边缘，近似出"前端极值中心"。
-   *
-   * 纯几何，不依赖关节 role / axis（避免坐标系转换复杂度，对任意朝向模型 work）。
-   *
-   * @param {THREE.Box3} box             世界空间 bbox
-   * @param {THREE.Vector3|null} cargoWorldPos 参考 cargo 世界坐标（threejs Y-up）
-   * @returns {{x: number, z: number, forwardDir: THREE.Vector3|null}}
-   *   水平面（threejs xz）前端极值点，并返回所用 forward 方向供 snap 复用。
-   *   cargo 缺失或与 bbox 中心重合时退化到 bbox 中心（forwardDir=null）。
-   * @private
-   */
-  /**
-   * #51：读 attach 目标关节的 `def.origin`，转成 threejs 世界坐标。
-   *
-   * origin 存储在 UI Z-up + joint parent local 空间（按钮 / 手动设置都写到这里）。
-   * 转换步骤：
-   *   1. UI Z-up → threejs Y-up：(x, y, z) → (x, z, y)
-   *   2. parent local → world：applyMatrix4(jointParent.matrixWorld)
-   *
-   * 调用时机：`computeForkAnchorZero` 在 caller 已把所有 joints 归零时调用，
-   *   此时 jointParent 的 matrixWorld 已是零位状态 → origin.applyMatrix4() 得到零位世界坐标。
-   *
-   * 也可被 `applyReparentEventsAtTime` 在 snap 时调用（那时 jointParent 已是 post-motion 状态）。
-   *
-   * @param {THREE.Object3D} forkObj  attach target 对象（reparentEvents 里 new_parent_name 解出来）
-   * @param {THREE.Object3D} sceneRoot
-   * @returns {THREE.Vector3|null} 世界坐标（threejs Y-up）；无 origin / 是零向量 / 无 joint parent 时返回 null
-   * @private
-   */
-  _computeJointOriginWorld(forkObj, sceneRoot) {
-    if (!forkObj || !sceneRoot) return null;
-    // 找 childId === forkObj.uuid 的 joint def
-    let forkJointDef = null;
-    for (const d of this.jointDefinitions.values()) {
-      if (d.childId === forkObj.uuid) { forkJointDef = d; break; }
-    }
-    if (!forkJointDef?.origin || !forkJointDef.parentId) return null;
-    const { x: ox = 0, y: oy = 0, z: oz = 0 } = forkJointDef.origin;
-    if (Math.abs(ox) < 1e-6 && Math.abs(oy) < 1e-6 && Math.abs(oz) < 1e-6) {
-      // origin = (0,0,0) 视为"未设置" → 退到 fallback
-      return null;
-    }
-    // 在 sceneRoot 里找 jointParent
-    let jointParent = null;
-    sceneRoot.traverse((o) => {
-      if (o.uuid === forkJointDef.parentId) jointParent = o;
-    });
-    if (!jointParent) return null;
-    jointParent.updateMatrixWorld(true);
-    // UI Z-up → threejs Y-up：swap y/z
-    const localOrigin = new THREE.Vector3(ox, oz, oy);
-    return localOrigin.applyMatrix4(jointParent.matrixWorld);
-  }
-
-  _computeForkForwardExtreme(box, cargoWorldPos) {
-    const bboxCenter = box.getCenter(new THREE.Vector3());
-    if (!cargoWorldPos) {
-      return { x: bboxCenter.x, z: bboxCenter.z, forwardDir: null };
-    }
-    const forward = new THREE.Vector3(
-      cargoWorldPos.x - bboxCenter.x,
-      0,
-      cargoWorldPos.z - bboxCenter.z,
-    );
-    if (forward.lengthSq() < 1e-6) {
-      return { x: bboxCenter.x, z: bboxCenter.z, forwardDir: null };
-    }
-    forward.normalize();
-    // 修 #50 的 bug：射线-bbox 相交而不是"投影和"。
-    //   射线 P(t) = center + t × forward，在 bbox 内的最大 t = min(hx/|dx|, hz/|dz|)
-    //   旧公式 extent = hx·|dx| + hz·|dz| 会让 anchor 落到 bbox 外（不在表面）
-    const bboxHalf = box.getSize(new THREE.Vector3()).multiplyScalar(0.5);
-    const absX = Math.abs(forward.x);
-    const absZ = Math.abs(forward.z);
-    const tX = absX > 1e-6 ? bboxHalf.x / absX : Infinity;
-    const tZ = absZ > 1e-6 ? bboxHalf.z / absZ : Infinity;
-    const extent = Math.min(tX, tZ);
-    return {
-      x: bboxCenter.x + forward.x * extent,
-      z: bboxCenter.z + forward.z * extent,
-      forwardDir: forward,
-    };
-  }
-
-  /**
    * F13：算 fork_anchor_zero 的"输入签名"，用于 hash-based cache 自动失效。
    * 签名包含：
    *   (1) reparent events 序列化（t / child_name / new_parent_name）
@@ -290,21 +178,23 @@ export class KeyframeManager {
   }
 
   /**
-   * v14.1（#37 ~ #51）：算叉齿"承载锚点"在**零位**时的世界坐标。
+   * v14.1（#37 ~ #52）：算叉齿"承载锚点"在**零位**时的世界坐标。
    *
-   * 语义历程（五轮迭代）：
+   * 语义历程（六轮迭代）：
    *   - #37 初版：bbox.getCenter() → cargo 陷进 fork ~h/2 米
-   *   - #47 尝试：bbox.max.y 做"顶面"→ 对合并 mesh（三向车）max.y 指向门架顶 → 穿地
-   *   - #48 回退：回到 bbox.getCenter()
-   *   - #49：y 改 bbox.min.y（叉齿底面）
-   *   - #50：x/z 改"朝 cargo 方向的 bbox 前端极值"（仍是自动几何猜）
-   *   - **#51 当前**：**优先读 attach 目标关节的 origin**（用户 UI 可控，"子对象底部"按钮自动填）
-   *     终结了"猜几何"的四轮迭代 —— origin 是唯一真相来源，用户拖黄球就改锚点
+   *   - #47 尝试：bbox.max.y 做"顶面"→ 合并 mesh 下 max.y 指向门架顶 → 穿地
+   *   - #48 回退 center
+   *   - #49：y 改 bbox.min.y
+   *   - #50：forward-extreme（x/z 朝 cargo 方向推）
+   *   - #51 误入歧途：读 joint origin —— 但 origin 是**旋转支点**，不能挪（会破坏关节旋转行为）
+   *   - **#52 当前**：自动算 bbox 底面中心（center.x, min.y, center.z）—— 和"子对象底部"按钮**同公式**，
+   *     但**不写进** def.origin，只用于 PKF / snap 内部计算。保留 joint origin 作为旋转支点
    *
-   * 语义（#51）：
-   *   首选：attach target 关节的 `def.origin` 转到世界空间（UI Z-up）
-   *   fallback：没有 origin 或 joint parent 时，退到 #50 的 forward-extreme 算法
-   *   AI 生成 PKF 时 cargo_height/2 偏移表示"cargo 底面对齐 origin 位置"
+   * 语义（#52）：
+   *   anchor = (bbox.center.x, bbox.min.y, bbox.center.z)（threejs Y-up）
+   *   = "子对象底部"按钮会算出来的那个点（但只用不写）
+   *
+   * 不使用 joint.origin（#51 的教训：origin 有自己的用途 —— 旋转支点 / URDF 关节原点）。
    *
    * 用途：AI 生成 PKF 时写公式：
    *   - 车体前进 y：`cargo_pos_y - fork_anchor_zero_y - approach_gap`
@@ -346,34 +236,17 @@ export class KeyframeManager {
 
     sceneRoot.updateMatrixWorld(true);
 
-    // #51：优先读 attach 目标关节的 origin（用户 UI 可控 —— "子对象底部"/"子对象中心"按钮 + 手动调整）
-    // origin 是 UI Z-up parent-local；转到 threejs 世界：swap y/z 后 applyMatrix4(jointParent.matrixWorld)
-    const originWorld = this._computeJointOriginWorld(forkObj, sceneRoot);
-    let result = null;
-    if (originWorld) {
-      // origin 是"点"，不需要 forward 方向（snap 直接用同点）
-      this._forkForwardDir = null;
-      result = {
-        fork_anchor_zero_x: +originWorld.x.toFixed(3),
-        fork_anchor_zero_y: +originWorld.z.toFixed(3), // threejs z = UI y(前后)
-        fork_anchor_zero_z: +originWorld.y.toFixed(3), // threejs y = UI z(高度)
-      };
-    } else {
-      // Fallback：没 origin / 是零向量 / 找不到 joint parent → #50 forward-extreme
-      const tineMesh = this._findForkTineMesh(forkObj) || forkObj;
-      const box = new THREE.Box3().setFromObject(tineMesh);
-      if (box.isEmpty()) return {};
-      const cargoName = attachEvent.child_name;
-      const cargoObj = cargoName ? sceneRoot.getObjectByName(cargoName) : null;
-      const cargoWorldPos = cargoObj ? cargoObj.getWorldPosition(new THREE.Vector3()) : null;
-      const { x: anchorX, z: anchorZ, forwardDir } = this._computeForkForwardExtreme(box, cargoWorldPos);
-      this._forkForwardDir = forwardDir ? forwardDir.clone() : null;
-      result = {
-        fork_anchor_zero_x: +anchorX.toFixed(3),
-        fork_anchor_zero_y: +anchorZ.toFixed(3),
-        fork_anchor_zero_z: +box.min.y.toFixed(3),
-      };
-    }
+    // #52：自动算 forkObj 的 bbox 底面中心（和 UI "子对象底部"按钮 同公式，但只用不写 def.origin）
+    // 等价于：auto click "子对象底部" button internally，joint origin（旋转支点）不受影响
+    const box = new THREE.Box3().setFromObject(forkObj);
+    if (box.isEmpty()) return {};
+    const center = box.getCenter(new THREE.Vector3());
+    // anchor = (center.x, min.y, center.z) threejs
+    const result = {
+      fork_anchor_zero_x: +center.x.toFixed(3),
+      fork_anchor_zero_y: +center.z.toFixed(3), // threejs z = UI y(前后)
+      fork_anchor_zero_z: +box.min.y.toFixed(3), // threejs min.y = UI z(底面)
+    };
     this._forkAnchorZeroCached = result;
     this._forkAnchorHash = hash;
     return result;
@@ -395,7 +268,6 @@ export class KeyframeManager {
   invalidateForkAnchorZero() {
     this._forkAnchorZeroCached = null;
     this._forkAnchorHash = null;
-    this._forkForwardDir = null; // #50：forward 方向也一起失效
   }
 
   // ══════════════════════════════════════════════════════════════
@@ -540,8 +412,8 @@ export class KeyframeManager {
       const targetParent = targetParentName ? (nameMap.get(targetParentName) || root) : root;
       const parentChanged = child.parent !== targetParent;
 
-      // Snap-attach（#36 ~ #51）：cargo 底面中心对齐 attach target 关节的 origin。
-      // #51：首选读 fork joint 的 origin 当世界坐标（用户 UI 可控）；fallback 到 #50d forward-extreme
+      // Snap-attach（#36 ~ #52）：cargo 底面中心对齐 fork bbox 底面中心。
+      // #52：和 computeForkAnchorZero 同公式 —— bbox.center.x/z + bbox.min.y，自动算（不读 joint origin）
       // ⚠️ #50d：bbox 计算**必须在 attach 之前**，否则 setFromObject 会包含刚 attach 上的 cargo
       let desiredWorldPos = null;
       if (parentChanged && targetParent !== root) {
@@ -549,39 +421,17 @@ export class KeyframeManager {
         if (markerMeta?.type === 'cargo') {
           targetParent.updateMatrixWorld(true);
           const cargoHalfHeight = (markerMeta.size?.h ?? 0) / 2;
-
-          // #51 首选：joint origin（= 用户黄球位置）作为 cargo 底部目标
-          const originWorld = this._computeJointOriginWorld(targetParent, root);
-          if (originWorld) {
-            // origin 视为 cargo 底部中心 → cargo 中心 = origin + (0, cargoH/2, 0) threejs
+          const box = new THREE.Box3().setFromObject(targetParent);
+          if (!box.isEmpty()) {
+            const bboxCenter = box.getCenter(new THREE.Vector3());
+            // cargo 中心 = bbox 底面中心 + cargoH/2（让 cargo 底贴 fork 底）
             desiredWorldPos = new THREE.Vector3(
-              originWorld.x,
-              originWorld.y + cargoHalfHeight,
-              originWorld.z,
+              bboxCenter.x,
+              box.min.y + cargoHalfHeight,
+              bboxCenter.z,
             );
           } else {
-            // Fallback：#50d forward-extreme
-            const tineMesh = this._findForkTineMesh(targetParent) || targetParent;
-            const box = new THREE.Box3().setFromObject(tineMesh);
-            if (!box.isEmpty()) {
-              const bboxCenter = box.getCenter(new THREE.Vector3());
-              const forward = this._forkForwardDir;
-              let horizX = bboxCenter.x;
-              let horizZ = bboxCenter.z;
-              if (forward && forward.lengthSq() > 0.5) {
-                const bboxHalf = box.getSize(new THREE.Vector3()).multiplyScalar(0.5);
-                const absX = Math.abs(forward.x);
-                const absZ = Math.abs(forward.z);
-                const tX = absX > 1e-6 ? bboxHalf.x / absX : Infinity;
-                const tZ = absZ > 1e-6 ? bboxHalf.z / absZ : Infinity;
-                const extent = Math.min(tX, tZ);
-                horizX = bboxCenter.x + forward.x * extent;
-                horizZ = bboxCenter.z + forward.z * extent;
-              }
-              desiredWorldPos = new THREE.Vector3(horizX, box.min.y + cargoHalfHeight, horizZ);
-            } else {
-              desiredWorldPos = targetParent.getWorldPosition(new THREE.Vector3());
-            }
+            desiredWorldPos = targetParent.getWorldPosition(new THREE.Vector3());
           }
         }
       }
