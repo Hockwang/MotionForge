@@ -184,8 +184,7 @@ tests/ 12 个纯 console 粘贴脚本
 - **影响**：新接手的人在"代码 v14.1 但文档 v12+"状态下做错误推断
 - **修**：一轮对齐（半小时）
 
-#### F11. Undo 覆盖 role 字段为空（DEBT #3）
-已在 DEBT.md 详述，本 review 不重复。P0 ↓ P1（因为实际触发要操作很多步）。
+#### F11. ~~Undo 覆盖 role 字段为空~~（DEBT #3）✅ 已修 @ 2026-04-22（CLAUDE.md #46）—— 防御性：snapshot 缺 role 字段时保留当前 role
 
 ---
 
@@ -193,14 +192,7 @@ tests/ 12 个纯 console 粘贴脚本
 
 #### F12. ~~`test-pkf-p4.js` 过时断言~~（Codex M6）✅ 已修 @ 2026-04-21（CLAUDE.md #44）—— 断言 `t=3 results.length === 1 && value === 100`（保末态语义）
 
-#### F13. Cache invalidation 时机不全（forklift 8-code-smell-4）
-`invalidateForkAnchorZero` 目前只在 `addReparentEvent`/`removeReparentEvent` 触发。未覆盖：
-- 叉齿子树内 mesh 增删
-- `rebindJointBaseTransform` 重置 baseTransform
-- undo/redo 跨步撤销 reparent
-- 整场景 reload（已在 reset 里 clear，OK）
-
-当前无真实触发，但加新入口时会踩。**修**：加 `_forkAnchorInputsHash` 自动失效，或补齐 invalidate 调用点。
+#### F13. ~~Cache invalidation 时机不全~~（forklift 8-code-smell-4）✅ 已修 @ 2026-04-22（CLAUDE.md #46）—— `_computeForkAnchorInputsHash` 覆盖 reparent events + 叉齿子树 mesh uuids，自动失效
 
 #### F14. ~~`_lastSceneRoot` 是 dead code~~（forklift 8-code-smell-2）✅ 已修 @ 2026-04-21（CLAUDE.md #44）
 

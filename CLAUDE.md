@@ -525,6 +525,13 @@ console.log('emissive:', c?.material?.emissive);
 - **修复**：[KeyframeManager.js](src/core/KeyframeManager.js) `applyJointDrive` 去掉 fixed 的 early return，加 `else if (def.type === 'fixed')` 分支：`newWorldPos = baseWorldPos; newWorldQuat = baseWorldQuat;`。等价于 prismatic value=0：每帧根据 joint parent 最新世界矩阵 × base 计算 child 世界位置
 - **经验教训**：**关节类型的语义要一致**。revolute/prismatic 都是"joint parent 说了算"（URDF 风格），fixed 也应该是。早期为了省一点性能给 fixed 走快捷路径，破坏了这个一致性。现在 fixed 符合 URDF 标准：刚性连接到 joint parent，无自由度但跟随运动
 
+#### #46 F11 + F13：restoreState 保留 role + fork_anchor_zero hash-based 自动失效
+- **F11（DEBT #3）防御**：[KeyframeManager.js restoreState](src/core/KeyframeManager.js) 恢复 joint 时，如果 snapshot 里 `role` **字段缺失**（`Object.prototype.hasOwnProperty.call(d, 'role') === false`）→ 保留当前值，不清空。显式 `role: ''` 仍接受（合法清空）。场景：很老版本序列化的 snapshot 或外部构造的状态缺 role 字段
+- **F13 hash-based cache**：[`_computeForkAnchorInputsHash`](src/core/KeyframeManager.js)（新增私有方法）计算 `reparent events + 叉齿子树 mesh uuids` 的签名。`computeForkAnchorZero` 每次 call 对比 hash——未变直接返回缓存对象；变了才重算。原来 3 处显式 `invalidateForkAnchorZero` 保留作 fallback（兜底 + 清晰）
+- **覆盖原来漏的**失效触发点：叉齿子树增删 mesh（roundtrip / insertGroup）、undo 跨步撤销 reparent、场景 reload 后 mesh uuid 变
+- **测试**：tests/unit/keyframe-manager.test.js 加 `restoreState role 保留` 3 case + `fork_anchor_zero hash` 4 case。总共 30/30 通过
+- **经验教训**：**hash-based cache 比显式 invalidate 更健壮**。显式 invalidate 依赖"每个 mutator 都记得调"，漏一处就 stale。hash 把"脏"的判定移到读侧（每次 compute 都算），代价是每次多算一次 hash（微不足道），换来的是**无法漏**。类似 React 的 `key` prop、Git 的 content-addressed——让状态本身自证新鲜
+
 #### #45 vitest 基建 + 23 个核心单元测试（F4 解决）
 - **背景**：review F4 指出项目**零单元测试**，所有 37+ 条已修 bug 没有回归防线；最糟的情况是 `tests/test-pkf-p4.js` 断言已和当前语义相反，如果拿来回归会误导维护者
 - **修复**：

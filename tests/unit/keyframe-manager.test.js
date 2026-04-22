@@ -178,6 +178,88 @@ describe('computeForkAnchorZero（bug #37）', () => {
   });
 });
 
+describe('restoreState role 保留（F11 / DEBT #3）', () => {
+  let km;
+  beforeEach(() => { km = new KeyframeManager(); });
+
+  it('正常 snapshot 有 role 字段 → 直接恢复', () => {
+    km.setJointDef('A', { type: 'prismatic', axis: 'y', role: '车体前进' });
+    const snap = km.serializeState();
+    const km2 = new KeyframeManager();
+    km2.restoreState(snap);
+    expect(km2.getJointDef('A').role).toBe('车体前进');
+  });
+
+  it('snapshot 里 role 为空字符串 → 接受为空（显式清空 role 的合法场景）', () => {
+    km.setJointDef('A', { type: 'prismatic', axis: 'y', role: '车体前进' });
+    const snap = km.serializeState();
+    // 手动清空 role 模拟用户显式清空后再 push 的 snapshot
+    snap.jointDefinitions[0].role = '';
+    km.restoreState(snap);
+    expect(km.getJointDef('A').role).toBe('');
+  });
+
+  it('F11 防御：snapshot 里没 role 字段（旧版本兼容）→ 保留当前 role', () => {
+    km.setJointDef('A', { type: 'prismatic', axis: 'y', role: '车体前进' });
+    const snap = km.serializeState();
+    // 模拟老版本 snapshot：删掉 role 字段
+    delete snap.jointDefinitions[0].role;
+    km.restoreState(snap);
+    expect(km.getJointDef('A').role).toBe('车体前进');
+  });
+});
+
+describe('F13 fork_anchor_zero hash-based 自动失效', () => {
+  let km;
+  let sceneRoot;
+  let fork;
+  beforeEach(() => {
+    km = new KeyframeManager();
+    sceneRoot = new THREE.Group();
+    sceneRoot.name = 'sceneRoot';
+    fork = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshBasicMaterial());
+    fork.name = '_CS19110';
+    sceneRoot.add(fork);
+    sceneRoot.updateMatrixWorld(true);
+    km.addReparentEvent(5, 'cargo', '_CS19110');
+  });
+
+  it('相同输入连续调 → 第二次走 cache（同一 object reference）', () => {
+    const r1 = km.computeForkAnchorZero(sceneRoot);
+    const r2 = km.computeForkAnchorZero(sceneRoot);
+    expect(r2).toBe(r1); // 同一引用说明走了缓存
+  });
+
+  it('新增 reparent event → hash 变 → 重新计算（新 object reference）', () => {
+    const r1 = km.computeForkAnchorZero(sceneRoot);
+    km.addReparentEvent(9, 'cargo', null); // 新增 event → hash 变
+    const r2 = km.computeForkAnchorZero(sceneRoot);
+    expect(r2).not.toBe(r1);
+    // 数值应该相同（叉齿没动），但是新对象（重新计算过）
+    expect(r2.fork_anchor_zero_y).toBe(r1.fork_anchor_zero_y);
+  });
+
+  it('叉齿子树增加 mesh → hash 变 → 重新计算', () => {
+    const r1 = km.computeForkAnchorZero(sceneRoot);
+    // 给 fork 添加一个子 mesh（模拟 GLTFLoader 后 mesh 结构变）
+    const child = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.5, 0.5), new THREE.MeshBasicMaterial());
+    child.position.set(0, -0.5, 0); // 放到下方
+    fork.add(child);
+    sceneRoot.updateMatrixWorld(true);
+    const r2 = km.computeForkAnchorZero(sceneRoot);
+    expect(r2).not.toBe(r1);
+  });
+
+  it('显式 invalidateForkAnchorZero → 下次 compute 仍走完整路径', () => {
+    km.computeForkAnchorZero(sceneRoot);
+    km.invalidateForkAnchorZero();
+    expect(km._forkAnchorZeroCached).toBe(null);
+    expect(km._forkAnchorHash).toBe(null);
+    const r = km.computeForkAnchorZero(sceneRoot);
+    expect(r.fork_anchor_zero_y).toBeCloseTo(0, 3);
+  });
+});
+
 describe('addReparentEvent / 缓存失效（bug #39）', () => {
   let km;
   beforeEach(() => { km = new KeyframeManager(); });

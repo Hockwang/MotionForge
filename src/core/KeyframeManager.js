@@ -176,6 +176,31 @@ export class KeyframeManager {
   }
 
   /**
+   * F13：算 fork_anchor_zero 的"输入签名"，用于 hash-based cache 自动失效。
+   * 签名包含：
+   *   (1) reparent events 序列化（t / child_name / new_parent_name）
+   *   (2) attach target joint 的所有 mesh 后代 uuid（检测子树增删 / reparent）
+   * 任一输入变 → hash 变 → 下次 compute 自动重算。
+   * 比显式 invalidateForkAnchorZero 覆盖面更广（叉齿子树结构变化 / roundtrip 重载 / undo 跨步 都自动命中）。
+   * @private
+   */
+  _computeForkAnchorInputsHash(sceneRoot) {
+    const events = this.getActiveGlobalClip()?.reparentEvents || [];
+    const eventSig = events.map((e) => `${e.t}:${e.child_name}:${e.new_parent_name}`).join('|');
+    const attachEvent = events.find((e) => e.new_parent_name);
+    let meshSig = '';
+    if (attachEvent && sceneRoot) {
+      const forkObj = sceneRoot.getObjectByName(attachEvent.new_parent_name);
+      if (forkObj) {
+        const uuids = [];
+        forkObj.traverse((o) => { if (o.isMesh) uuids.push(o.uuid); });
+        meshSig = uuids.sort().join(',');
+      }
+    }
+    return `${eventSig}||${meshSig}`;
+  }
+
+  /**
    * v14.1（#37）：算叉齿"承载锚点"在**零位**时的世界坐标。
    *
    * 语义：叉齿尖 mesh 的 bbox 中心 world position（UI Z-up）。
@@ -189,7 +214,11 @@ export class KeyframeManager {
    * ⚠️ 调用时机：**必须在所有关节 currentValue=0 时**才能得到真零位锚点。
    *    main.js 的 🚀 handler 负责临时归零 → 调本函数 → 恢复。
    *    此处不主动归零（避免破坏当前动画状态）。
-   *    结果缓存在 this._forkAnchorZeroCached，buildDefaultParamValues 读缓存。
+   *
+   * 缓存：结果存 `_forkAnchorZeroCached`，输入签名存 `_forkAnchorHash`（F13）。
+   *   后续调用时若输入 hash 未变 → 直接返回缓存（即使 joint 位置在动）。
+   *   hash 变了（event 增删 / 叉齿子树结构变）→ 重新计算。
+   *   `invalidateForkAnchorZero()` 仍保留作显式清除手段（设为 null 强制重算）。
    *
    * @param {THREE.Object3D} sceneRoot
    * @returns {Object} {} 或 { fork_anchor_zero_x, fork_anchor_zero_y, fork_anchor_zero_z }
@@ -200,6 +229,13 @@ export class KeyframeManager {
     const events = clip?.reparentEvents || [];
     const attachEvent = events.find((e) => e.new_parent_name);
     if (!attachEvent) return {};
+
+    // F13: 先查 hash，没变就直接返回缓存
+    const hash = this._computeForkAnchorInputsHash(sceneRoot);
+    if (this._forkAnchorZeroCached && this._forkAnchorHash === hash) {
+      return this._forkAnchorZeroCached;
+    }
+
     const forkObj = sceneRoot.getObjectByName(attachEvent.new_parent_name);
     if (!forkObj) return {};
 
@@ -216,6 +252,7 @@ export class KeyframeManager {
       fork_anchor_zero_z: +anchor.y.toFixed(3), // threejs y = UI z(高度)
     };
     this._forkAnchorZeroCached = result;
+    this._forkAnchorHash = hash;
     return result;
   }
 
@@ -227,9 +264,14 @@ export class KeyframeManager {
     return this._forkAnchorZeroCached || {};
   }
 
-  /** 清掉缓存（reparent event 变了就应该清，下次 🚀 重算） */
+  /**
+   * 清掉 fork_anchor_zero 缓存（显式清除手段）。
+   * F13 加了 hash 自动失效后，大多数情况不需要手动调——但保留作兜底 API。
+   * 调用点：addReparentEvent / removeReparentEvent / removeAllReparentEventsForChild。
+   */
   invalidateForkAnchorZero() {
     this._forkAnchorZeroCached = null;
+    this._forkAnchorHash = null;
   }
 
   // ══════════════════════════════════════════════════════════════
@@ -1164,15 +1206,27 @@ export class KeyframeManager {
   restoreState(serializedState) {
     this.currentTime = serializedState?.currentTime ?? 0;
 
+    // F11 (DEBT #3) 防御：先捕获恢复前的 role 映射。
+    // 正常路径里 serializeState 一定写 role 字段（见 L1124），但：
+    // (a) 老版本序列化的 state（pre-v10 role 字段引入前）缺这个字段
+    // (b) 外部代码误构造 snapshot 时可能丢
+    // 遇到 snapshot 里 role 字段**缺失**（undefined，不是空字符串）→ 保留当前值，不清空
+    const prevRoles = new Map();
+    this.jointDefinitions.forEach((d, id) => {
+      if (d.role) prevRoles.set(id, d.role);
+    });
+
     // Restore joint definitions
     this.jointDefinitions.clear();
     (serializedState?.jointDefinitions || []).forEach((d) => {
+      // role 字段缺失（undefined）→ 用恢复前值兜底；显式空字符串 → 接受为空
+      const roleFromSnapshot = Object.prototype.hasOwnProperty.call(d, 'role') ? (d.role || '') : undefined;
       this.jointDefinitions.set(d.id, {
         id: d.id,
         name: d.name || '',
         type: d.type || 'none',
         axis: d.axis || 'y',
-        role: d.role || '',
+        role: roleFromSnapshot !== undefined ? roleFromSnapshot : (prevRoles.get(d.id) || ''),
         origin: { x: d.origin?.x ?? 0, y: d.origin?.y ?? 0, z: d.origin?.z ?? 0 },
         limits: { min: d.limits?.min ?? -180, max: d.limits?.max ?? 180 },
         parentId: d.parentId ?? null,
