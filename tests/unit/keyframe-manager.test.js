@@ -131,7 +131,7 @@ describe('computeForkAnchorZero（bug #37）', () => {
   beforeEach(() => { km = new KeyframeManager(); });
 
   /** 建一个最小 scene：sceneRoot → fork（Mesh 带 BoxGeometry）→ （可选）cargo sibling */
-  function buildMinScene({ forkWorldPos, boxSize = [1, 1, 1] }) {
+  function buildMinScene({ forkWorldPos, boxSize = [1, 1, 1], cargoWorldPos = null }) {
     const sceneRoot = new THREE.Group();
     sceneRoot.name = 'sceneRoot';
     const fork = new THREE.Mesh(
@@ -141,8 +141,15 @@ describe('computeForkAnchorZero（bug #37）', () => {
     fork.name = '_CS19110';
     fork.position.set(...forkWorldPos);
     sceneRoot.add(fork);
+    let cargo = null;
+    if (cargoWorldPos) {
+      cargo = new THREE.Object3D();
+      cargo.name = 'cargo';
+      cargo.position.set(...cargoWorldPos);
+      sceneRoot.add(cargo);
+    }
     sceneRoot.updateMatrixWorld(true);
-    return { sceneRoot, fork };
+    return { sceneRoot, fork, cargo };
   }
 
   it('没 reparent event → 返回 {}', () => {
@@ -151,18 +158,46 @@ describe('computeForkAnchorZero（bug #37）', () => {
     expect(result).toEqual({});
   });
 
-  it('有 reparent event → 返回叉齿 bbox 底面中心（#49：threejs.min.y → UI Z-up swap）', () => {
+  it('没 cargo 参考 → 水平退化到 bbox 中心，y 仍用 min.y（#49）', () => {
     const { sceneRoot } = buildMinScene({ forkWorldPos: [0.5, 0.3, 2.1], boxSize: [1, 1, 1] });
+    km.addReparentEvent(5, 'cargo', '_CS19110'); // cargo 名字被 reparent 引用但场景里没有 cargo 对象
+    const r = km.computeForkAnchorZero(sceneRoot);
+    // cargo 对象不在 scene → forward 方向 null → 水平退化到 bbox.center
+    // bbox.center = threejs (0.5, 0.3, 2.1)；bbox.min.y = -0.2
+    expect(r.fork_anchor_zero_x).toBeCloseTo(0.5, 3);
+    expect(r.fork_anchor_zero_y).toBeCloseTo(2.1, 3); // threejs.z = UI y（不变）
+    expect(r.fork_anchor_zero_z).toBeCloseTo(-0.2, 3); // threejs.min.y（叉齿底面）
+  });
+
+  it('#50：有 cargo 时水平位置是"朝 cargo 方向的 bbox 前端极值"', () => {
+    // fork 在 threejs (0, 0, 0)，cargo 在 +x 方向 (3, 0, 0) → forward = +x
+    // bbox = BoxGeometry(1,1,1) → bbox.center=(0,0,0), half=(0.5,0.5,0.5)
+    // 沿 +x 方向的 extent = 0.5 → anchor.x = 0 + 1*0.5 = 0.5
+    const { sceneRoot } = buildMinScene({
+      forkWorldPos: [0, 0, 0],
+      boxSize: [1, 1, 1],
+      cargoWorldPos: [3, 0, 0],
+    });
     km.addReparentEvent(5, 'cargo', '_CS19110');
     const r = km.computeForkAnchorZero(sceneRoot);
-    // BoxGeometry(1,1,1) pivot 在中心 → 放在 threejs (0.5, 0.3, 2.1)
-    // bbox.min = (0, -0.2, 1.6)；bbox.center = (0.5, 0.3, 2.1)
-    // #49: 承载锚点 = (center.x, min.y, center.z) = threejs (0.5, -0.2, 2.1)
-    // UI Z-up swap: UI.x = threejs.x, UI.y = threejs.z, UI.z = threejs.y
-    // (历程：v14.1 center.y → #47 max.y(对合并 mesh 失败) → #48 回退 center.y → #49 min.y)
-    expect(r.fork_anchor_zero_x).toBeCloseTo(0.5, 3);
-    expect(r.fork_anchor_zero_y).toBeCloseTo(2.1, 3); // threejs.z（前后不变）
-    expect(r.fork_anchor_zero_z).toBeCloseTo(-0.2, 3); // threejs.min.y（叉齿底面）
+    expect(r.fork_anchor_zero_x).toBeCloseTo(0.5, 3); // +x 前端极值
+    expect(r.fork_anchor_zero_y).toBeCloseTo(0, 3); // z 不变（forward 在 x 方向）
+    expect(r.fork_anchor_zero_z).toBeCloseTo(-0.5, 3); // min.y
+  });
+
+  it('#50：斜对角 cargo → forward 是归一化向量，anchor 落在 bbox 对角外沿', () => {
+    // cargo 在 +x,+z 方向 → forward 归一化 (1,0,1)/√2
+    // extent = |0.5 * 1/√2| + |0.5 * 1/√2| = 0.5/√2 + 0.5/√2 = 0.707
+    // anchor.x = 0 + (1/√2)*0.707 = 0.5；anchor.z = 同理 0.5
+    const { sceneRoot } = buildMinScene({
+      forkWorldPos: [0, 0, 0],
+      boxSize: [1, 1, 1],
+      cargoWorldPos: [3, 0, 3],
+    });
+    km.addReparentEvent(5, 'cargo', '_CS19110');
+    const r = km.computeForkAnchorZero(sceneRoot);
+    expect(r.fork_anchor_zero_x).toBeCloseTo(0.5, 2);
+    expect(r.fork_anchor_zero_y).toBeCloseTo(0.5, 2);
   });
 
   it('computeForkAnchorZero 后 getForkAnchorZero 读到缓存', () => {

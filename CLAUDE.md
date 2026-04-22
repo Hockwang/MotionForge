@@ -525,6 +525,44 @@ console.log('emissive:', c?.material?.emissive);
 - **修复**：[KeyframeManager.js](src/core/KeyframeManager.js) `applyJointDrive` 去掉 fixed 的 early return，加 `else if (def.type === 'fixed')` 分支：`newWorldPos = baseWorldPos; newWorldQuat = baseWorldQuat;`。等价于 prismatic value=0：每帧根据 joint parent 最新世界矩阵 × base 计算 child 世界位置
 - **经验教训**：**关节类型的语义要一致**。revolute/prismatic 都是"joint parent 说了算"（URDF 风格），fixed 也应该是。早期为了省一点性能给 fixed 走快捷路径，破坏了这个一致性。现在 fixed 符合 URDF 标准：刚性连接到 joint parent，无自由度但跟随运动
 
+#### #50 fork_anchor_zero 水平位置改用"朝 cargo 方向的 bbox 前端极值"（合并 mesh 下近似叉齿尖）
+- **症状**：#49 修好 z 方向后，水平方向仍有偏差 —— 三向车.glb 播放到 attach 时 cargo 在叉车**前方**没贴上（bbox.center.z 被门架往后拉 ~0.9m）
+- **根因**：合并 mesh 的 `_CS19110` bbox 覆盖 整车（叉齿+门架+支架），`bbox.center.x/z` = **整车几何中心**，不是叉齿尖位置。PKF 把 bbox.center 对到 cargo → 叉齿尖在 cargo 前方 ~0.9m 处
+- **修复思路（A1 方案，和用户讨论后定的）**：
+  - 不硬编码"前进轴在 x 还是 y"（不同模型约定不同）
+  - 不依赖 role="车体前进" joint axis（避免关节坐标系转换复杂度）
+  - **用 cargo 世界位置相对 fork bbox 中心的方向作 forward**：朝哪方向有 cargo，就把 bbox 往哪边推
+- **实现**：
+  - [KeyframeManager.js](src/core/KeyframeManager.js) 新增 `_computeForkForwardExtreme(box, cargoWorldPos)` helper：
+    - forward = `normalize(cargoPos_xz - bboxCenter_xz)`
+    - 水平极值点 = `bboxCenter + forward × (|half.x × dir.x| + |half.z × dir.z|)`（投影定理算 bbox 沿任意方向的半长）
+    - 返回 `{x, z, forwardDir}`；cargo 缺失或重合时退化到 bbox 中心
+  - `computeForkAnchorZero`：x/z 用 forward 极值，y 保持 min.y（#49）；缓存 `_forkForwardDir` 供 snap 复用
+  - `applyReparentEventsAtTime` snap-attach：读缓存 `_forkForwardDir`，对**当前** fork bbox（post-motion）算前端极值 → cargo 底中心落在那里
+  - `invalidateForkAnchorZero`：一并清 `_forkForwardDir`
+  - [tests/unit/keyframe-manager.test.js](tests/unit/keyframe-manager.test.js)：32/32（+2 case：cargo 缺失退化 center、斜对角 cargo 验归一化方向）
+- **三向车.glb 验算**：
+  - fork bbox center (threejs) = (0.484, ?, 2.125)；size = (1.188, ?, 1.571)
+  - cargo (threejs) = (5, ?, 5)（UI Z-up swap 前）
+  - forward (xz) = normalize(4.516, 2.875) ≈ (0.843, 0.538)
+  - extent = 0.594 × 0.843 + 0.785 × 0.538 ≈ 0.923
+  - 新 anchor_x = 0.484 + 0.843 × 0.923 ≈ **1.26**
+  - 新 anchor_z = 2.125 + 0.538 × 0.923 ≈ **2.62**（UI y）
+  - 相比老 anchor (0.484, 2.125) 往 cargo 方向推进 0.923m → fork 少走 0.92m → 叉齿尖正好到 cargo 位置
+- **snap-attach 对应调整**：
+  - attach 时 fork 已经到 cargo 附近，此时"从 fork 到 cargo"向量接近 0，方向退化
+  - 所以 snap 读的是**生成时缓存的 forward 方向**，配合**当前**（post-motion）fork bbox → 得到 cargo 方向的前端极值
+  - 零 teleport 成立的前提：snap 的水平位置算法和 PKF 公式目标同源
+- **已知局限**：
+  - forward 方向由 cargo 位置决定 → cargo marker 移动后需重新 🚀 生成 PKF（这其实是合理的，移了 cargo 本来就该重新规划）
+  - 对 "cargo 在 fork 正上方/正下方"（水平方向完全重合）退化到 bbox.center — 这种场景很少见
+  - 不处理"多个 cargo"：`reparentEvents` 里第一个 attach event 的 child 决定 forward 方向
+- **下一步**（如果还有偏差，用户已表态偏向 C 方案）：UI 加"承载点标记"让用户在叉齿上拖一个红点，彻底替代所有几何启发式
+- **经验教训**：
+  1. **纯几何启发式的极限：4 次迭代（#37 center → #47 max → #49 min.y for z → #50 forward extreme for x/z）才摸到能用的形状**。每一次都暴露一种模型建模方式的反例。这说明自动推断"叉齿在哪"本质上是**有损的**，靠假设堆积
+  2. **决定让 cargo 参与几何计算的时机**。#50 让 fork_anchor_zero 依赖 cargo 位置（之前是纯 fork 属性）。增加了耦合，但换来对任何模型朝向（x/y/z/斜着）都 work 的鲁棒性。这是合理权衡：生成 PKF 本来就是"为这个 cargo 规划这次动作"，fork anchor 为此 cargo 而定合情合理
+  3. **缓存 forward 方向给 snap 用的巧思**。snap 时 cargo 已经被 fork "吸"过去了，方向信息在那个时刻会退化。缓存生成时的方向让 snap 和 PKF 公式层共用同一个"前端"语义
+
 #### #49 fork_anchor_zero 改用 bbox.min.y（叉齿底面）—— 复用 UI "子对象底部" 概念
 - **背景**：#47/#48 两次失败后，探索出 bbox.min.y 是比 center.y / max.y 都更稳健的启发式。这是**第三种几何语义尝试**，留作经验档案
 - **动机**（用户 insight）：关节配置 UI 里早就有"**子对象底部**"按钮（基于 bbox.min.y），AI 打关节用户已经很习惯这个概念；直接复用，一致性好

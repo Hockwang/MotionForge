@@ -176,6 +176,46 @@ export class KeyframeManager {
   }
 
   /**
+   * #50：算 fork bbox 在"朝向 cargo 方向"上的水平前端极值位置（叉齿尖近似点）。
+   *
+   * 背景：对合并 mesh 模型（三向车.glb 把叉齿+门架建在一个 mesh），
+   * bbox.center 是整车中心（含门架往后拉的偏移），不是叉齿尖的真实位置。
+   * 这个 helper 把 bbox 沿"朝 cargo 方向"推到边缘，近似出"前端极值中心"。
+   *
+   * 纯几何，不依赖关节 role / axis（避免坐标系转换复杂度，对任意朝向模型 work）。
+   *
+   * @param {THREE.Box3} box             世界空间 bbox
+   * @param {THREE.Vector3|null} cargoWorldPos 参考 cargo 世界坐标（threejs Y-up）
+   * @returns {{x: number, z: number, forwardDir: THREE.Vector3|null}}
+   *   水平面（threejs xz）前端极值点，并返回所用 forward 方向供 snap 复用。
+   *   cargo 缺失或与 bbox 中心重合时退化到 bbox 中心（forwardDir=null）。
+   * @private
+   */
+  _computeForkForwardExtreme(box, cargoWorldPos) {
+    const bboxCenter = box.getCenter(new THREE.Vector3());
+    if (!cargoWorldPos) {
+      return { x: bboxCenter.x, z: bboxCenter.z, forwardDir: null };
+    }
+    const forward = new THREE.Vector3(
+      cargoWorldPos.x - bboxCenter.x,
+      0,
+      cargoWorldPos.z - bboxCenter.z,
+    );
+    if (forward.lengthSq() < 1e-6) {
+      return { x: bboxCenter.x, z: bboxCenter.z, forwardDir: null };
+    }
+    forward.normalize();
+    // bbox 沿任意方向的半长 = Σ |half_i × dir_i|（投影定理）
+    const bboxHalf = box.getSize(new THREE.Vector3()).multiplyScalar(0.5);
+    const extent = Math.abs(bboxHalf.x * forward.x) + Math.abs(bboxHalf.z * forward.z);
+    return {
+      x: bboxCenter.x + forward.x * extent,
+      z: bboxCenter.z + forward.z * extent,
+      forwardDir: forward,
+    };
+  }
+
+  /**
    * F13：算 fork_anchor_zero 的"输入签名"，用于 hash-based cache 自动失效。
    * 签名包含：
    *   (1) reparent events 序列化（t / child_name / new_parent_name）
@@ -201,23 +241,28 @@ export class KeyframeManager {
   }
 
   /**
-   * v14.1（#37 / #49）：算叉齿"承载锚点"在**零位**时的世界坐标。
+   * v14.1（#37 / #49 / #50）：算叉齿"承载锚点"在**零位**时的世界坐标。
    *
    * 语义历程（重要！决定 PKF 公式形式）：
    *   - v14.1 初版（#37）：bbox.getCenter() → cargo 视觉陷进 fork ~h/2 米
    *   - #47 尝试：bbox.max.y 做"叉齿顶面"→ 对合并 mesh（三向车.glb）max.y 指向门架顶 → 叉齿穿地
    *   - #48 回退：回到 bbox.getCenter()
-   *   - **#49 当前**：bbox.min.y（叉齿底面，复用 UI "子对象底部"概念）
-   *     假设：叉齿是 fork 子树最底部。标准叉车成立；侧挂/倒挂可能失效（遇到再加 UI 配置）
+   *   - #49：y 改 bbox.min.y（叉齿底面）修 z 方向视觉
+   *   - **#50 当前**：x/z 改"朝 cargo 方向的 bbox 前端极值"（近似叉齿尖），修合并 mesh 的水平偏移
    *
-   * 语义（#49）：叉齿尖 mesh 的 bbox **底面**中心 world position（UI Z-up）。
-   *   x, z（水平中轴）= bbox.center.x / z
-   *   y（UI 高度）= bbox.min.y（叉齿底面高度，零位时）
+   * 语义（#50）：
+   *   x, z（水平，threejs）= bbox 朝 cargo 方向的前端极值（`_computeForkForwardExtreme`）
+   *   y（高度，threejs）= bbox.min.y（叉齿底面高度）
+   *   UI Z-up swap 后：
+   *     fork_anchor_zero_x = x（threejs） = UI x
+   *     fork_anchor_zero_y = z（threejs） = UI y（前后 = cargo 方向极值）
+   *     fork_anchor_zero_z = min.y（threejs） = UI z（叉齿底面）
    *
    * 用途：AI 生成 PKF 时写公式：
    *   - 车体前进 y：`cargo_pos_y - fork_anchor_zero_y - approach_gap`
+   *   - 车体横移 x：`cargo_pos_x - fork_anchor_zero_x`
    *   - 门架升降 z：`cargo_pos_z - cargo_height/2 - fork_anchor_zero_z`
-   *     （让 cargo 底面对齐 fork 底面；snap-attach 也按此对齐，零 teleport）
+   *     （cargo 底面中心对齐叉齿前端底面中心；snap-attach 复用缓存 forward 方向，零 teleport）
    * 因为 runtime 的 prismatic `currentValue` 是**位移**（加到 baseWorldPos 上），
    * 所以公式应该算"要从零位挪到目标的位移"，即：
    *   displacement = target_world - anchor_at_zero - gap
@@ -255,15 +300,23 @@ export class KeyframeManager {
     const tineMesh = this._findForkTineMesh(forkObj) || forkObj;
     const box = new THREE.Box3().setFromObject(tineMesh);
     if (box.isEmpty()) return {};
-    // #49：承载锚点 y = bbox.min.y（叉齿底面），复用 UI "子对象底部" 概念
-    const center = box.getCenter(new THREE.Vector3());
-    const anchor = new THREE.Vector3(center.x, box.min.y, center.z); // threejs Y-up
+
+    // #50：水平位置用"朝 cargo 方向"的 bbox 前端极值（近似叉齿尖），
+    // 避免合并 mesh 模型里 bbox.center 被门架往后拉偏。
+    // y（高度）保持 #49 的 bbox.min.y（叉齿底面）
+    const cargoName = attachEvent.child_name;
+    const cargoObj = cargoName ? sceneRoot.getObjectByName(cargoName) : null;
+    const cargoWorldPos = cargoObj ? cargoObj.getWorldPosition(new THREE.Vector3()) : null;
+    const { x: anchorX, z: anchorZ, forwardDir } = this._computeForkForwardExtreme(box, cargoWorldPos);
+
+    // 缓存 forward 方向，snap-attach 用同一方向把当前 fork bbox 的前端极值算出来
+    this._forkForwardDir = forwardDir ? forwardDir.clone() : null;
 
     // threejs → UI Z-up（swap y/z）
     const result = {
-      fork_anchor_zero_x: +anchor.x.toFixed(3),
-      fork_anchor_zero_y: +anchor.z.toFixed(3), // threejs z = UI y(前后)
-      fork_anchor_zero_z: +anchor.y.toFixed(3), // threejs min.y = UI z(叉齿底面高度)
+      fork_anchor_zero_x: +anchorX.toFixed(3),
+      fork_anchor_zero_y: +anchorZ.toFixed(3), // threejs z = UI y(前后)
+      fork_anchor_zero_z: +box.min.y.toFixed(3), // threejs min.y = UI z(叉齿底面高度)
     };
     this._forkAnchorZeroCached = result;
     this._forkAnchorHash = hash;
@@ -286,6 +339,7 @@ export class KeyframeManager {
   invalidateForkAnchorZero() {
     this._forkAnchorZeroCached = null;
     this._forkAnchorHash = null;
+    this._forkForwardDir = null; // #50：forward 方向也一起失效
   }
 
   // ══════════════════════════════════════════════════════════════
@@ -433,9 +487,10 @@ export class KeyframeManager {
         targetParent.attach(child); // 保持世界变换
       }
 
-      // Snap-attach（#36 / #40 / #49）：cargo 附着到非世界父级时，cargo 底面对齐叉齿底面。
-      // 参考点和 computeForkAnchorZero 一致（都用 bbox.min.y + 水平 center），
-      // AI 公式层和 snap 层走同一个几何锚点 → 结构性零 teleport（REVIEW F5）
+      // Snap-attach（#36 / #40 / #49 / #50）：cargo 底面中心对齐叉齿前端底面中心。
+      // 水平位置用缓存的 forward 方向（在 computeForkAnchorZero 时算出）投影当前 bbox 的前端极值；
+      // 垂直用 bbox.min.y + cargoH/2 让 cargo 底面贴叉齿底面。
+      // AI 公式层和 snap 层走同源几何锚点 → 结构性零 teleport（REVIEW F5）
       if (parentChanged && targetParent !== root) {
         const markerMeta = findMarkerMeta(childName);
         if (markerMeta?.type === 'cargo') {
@@ -444,10 +499,19 @@ export class KeyframeManager {
           const box = new THREE.Box3().setFromObject(tineMesh);
           let desiredWorldPos;
           if (!box.isEmpty()) {
-            // #49：cargo 中心 = 叉齿底面 + cargoH/2 → cargo 底面贴叉齿底面
             const cargoHalfHeight = (markerMeta.size?.h ?? 0) / 2;
-            const center = box.getCenter(new THREE.Vector3());
-            desiredWorldPos = new THREE.Vector3(center.x, box.min.y + cargoHalfHeight, center.z);
+            const bboxCenter = box.getCenter(new THREE.Vector3());
+            // #50：优先用缓存 forward 方向算前端极值；没缓存时退化到 bbox 中心
+            const forward = this._forkForwardDir;
+            let horizX = bboxCenter.x;
+            let horizZ = bboxCenter.z;
+            if (forward && forward.lengthSq() > 0.5) {
+              const bboxHalf = box.getSize(new THREE.Vector3()).multiplyScalar(0.5);
+              const extent = Math.abs(bboxHalf.x * forward.x) + Math.abs(bboxHalf.z * forward.z);
+              horizX = bboxCenter.x + forward.x * extent;
+              horizZ = bboxCenter.z + forward.z * extent;
+            }
+            desiredWorldPos = new THREE.Vector3(horizX, box.min.y + cargoHalfHeight, horizZ);
           } else {
             // fallback：父级原点
             desiredWorldPos = targetParent.getWorldPosition(new THREE.Vector3());
