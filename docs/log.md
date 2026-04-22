@@ -109,3 +109,38 @@ optional 意味着场景无横移 role 时这 3 段编译期跳过，降级回 1
 **attach/detach 段号**：attach 从段 3 改到段 4，detach 从段 11 改到段 13（几何论证在文档 §5 同步更新）。
 
 测试：80/80 通过（31 老 + 49 新，新增 17 段场景 + 三向车 x 对齐路径）。
+
+## [2026-04-22] milestone | mvp3 autoDetectForkName 按 role 优先级识别叉齿
+
+接 17 段扩展后实机验证，用户反馈"cargo 又到车体里面了"。诊断发现：
+- `__mf.keyframeManager.getReparentEvents()` 指向 `_____10`，bbox = 5.3m 高（整个门架）
+- 对比场景里 `_CS19110`（叉齿旋转 joint 的 childId）bbox = 1.2 × 0.55 × 1.6m，就是叉齿本体
+
+autoDetectForkName 之前只认 `门架升降` role → bbox 包含整个门架 → fork_anchor_zero 取了门架中部坐标 → 车体横移到 "cargo.x - 门架中部.x" 时车身穿进 cargo。
+
+修复：优先级链路改为
+1. role 以 `"叉齿"` 开头（叉齿旋转/叉齿侧移/叉齿前伸 等）——最深、最具体
+2. role === `"门架升降"`——兜底（普通叉车老行为）
+
+实机验证：17 段轨迹全部正确，attach/detach 连续性 < 0.01m，cargo 从 cargo_pos 到 drop_pos 误差 < 0.01m。
+
+commit `ee55716`。
+
+## [2026-04-22] tooling | ⭐ 轨迹可视化诊断 __diagTpl.drawTrajectory 确立为首选调试工具
+
+mvp3 三向车调试过程中发现 `__diagTpl.drawTrajectory` 极其有用：
+
+**输出双通道**：
+- 3D 视口：蓝线 (fork) + 橙线 (cargo) + 段边界小球 + attach/detach 大球
+- Console：14/17 段文字表（joint / t_end / value_end / fork_xyz / cargo_xyz / dy）
+
+**协作优势**：截图给人看，文字表直接贴给 AI → AI 根据数值立刻看出是哪段 x/y/z 不对齐、哪段 attach 后 cargo 是否跟随 fork。和单点快照比，效率高数倍。
+
+已在以下位置标记首选：
+- [CLAUDE.md §调试钩子](../CLAUDE.md) 加了⭐标注和使用说明
+- [docs/diagnostics.md](diagnostics.md) 索引表 `⭐` 前缀 + 场景 8 顶部"首选"专栏
+- [docs/concepts/forklift-pickup-template.md](concepts/forklift-pickup-template.md) 相关调试段落
+
+后续协作约定：**任何 PKF / 模板动画的视觉问题，先跑 `__diagTpl.drawTrajectory()` 再沟通**。
+
+当前状态：🚧 主线 mvp3 仍在迭代，有已知问题未解决，继续打磨。先推当前状态到 git。

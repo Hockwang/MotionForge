@@ -7,6 +7,8 @@ updated: 2026-04-22
 > MotionForge 的 Console 诊断工具集，用于定位关节系统 / 导出导入 roundtrip / 动画播放 / AI 一键生成相关的 bug。从 CLAUDE.md 拆分出来（2026-04-22）—— CLAUDE.md 只保留调试钩子入口，详细用法放这里按需查阅。
 >
 > **先写诊断脚本，再改代码**。多数历史 bug 是通过这条流程定位的（[docs/bugfix-log.md](bugfix-log.md) 经验教训 8）。
+>
+> ⭐ **首选调试工具**：[`__diagTpl.drawTrajectory()`](../tests/diag-template.js) —— 在 3D 视口画出 fork / cargo 整段动画轨迹 + console 打印 14/17 段文字表。**和外部（AI/团队）沟通 PKF 问题时首选此工具**：图给人看、表给 AI 看，定位问题的效率远高于单点快照。详见 [场景 8](#场景-8叉车-14-段模板路径验证mvp3)。
 
 ---
 
@@ -50,7 +52,7 @@ updated: 2026-04-22
 | [tests/diag-animation.js](../tests/diag-animation.js) | 动画播放过程中各时间点的关节状态 | `__diagA.scanClip/at/keyframes` |
 | [tests/diag-oneshot.js](../tests/diag-oneshot.js) | 🚀 一键生成流程排查（L1 / L2 / PKF eval / markers） | `__diagO.report/l1/l2/plan/actual` |
 | [tests/diag-fork-anchor.js](../tests/diag-fork-anchor.js) | 承载锚点 / 叉齿 mesh / bbox / PKF eval 一把梭 | `__diagFA.run/listForkSubmeshes` |
-| [tests/diag-template.js](../tests/diag-template.js) | 叉车 14 段模板：编译产物 / 公式 / 级联 / 循环 / 时间采样 | `__diagTpl.all/compiled/formulas/...` |
+| ⭐ [tests/diag-template.js](../tests/diag-template.js) | **叉车模板 + 轨迹可视化**（和 AI 沟通首选） | `__diagTpl.drawTrajectory / all / compiled / ...` |
 
 ---
 
@@ -247,33 +249,38 @@ __diagFA.listForkSubmeshes()  // 只看叉齿子树所有 mesh 的 bbox（按 mi
 
 ---
 
-## 场景 8：叉车 14 段模板路径验证（mvp3）
+## 场景 8：叉车 14/17 段模板路径验证（mvp3）
 
 **典型症状 / 触发时机**
 - 🚀 一键生成选了"模板"后验证是否真的零瞬移
-- 想看 AI 返回的节奏是什么 / 编译后的 14 段结构
+- 想看 AI 返回的节奏是什么 / 编译后的段结构
 - 怀疑 attach 前后 cargo 世界坐标不连续（瞬移）
-- 想做循环回 t=0 时 cargo 回原位验证
+- 视觉上动画走偏（cargo 穿车体 / 方向错 / 抬不到位等），**但不确定是哪一段出错**
+- 要把结果贴给 AI / 团队协作排查
 
-**检测流程**
+### ⭐ 首选：轨迹可视化 `__diagTpl.drawTrajectory()`
+
+```js
+__diagTpl.drawTrajectory()                   // 默认 200 采样点：3D 视口画轨迹 + console 打 14/17 段文字表
+__diagTpl.drawTrajectory({ samples: 500 })   // 更密采样
+__diagTpl.clearTrajectory()                  // 清掉
+```
+
+**为什么首选它**：同时给出**可视**（3D 线 + 段位球 + attach/detach 大球）和**文字**（console.table：每段 joint / value_end / fork xyz / cargo xyz / dy）。截图 + 文字表直接贴给 AI 就能定位问题，比单点快照高效得多。
+
+### 其他单项诊断（按需）
 
 ```js
 __diagTpl.all()                 // 一把梭：健康 + 编译 + reparent 时间 + 级联 + 公式限位 + 循环 + 时间采样
 
-// 或按需单跑：
 __diagTpl.health()              // _pkfTemplateMeta / lastTemplate 是否就绪
-__diagTpl.compiled()            // 看 14 段结构 + 参数 + reparent 事件
-__diagTpl.reparentTiming()      // attach.t 应 = 段 3 t_end；detach.t 应 = 段 11 t_end
+__diagTpl.compiled()            // 看段结构 + 参数 + reparent 事件
+__diagTpl.reparentTiming()      // attach.t 应 = 段 4 t_end；detach.t 应 = 段 13 t_end（mvp3 v2）
 __diagTpl.cascadeCheck()        // 每段 value_start 严格等于同 joint 上一段 value_end
 __diagTpl.formulas()            // 逐段 eval value_end + 对比关节 limits（超限会被钳位）
 __diagTpl.loopBoundary()        // seek t=0 后 cargo 偏移应 < 0.01m
-__diagTpl.playbackSample()      // 每段末尾 cargo/fork 世界位置采样（默认 14 点，attach/detach 连续性）
+__diagTpl.playbackSample()      // 每段末尾 cargo/fork 世界位置采样（默认 14/17 点，attach/detach 连续性）
 __diagTpl.playbackSample([3.0, 3.01, 3.99, 4.0])  // 自定义采样 attach 前后
-
-// 🎨 可视化：直接在 3D 视口画出轨迹（最直观，肉眼判断"哪一段走得不对"）
-__diagTpl.drawTrajectory()                   // 默认 200 采样点画 fork+cargo 轨迹
-__diagTpl.drawTrajectory({ samples: 500 })   // 更密采样
-__diagTpl.clearTrajectory()                  // 清掉
 ```
 
 **轨迹可视化图例**：

@@ -133,9 +133,12 @@ __mf.selectionManager   // SelectionManager（selectedObject / clearSelection / 
 __mf.editableObjects()  // 当前可编辑对象列表（不含无名 Object3D 包装）
 __mf.getJointDefs()     // 所有关节定义的快照
 __mf.lastOneshot        // 🚀 一键生成最后一次的 AI 请求/响应（{intent, scene, joints, l1, l2, l2Patched}）
+__mf.lastTemplate       // 🚀 模板路径最后一次的 {intent, rhythm, compiled}（mvp3）
 ```
 
 **遇到难定位的 bug，先写诊断脚本再改代码**。已有脚本用法见 [docs/diagnostics.md](docs/diagnostics.md)。
+
+⭐ **和 AI / 外部协作时排查 PKF / 动画问题首选**：粘贴 [tests/diag-template.js](tests/diag-template.js) 到 Console → `__diagTpl.drawTrajectory()` → **3D 视口截图 + console.table 文字表**一起发。图让人看得到走偏，表让 AI 能精确定位是哪段的公式 / 关节 / 坐标出问题。
 
 ---
 
