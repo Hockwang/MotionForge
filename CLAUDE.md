@@ -525,6 +525,26 @@ console.log('emissive:', c?.material?.emissive);
 - **修复**：[KeyframeManager.js](src/core/KeyframeManager.js) `applyJointDrive` 去掉 fixed 的 early return，加 `else if (def.type === 'fixed')` 分支：`newWorldPos = baseWorldPos; newWorldQuat = baseWorldQuat;`。等价于 prismatic value=0：每帧根据 joint parent 最新世界矩阵 × base 计算 child 世界位置
 - **经验教训**：**关节类型的语义要一致**。revolute/prismatic 都是"joint parent 说了算"（URDF 风格），fixed 也应该是。早期为了省一点性能给 fixed 走快捷路径，破坏了这个一致性。现在 fixed 符合 URDF 标准：刚性连接到 joint parent，无自由度但跟随运动
 
+#### #48 回退 #47 "叉齿顶面"语义（保留 AI 维度兜底）—— 合并 mesh 模型下 bbox.max.y 指向门架顶不是叉齿顶
+- **症状**：#47 上线后，三向车.glb 🚀 一键生成播放时**叉齿下沉穿地 0.55m，cargo 飘空**
+- **排查**（tests/diag-fork-anchor.js + Console 片段）：
+  - `_CS19110` 子树只有**一个 mesh**（叉齿+支架+门架合并建模），bbox：min.y=0.042 / max.y=0.592 / size.y=0.549
+  - 新语义 `fork_anchor_zero_z = max.y = 0.592` → **是整个门架顶端高度**，不是叉齿顶面
+  - PKF 求值：`cargo_pos_z(0.6) - cargo_height/2(0.5) - fork_anchor_zero_z(0.592) - 0.1(AI 自加) = -0.592` → 门架升降关节下降 0.592m → 穿地
+- **根因**：`_findForkTineMesh` 的 "min.y 最小 mesh" 启发式在**没拆子 mesh 的模型上无效**（只有一个 mesh 可挑），那个 mesh 的 bbox 覆盖整个叉齿+门架结构，`max.y` 是门架顶不是叉齿顶 → #47 改用 bbox.max.y 当承载面是错的
+- **修复**：
+  - [KeyframeManager.js](src/core/KeyframeManager.js) `computeForkAnchorZero` + `applyReparentEventsAtTime` snap-attach 回退到 `box.getCenter()`（v14.1 语义）
+  - [tools/conversion-service.js](tools/conversion-service.js) L1/L2 prompt 的 z 方向公式回退到 `cargo_pos_z - fork_anchor_zero_z`（不减 cargo_height/2）；加"禁止凭空加常数"警告（AI 这次自己在公式里加了 `- 0.1`，把下沉加剧 10cm）
+  - [src/main.js](src/main.js) `ensurePkfCoversAttachPoint` z 目标位移去掉 `- cargoHeight/2`（#47 的偏移）
+  - [tests/unit/keyframe-manager.test.js](tests/unit/keyframe-manager.test.js) case #2 期望回退到 `bbox.center.y` —— 30/30 通过
+  - **保留** `ensurePkfCoversAttachPoint` 前端兜底（#47 的另一半，不受本回退影响，仍有价值：AI 漏生成维度时自动补）
+- **代价**（已接受）：cargo 视觉上 center-to-center 对齐（陷进叉齿 ~cargo_h/2 米），不符合真实叉车托底物理。**彻底解决**需要另一条路径：让用户在 cargo marker 或 joint 配置里直接指定"承载高度偏移"（把物理对齐参数下放到人，而不是从几何启发式猜）
+- **经验教训**：
+  1. **启发式 = 对部分模型的假设，不是通用方案**。`_findForkTineMesh` 的 min.y 挑法只在"叉齿是独立 mesh"时有效；合并 mesh 的模型上这个挑法退化成"挑唯一那个"
+  2. **依赖 bbox 分量语义要先验证前提**。`bbox.max.y = 叉齿顶面` 只有在 mesh 恰好只含叉齿时成立；含了门架就变成门架顶。改几何语义前必须确认所有可能的输入形态
+  3. **AI 在公式里自加常数是隐藏风险**。即使 prompt 不提及，AI 会"想当然"地加 `- 0.1` 做"缓冲"。必须在 prompt 里**显式禁止**凭空常数，只留 approach_gap 作为可调缓冲
+  4. **回退不等于失败**。#47 的前端兜底（`ensurePkfCoversAttachPoint`）是独立价值的改动，单独保留；只回退几何语义部分。**分层回退**比全部回退更稳
+
 #### #47 吸附姿态改为"叉齿顶面托住 cargo 底面" + AI 维度兜底（消除 attach 瞬间 teleport）
 - **症状**：🚀 一键生成后播放到 t=3.98→4.01，cargo 明显下跳到叉齿上。v14.1 已让 approach_gap=0 且 snap-attach 和 fork_anchor_zero 同源，理论上应该零 teleport，但实际仍有 ~0.3m 视觉跳变
 - **根因（两个叠加）**：
