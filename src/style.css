@@ -293,6 +293,7 @@ button:hover {
 .timeline {
   grid-area: timeline;
   display: grid;
+  /* [trajectory-overlay] 末尾的 auto 列给轨迹开关用，删除功能时回退为 `120px 1fr 170px` */
   grid-template-columns: 120px 1fr 170px auto;
   align-items: center;
   gap: 10px;
@@ -307,6 +308,7 @@ button:hover {
   font-size: 12px;
 }
 
+/* [trajectory-overlay] 轨迹可视化开关样式（删除功能时整块清掉） */
 .trajectory-toggle {
   display: inline-flex;
   align-items: center;

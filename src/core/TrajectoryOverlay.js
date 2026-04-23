@@ -3,6 +3,15 @@
  *
  * 作用：在 3D 视口里画出 fork / cargo 走过的世界空间轨迹，辅助用户/AI 协作调试 PKF 动画。
  *
+ * ─────────────────────────────────────────────────────────────────────
+ * 🚨 功能出问题时的关停/删除指南
+ * ─────────────────────────────────────────────────────────────────────
+ *  1. **临时隐藏**（运行时关）：在 src/main.js 顶部把 TRAJECTORY_OVERLAY_ENABLED = false
+ *     → 不实例化 overlay、隐藏 UI 按钮、所有 hook 成 no-op
+ *  2. **彻底删除**：全仓 grep `trajectory-overlay`（tag 标记）— 所有接线点都有此注释，
+ *     一次性删光：本文件 + main.js（7 处）+ EditorUI.js（2 处）+ style.css（1 块）
+ * ─────────────────────────────────────────────────────────────────────
+ *
  * 设计要点：
  *  - 和 __diagTpl 并存但互不干扰：group.userData 标记不同（__isTrajectoryOverlay vs __isDiagTrajectory）
  *  - 生命周期：enabled=true 时重绘；enabled=false 时清线 dispose
@@ -10,6 +19,7 @@
  *  - 状态保全：采样过程修改了 joint value 和 cargo parent，必须 try/finally 复原
  *  - 降级：PKF 空 / reparent 空 / cargo fork 找不到 → 只画能画的，不报错中断
  */
+// [trajectory-overlay] 可删除 tag：grep 这个字符串能找到所有接线点
 import * as THREE from 'three';
 
 const COLOR_FORK_LINE = 0x3b82f6;       // 蓝 fork 轨迹

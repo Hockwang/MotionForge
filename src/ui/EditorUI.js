@@ -69,6 +69,7 @@ export class EditorUI {
     this.exportJsonBtn = this.appRoot.querySelector('#export-json-btn');
     this.exportPackageBtn = this.appRoot.querySelector('#export-package-btn');
     this.exportOutput = this.appRoot.querySelector('#export-output');
+    // [trajectory-overlay] 轨迹可视化开关 DOM 引用
     this.trajectoryToggleInput = this.appRoot.querySelector('#trajectory-toggle-input');
     this.collapsedTreeNodeIds = new Set();
     this.seenTreeNodeIds = new Set();
@@ -227,6 +228,7 @@ export class EditorUI {
           <button id="play-btn" type="button">播放</button>
           <input id="time-input" type="range" min="0" max="10" step="0.01" value="0" />
           <span id="time-label">0.00s / 10.00s</span>
+          <!-- [trajectory-overlay] 轨迹可视化开关（main.js 的 TRAJECTORY_OVERLAY_ENABLED=false 时会被隐藏） -->
           <label class="trajectory-toggle" title="在 3D 视口叠加 fork/cargo 世界空间轨迹 + console 输出动画信息表">
             <input id="trajectory-toggle-input" type="checkbox" />
             <span>🎨 轨迹</span>

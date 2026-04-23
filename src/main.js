@@ -6,6 +6,7 @@ import { KeyframeManager } from './core/KeyframeManager.js';
 import { ResultPackageExporter } from './core/ResultPackageExporter.js';
 import { SceneManager } from './core/SceneManager.js';
 import { SelectionManager } from './core/SelectionManager.js';
+// [trajectory-overlay] 轨迹可视化（可删除 tag，grep 能找到所有接线点）
 import { TrajectoryOverlay } from './core/TrajectoryOverlay.js';
 import { EditorUI } from './ui/EditorUI.js';
 import {
@@ -15,6 +16,9 @@ import {
   FORKLIFT_TEMPLATE,
 } from './core/ForkliftTemplate.js';
 
+// [trajectory-overlay] 功能开关：出问题随时置 false 完全关闭（不实例化 overlay、隐藏按钮、所有 hook 变 no-op）
+const TRAJECTORY_OVERLAY_ENABLED = true;
+
 const appRoot = document.querySelector('#app');
 const ui = new EditorUI(appRoot);
 const sceneManager = new SceneManager(ui.viewport);
@@ -22,7 +26,14 @@ const selectionManager = new SelectionManager(sceneManager);
 const keyframeManager = new KeyframeManager();
 const packageExporter = new ResultPackageExporter();
 const assetLoader = new AssetLoader();
-const trajectoryOverlay = new TrajectoryOverlay(sceneManager, keyframeManager);
+// [trajectory-overlay]
+const trajectoryOverlay = TRAJECTORY_OVERLAY_ENABLED
+  ? new TrajectoryOverlay(sceneManager, keyframeManager)
+  : null;
+if (!TRAJECTORY_OVERLAY_ENABLED && ui.trajectoryToggleInput) {
+  // flag 关闭时把按钮外壳也隐藏，避免用户看到没反应的按钮
+  ui.trajectoryToggleInput.closest('.trajectory-toggle')?.style?.setProperty('display', 'none');
+}
 
 let editableObjects = [];
 let sceneTreeNodes = [];
@@ -457,7 +468,7 @@ function refreshObjectTree() {
 }
 
 function refreshReparentEventList() {
-  // attach/detach 时刻影响 cargo 轨迹的分支 → 重绘轨迹
+  // [trajectory-overlay] attach/detach 时刻影响 cargo 轨迹的分支 → 重绘
   trajectoryOverlay?.requestRefresh();
   const events = keyframeManager.getReparentEvents();
   ui.renderReparentEvents(events, {
@@ -584,7 +595,7 @@ async function handleAssetFile(file) {
       ui.setLoadStatus(`${file.name}：${status}`);
     });
     ui.setLoadStatus(`正在构建场景节点...`);
-    // 切场景前清掉旧轨迹 overlay（group 挂在旧 sceneRoot 上，不清会成幽灵）
+    // [trajectory-overlay] 切场景前清掉旧 group（挂在旧 sceneRoot 上不清会成幽灵）
     trajectoryOverlay?.clear();
     sceneManager.setSceneRoot(root);
     editableObjects = collectEditableObjects(root);
@@ -633,7 +644,7 @@ async function handleImportPackage(file) {
     });
     // v5 修复：导出时已归零关节 + GLB 存的是自然状态，alignObjectToGround 正常运行即可。
     // （之前用 skipAlign:true 是因为 GLB 烘焙了已驱动的 transform + 对齐偏移，现在不需要了）
-    // 切场景前清掉旧轨迹 overlay（同上）
+    // [trajectory-overlay] 切场景前清旧 group（同上）
     trajectoryOverlay?.clear();
     sceneManager.setSceneRoot(root);
 
@@ -1896,7 +1907,7 @@ function buildExportClips() {
  * 从 keyframeManager 获取最新参数，传给 UI 渲染，并绑定修改/删除回调
  */
 function refreshPkfParamsUI() {
-  // 参数值影响公式求值 → 轨迹依赖参数，参数变动时重绘（enabled=false 时是 no-op）
+  // [trajectory-overlay] 参数值影响公式求值 → 重绘（enabled=false 时 no-op）
   trajectoryOverlay?.requestRefresh();
   const params = keyframeManager.getAllPkfParameters();
   ui.renderPkfParameters(params, {
@@ -1965,7 +1976,7 @@ function refreshAiJointChips() {
 }
 
 function refreshPkfStepsUI() {
-  // 轨迹 overlay 依赖 PKF steps，每次 steps 变动都重绘（enabled=false 时是 no-op）
+  // [trajectory-overlay] steps 是轨迹主依赖，每次变动都重绘（enabled=false 时 no-op）
   trajectoryOverlay?.requestRefresh();
   const steps = keyframeManager.getAllPkfSteps();
   const jointDefs = keyframeManager.getAllJointDefs();
@@ -2104,9 +2115,9 @@ ui.pkfPlaybackModeInput.addEventListener('change', () => {
   }
 });
 
-// ── 🎨 轨迹可视化 toggle ──
+// [trajectory-overlay] toggle 按钮事件
 ui.trajectoryToggleInput?.addEventListener('change', () => {
-  trajectoryOverlay.setEnabled(ui.trajectoryToggleInput.checked);
+  trajectoryOverlay?.setEnabled(ui.trajectoryToggleInput.checked);
 });
 
 ui.pkfPreviewBtn.addEventListener('click', () => {
@@ -2261,7 +2272,7 @@ ui.removeAllMarkersBtn?.addEventListener('click', () => {
 });
 
 function refreshMarkerList() {
-  // marker 位置注入到 PKF 参数（cargo_pos_* / drop_pos_* / cargo_size）→ 影响轨迹
+  // [trajectory-overlay] marker 位置注入到 PKF 参数（cargo_pos_* / drop_pos_* / cargo_size）
   trajectoryOverlay?.requestRefresh();
   ui.renderMarkerList(keyframeManager.getAllMarkers(), {
     onSelect: (markerName) => {
@@ -2416,7 +2427,8 @@ window.__mf = {
   sceneManager,
   keyframeManager,
   selectionManager,
-  trajectoryOverlay, // Console 里可 __mf.trajectoryOverlay.refresh() 手动触发、inspect group
+  // [trajectory-overlay] Console 可 __mf.trajectoryOverlay.refresh() / .setEnabled(bool)
+  trajectoryOverlay,
   editableObjects: () => editableObjects,
   getJointDefs: () => keyframeManager.getAllJointDefs(),
 };
