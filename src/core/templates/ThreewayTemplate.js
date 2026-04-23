@@ -96,11 +96,12 @@ export function decideAxis(pos, threshold = 0.3) {
   return '+y';
 }
 
-/** 轴向对应的叉齿旋转角（弧度，+z 轴 CCW）。0=+x 为默认。 */
+/** 轴向对应的叉齿旋转角（**度数**，和 KeyframeManager.applyJointDrive 约定一致：
+ *  revolute joint.currentValue 以度数存，内部乘 π/180 转弧度）。0°=+x 为默认。 */
 export function axisToAngle(axis) {
   if (axis === '+x') return 0;
-  if (axis === '+y') return Math.PI / 2;
-  if (axis === '-x') return Math.PI;
+  if (axis === '+y') return 90;
+  if (axis === '-x') return 180;
   return 0;
 }
 
@@ -294,10 +295,10 @@ export function compileTemplate(ctx, rhythm, forkAnchorZero = {}) {
     segDescs.push({ name, role, joint, formula, reparent: opts.reparent || null });
   };
 
-  const rotateToAngle = (targetAngle, label) => {
-    if (Math.abs(forkAngle - targetAngle) < 1e-6) return; // 已到位，跳过
-    emit(label, ROLE_FORK_ROTATE, rotateJoint, String(+targetAngle.toFixed(6)));
-    forkAngle = targetAngle;
+  const rotateToAngle = (targetAngleDeg, label) => {
+    if (Math.abs(forkAngle - targetAngleDeg) < 1e-4) return; // 已到位，跳过
+    emit(label, ROLE_FORK_ROTATE, rotateJoint, String(+targetAngleDeg.toFixed(3)));
+    forkAngle = targetAngleDeg;
   };
 
   // ══════════════ PICKUP ══════════════
@@ -361,7 +362,7 @@ export function compileTemplate(ctx, rhythm, forkAnchorZero = {}) {
 
   // ══════════════ TRAVEL ══════════════
   // 10. 旋转到 +y 运输姿态
-  rotateToAngle(Math.PI / 2, '叉齿旋转到 +y 运输姿态');
+  rotateToAngle(90, '叉齿旋转到 +y 运输姿态');
 
   // 11. 车体前进到 drop.y
   const carYDrop = (dropAxis === '+y')

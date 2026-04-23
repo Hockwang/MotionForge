@@ -112,11 +112,11 @@ describe('decideAxis', () => {
 });
 
 // ═════════════════════════════════════════════════════════
-describe('axisToAngle', () => {
-  it('+x → 0（默认姿态）', () => expect(axisToAngle('+x')).toBe(0));
-  it('+y → π/2', () => expect(axisToAngle('+y')).toBeCloseTo(Math.PI / 2, 6));
-  it('-x → π', () => expect(axisToAngle('-x')).toBeCloseTo(Math.PI, 6));
-  it('未知轴退化为 0', () => expect(axisToAngle('-y')).toBe(0));
+describe('axisToAngle（度数，配合 applyJointDrive 的 deg→rad 转换）', () => {
+  it('+x → 0°（默认姿态）', () => expect(axisToAngle('+x')).toBe(0));
+  it('+y → 90°', () => expect(axisToAngle('+y')).toBe(90));
+  it('-x → 180°', () => expect(axisToAngle('-x')).toBe(180));
+  it('未知轴退化为 0°', () => expect(axisToAngle('-y')).toBe(0));
 });
 
 // ═════════════════════════════════════════════════════════
