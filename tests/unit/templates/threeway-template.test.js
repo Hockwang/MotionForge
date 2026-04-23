@@ -112,10 +112,12 @@ describe('decideAxis', () => {
 });
 
 // ═════════════════════════════════════════════════════════
-describe('axisToAngle（度数，配合 applyJointDrive 的 deg→rad 转换）', () => {
+describe('axisToAngle（度数 + 符号修正 UI↔Three.js 左手系映射）', () => {
   it('+x → 0°（默认姿态）', () => expect(axisToAngle('+x')).toBe(0));
-  it('+y → 90°', () => expect(axisToAngle('+y')).toBe(90));
-  it('-x → 180°', () => expect(axisToAngle('-x')).toBe(180));
+  // UI Z-up → Three.js Y-up 的映射是左手系，+90° 在 Three.js 里会让
+  // fork 转到 -y 方向；要得到用户视觉上"+y 朝向"需要取 -90°
+  it('+y → -90°（负值抵消左手系映射）', () => expect(axisToAngle('+y')).toBe(-90));
+  it('-x → -180°（同 +180°视觉一致）', () => expect(axisToAngle('-x')).toBe(-180));
   it('未知轴退化为 0°', () => expect(axisToAngle('-y')).toBe(0));
 });
 

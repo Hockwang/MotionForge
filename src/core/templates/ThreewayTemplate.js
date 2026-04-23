@@ -96,12 +96,19 @@ export function decideAxis(pos, threshold = 0.3) {
   return '+y';
 }
 
-/** 轴向对应的叉齿旋转角（**度数**，和 KeyframeManager.applyJointDrive 约定一致：
- *  revolute joint.currentValue 以度数存，内部乘 π/180 转弧度）。0°=+x 为默认。 */
+/** 轴向对应的叉齿旋转角（**度数**，和 KeyframeManager.applyJointDrive 约定一致）。
+ *  0°=+x 为默认。
+ *
+ *  ⚠️ 符号说明：UI Z-up ↔ Three.js Y-up 的轴映射（UI z → Three.js y）在几何上是
+ *  左手系映射，导致 CCW/CW 方向反转。本模板按**用户视角（UI 俯视视图）**定义角度：
+ *    +90° = 用户视角"顺时针"（从 +x 转到 +y）
+ *    +180° = 用户视角半圈（从 +x 转到 -x）
+ *  apply 到 revolute joint 时要取负，才能产生用户期望的视觉旋转。
+ */
 export function axisToAngle(axis) {
   if (axis === '+x') return 0;
-  if (axis === '+y') return 90;
-  if (axis === '-x') return 180;
+  if (axis === '+y') return -90;
+  if (axis === '-x') return -180;  // 或 +180 同等视觉，取负保持"顺时针"语义一致
   return 0;
 }
 
@@ -362,7 +369,7 @@ export function compileTemplate(ctx, rhythm, forkAnchorZero = {}) {
 
   // ══════════════ TRAVEL ══════════════
   // 10. 旋转到 +y 运输姿态
-  rotateToAngle(90, '叉齿旋转到 +y 运输姿态');
+  rotateToAngle(-90, '叉齿旋转到 +y 运输姿态');
 
   // 11. 车体前进到 drop.y
   const carYDrop = (dropAxis === '+y')
