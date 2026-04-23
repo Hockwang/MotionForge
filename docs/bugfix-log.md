@@ -440,6 +440,41 @@ updated: 2026-04-22
 - **经验教训**：**导入的格式检测不要用"单一必需字段"判断**。mvp3 引入 PKF-only clip 后老判断失效，应按语义等价（任一结构性字段出现）识别
 - commit `41f914c`
 
+### GPT review 回合（REVIEW-v15 F1/F4）
+
+#### #57 marker rename undo 后 reparent 静默失效（REVIEW-v15 F1）
+- **症状**（待用户复现）：重命名 cargo marker → 做任何改动 → Ctrl+Z → 🚀 播放到 attach 点 → cargo 不 attach（reparent 静默失效）
+- **排查**（GPT review 提出 + 代码静态分析验证）：
+  - `captureHierarchySnapshot` 只存 position/quaternion/scale/parentId，**不存 obj.name**
+  - marker rename 路径同时改 metadata / scene.obj.name / reparent_events.child_name / originalParentMap
+  - undo：metadata 和 reparent_events 由 restoreState 还原回老名；但 Three.js 对象 name 停在新名
+  - `applyReparentEventsAtTime` 按 `scene.obj.name` 索引的 `nameMap.get(child_name)` 查找 → 查不到（老名） → 静默跳过
+- **修复**：
+  - [main.js:74-87](../src/main.js#L74) `captureHierarchySnapshot`：加 `name: obj.name || ''`
+  - [main.js:89-103](../src/main.js#L89) `restoreHierarchySnapshot`：`if (item.name !== obj.name) obj.name = item.name`
+  - [main.js:119-135](../src/main.js#L119) `undoLastChange`：补 `snapshotOriginalParents(sceneRoot)`——name 变了后 originalParentMap 的 key 也要跟着重建
+- **经验教训**：**任何"跨多个数据源"的用户操作，undo snapshot 必须覆盖全部数据源**。这次是 metadata + scene-graph name + reparent events + originalParentMap 四处同步，captureHierarchySnapshot 漏了 name 一处
+- 单元测试：暂未加（需构造 THREE scene，集成难度高；已加 REVIEW-v15 F36 待补）
+
+#### #58 PKF 参数 ID 格式未校验 → 改名可能抛异常 + 公式永远失败（REVIEW-v15 F4）
+- **症状**（潜在）：
+  1. AI 或手工 ZIP 里塞进带空格的参数 id（如 `"my param"`）→ 公式求值器按 `/[a-zA-Z_]\w*/g` 拆 token，`my` 和 `param` 会被判未知标识符 → 公式永远报错
+  2. 用户在 UI 输入带正则元字符的 id（如 `"*"`、`"[abc"`）→ `updatePkfParameter` 内 `new RegExp(\\b${id}\\b)` 抛 SyntaxError → 状态半修改（Map.delete 已执行但 set 没 → Map 里没这条记录了）→ UI 变空
+- **排查**（GPT review 提出 + 代码静态分析验证）：
+  - `addPkfParameter` [KeyframeManager.js:1031](../src/core/KeyframeManager.js#L1031) 只查空和重名
+  - `updatePkfParameter` [:1066-1067](../src/core/KeyframeManager.js#L1066) 用 `new RegExp(...)` 无转义
+  - 公式求值器 [:1355](../src/core/KeyframeManager.js#L1355) 只认合法 JS 标识符
+  - `main.js:1919` 的 onUpdate handler 只处理 `return false`，**未 try/catch**
+- **修复**：
+  - [KeyframeManager.js:3-11](../src/core/KeyframeManager.js#L3) 新增常量 `PKF_ID_VALID_RE = /^[a-zA-Z_][a-zA-Z0-9_]*$/`
+  - `addPkfParameter` + `updatePkfParameter`（改名分支）都走这条校验，非法返回 null/false
+  - [main.js:1919-1933](../src/main.js#L1919) onUpdate 加 try/catch 兜意外异常
+  - [EditorUI.js:740-748](../src/ui/EditorUI.js#L740) `idInput.pattern` 加 HTML5 原生校验，浏览器阻止非法输入
+- **经验教训**：
+  1. **校验放在"最早接受用户输入"处**，不是等公式求值时才发现（fail-fast 原则）
+  2. **任何把用户输入塞进 `new RegExp()` 的代码都要转义或校验**——要么白名单（现在选的），要么 `escapeRegExp` helper
+- 单元测试：12 个新 case（`tests/unit/keyframe-manager.test.js` F4 block），覆盖合法/非法/改名冲突/公式替换等场景
+
 ---
 
 ## 核心经验教训（跨 bug 总结）

@@ -741,7 +741,9 @@ export class EditorUI {
       idInput.type = 'text';
       idInput.className = 'pkf-param-id';
       idInput.value = param.id;
-      idInput.title = '参数 ID（公式中引用的变量名）';
+      // REVIEW-v15 F4：浏览器原生阻止非法 id（合法 JS 标识符，公式求值器要求一致）
+      idInput.pattern = '[a-zA-Z_][a-zA-Z0-9_]*';
+      idInput.title = '参数 ID（公式中引用的变量名；必须是合法 JS 标识符：字母/下划线开头，含字母数字下划线）';
       // 失焦时提交改名
       idInput.addEventListener('change', () => {
         const newId = idInput.value.trim();

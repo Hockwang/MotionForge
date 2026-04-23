@@ -11,8 +11,19 @@ import rateLimit from 'express-rate-limit';
 const app = express();
 // F3 修复：显式 size limit（防未来 express 默认变大）
 app.use(express.json({ limit: '500kb' }));
-const upload = multer({ dest: path.join(os.tmpdir(), 'motionforge-uploads') });
+// REVIEW-v15 F3：multer 加 fileSize 限制，防止大文件 OOM
+// USD / FBX 模型一般 < 100MB，给 200MB 上限留余量；超过则需换 CONVERTER_UPLOAD_MAX env
+const CONVERTER_UPLOAD_MAX = Number(process.env.CONVERTER_UPLOAD_MAX || 200 * 1024 * 1024);
+const upload = multer({
+  dest: path.join(os.tmpdir(), 'motionforge-uploads'),
+  limits: { fileSize: CONVERTER_UPLOAD_MAX },
+});
 const PORT = Number(process.env.CONVERTER_PORT || 8091);
+// REVIEW-v15 F3：默认只监听 loopback，防止本机上别的进程或同 LAN 访问
+// 需要跨机器访问请显式设 CONVERTER_HOST=0.0.0.0（生产前应先加 auth 层）
+const HOST = process.env.CONVERTER_HOST || '127.0.0.1';
+// REVIEW-v15 F3：Blender 子进程超时（避免卡死进程堆积）
+const BLENDER_TIMEOUT_MS = Number(process.env.BLENDER_TIMEOUT_MS || 60_000);
 const AI_BASE_URL = process.env.AI_BASE_URL || 'https://coding.qunhequnhe.com';
 const AI_API_KEY = process.env.AI_API_KEY || '';
 const AI_MODEL = process.env.AI_MODEL || 'gemini-3-flash-thinking';
@@ -44,6 +55,16 @@ const aiRateLimit = rateLimit({
   legacyHeaders: false,
 });
 
+// REVIEW-v15 F3：转换接口限流（较 AI 接口保守，因 Blender 进程重）
+// 10 次/分钟 足够本地开发；公网暴露时 Blender 转换是最重的操作，别让脚本刷
+const convertRateLimit = rateLimit({
+  windowMs: 60_000,
+  max: Number(process.env.CONVERT_RATE_LIMIT_PER_MIN || 10),
+  message: { error: '转换请求过于频繁（默认 10 次/分钟，可改 CONVERT_RATE_LIMIT_PER_MIN）' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
 app.get('/health', (_req, res) => {
   res.json({
     ok: true,
@@ -60,6 +81,13 @@ function runBlenderConvert(inputPath, outputPath) {
 
     let stderr = '';
     let stdout = '';
+    let timedOut = false;
+
+    // REVIEW-v15 F3：超时保护——Blender 卡住（循环 python 错、hang on IO 等）时杀掉
+    const timer = setTimeout(() => {
+      timedOut = true;
+      try { child.kill('SIGKILL'); } catch (_) { /* ignore */ }
+    }, BLENDER_TIMEOUT_MS);
 
     child.stdout.on('data', (chunk) => {
       stdout += String(chunk);
@@ -68,9 +96,15 @@ function runBlenderConvert(inputPath, outputPath) {
       stderr += String(chunk);
     });
     child.on('error', (error) => {
+      clearTimeout(timer);
       reject(new Error(`Failed to start Blender: ${error.message}`));
     });
     child.on('close', (code) => {
+      clearTimeout(timer);
+      if (timedOut) {
+        reject(new Error(`Blender 转换超时（${BLENDER_TIMEOUT_MS}ms），进程已被杀`));
+        return;
+      }
       if (code === 0) {
         resolve({ stdout, stderr });
         return;
@@ -80,7 +114,22 @@ function runBlenderConvert(inputPath, outputPath) {
   });
 }
 
-app.post('/api/convert-to-glb', upload.single('file'), async (req, res) => {
+// REVIEW-v15 F3：转换接口加限流中间件（multer 前面，防止先上传大文件再拒绝）
+// multer 单独 wrapper：捕获 LIMIT_FILE_SIZE 等错误，以 JSON 返回，不让 Express 吐出默认 500 HTML
+function handleUpload(req, res, next) {
+  upload.single('file')(req, res, (err) => {
+    if (err) {
+      const code = err.code === 'LIMIT_FILE_SIZE' ? 413 : 400;
+      const msg = err.code === 'LIMIT_FILE_SIZE'
+        ? `上传文件超过 ${(CONVERTER_UPLOAD_MAX / 1024 / 1024).toFixed(0)}MB 限制`
+        : err.message;
+      res.status(code).json({ error_code: err.code || 'UPLOAD_ERROR', message: msg });
+      return;
+    }
+    next();
+  });
+}
+app.post('/api/convert-to-glb', convertRateLimit, handleUpload, async (req, res) => {
   if (!req.file) {
     res.status(400).json({ error_code: 'NO_FILE', message: 'Missing uploaded file.' });
     return;
@@ -858,11 +907,16 @@ ${forkAnchorBlock}
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`[MotionForge] Conversion service running on http://localhost:${PORT}`);
+// REVIEW-v15 F3：仅监听 HOST（默认 127.0.0.1），避免默认绑到 0.0.0.0 暴露给 LAN
+app.listen(PORT, HOST, () => {
+  console.log(`[MotionForge] Conversion service running on http://${HOST}:${PORT}`);
   console.log(`[MotionForge] Blender path: ${blenderPath}`);
   console.log(`[MotionForge] Converter script: ${converterScript}`);
   console.log(`[MotionForge] Work dir: ${WORK_DIR}`);
   console.log(`[MotionForge] AI base URL: ${AI_BASE_URL}`);
   console.log(`[MotionForge] AI model: ${AI_MODEL}`);
+  console.log(`[MotionForge] 资源限制: upload=${(CONVERTER_UPLOAD_MAX / 1024 / 1024).toFixed(0)}MB, blender-timeout=${BLENDER_TIMEOUT_MS}ms`);
+  if (HOST === '0.0.0.0') {
+    console.warn('[MotionForge] ⚠ CONVERTER_HOST=0.0.0.0 监听所有网卡——生产前确保已加 auth 层');
+  }
 });

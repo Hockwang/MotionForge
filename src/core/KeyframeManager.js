@@ -1,5 +1,14 @@
 import * as THREE from 'three';
 
+// PKF 参数 id 必须是合法 JS 标识符（REVIEW-v15 F4）
+// 理由：
+//   1. evaluatePkfFormula 用 /[a-zA-Z_]\w*/g 提取公式里的标识符做白名单校验，
+//      带空格/连字符/点号的 id 在公式里会被拆成多个不可识别的 token → 求值永远报错
+//   2. updatePkfParameter 改名时用 new RegExp(`\\b${id}\\b`) 做公式里的替换，
+//      id 含正则元字符（*、[、(、?、. 等）会让 RegExp 抛 SyntaxError 或匹配错
+// 只接受 /^[a-zA-Z_][a-zA-Z0-9_]*$/（和 JS 变量名规则一致）
+export const PKF_ID_VALID_RE = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
+
 function lerp(a, b, t) {
   return a + (b - a) * t;
 }
@@ -1030,6 +1039,7 @@ export class KeyframeManager {
    */
   addPkfParameter(param) {
     if (!param?.id) return null;                       // id 为空，拒绝
+    if (!PKF_ID_VALID_RE.test(param.id)) return null;  // 非法标识符（REVIEW-v15 F4），拒绝
     if (this.pkfParameters.has(param.id)) return null; // id 重复，拒绝
     const created = {
       id: param.id,
@@ -1055,6 +1065,9 @@ export class KeyframeManager {
 
     // ── 处理 id 改名 ──
     if (patch.id && patch.id !== id) {
+      // REVIEW-v15 F4：新 id 必须是合法 JS 标识符（公式求值器的识别规则是 /[a-zA-Z_]\w*/g）
+      // 否则公式里永远无法引用它；且 new RegExp 构造遇正则元字符会抛异常
+      if (!PKF_ID_VALID_RE.test(patch.id)) return false;
       if (this.pkfParameters.has(patch.id)) return false; // 新 id 已被占用，拒绝
       this.pkfParameters.delete(id);       // 从 Map 中移除旧 key
       existing.id = patch.id;              // 更新对象的 id
@@ -1062,6 +1075,8 @@ export class KeyframeManager {
 
       // 遍历所有步骤，将公式中的旧参数名替换为新参数名
       // 使用 \b 单词边界，避免误替换（如 stroke 不会匹配 stroke_rate）
+      // 安全性：旧 id 既然已存在就必然通过 addPkfParameter 的校验（合法标识符），
+      //        new RegExp 不会因正则元字符抛（合法标识符全是字母数字下划线）
       this.pkfSteps.forEach((s) => {
         if (typeof s.value_start === 'string') s.value_start = s.value_start.replace(new RegExp(`\\b${id}\\b`, 'g'), existing.id);
         if (typeof s.value_end === 'string') s.value_end = s.value_end.replace(new RegExp(`\\b${id}\\b`, 'g'), existing.id);

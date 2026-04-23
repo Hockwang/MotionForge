@@ -78,6 +78,10 @@ function captureHierarchySnapshot() {
     const parentId = parent && parent !== sceneManager.sceneRoot ? parent.uuid : null;
     return {
       id: obj.uuid,
+      // REVIEW-v15 F1：保存 name，否则 marker rename 后 undo
+      // 只有 keyframeManager 里的 marker metadata 和 reparent 事件回老名，
+      // Three.js 对象仍挂新名 → applyReparentEventsAtTime 按老名 nameMap.get() 找不到 → 静默失效
+      name: obj.name || '',
       parentId,
       position: { x: obj.position.x, y: obj.position.y, z: obj.position.z },
       quaternion: { x: obj.quaternion.x, y: obj.quaternion.y, z: obj.quaternion.z, w: obj.quaternion.w },
@@ -93,6 +97,8 @@ function restoreHierarchySnapshot(snapshot) {
   snapshot.forEach((item) => {
     const obj = map.get(item.id);
     if (!obj) return;
+    // REVIEW-v15 F1：同步回老 name（只在实际变化时改，避免触发无谓 matrix 更新）
+    if (typeof item.name === 'string' && obj.name !== item.name) obj.name = item.name;
     const parent = item.parentId ? map.get(item.parentId) : sceneManager.sceneRoot;
     if (parent && obj.parent !== parent) parent.add(obj);
     obj.position.set(item.position.x, item.position.y, item.position.z);
@@ -115,6 +121,9 @@ function undoLastChange() {
   if (!snapshot) return;
   keyframeManager.restoreState(snapshot.keyframeState);
   restoreHierarchySnapshot(snapshot.hierarchyState);
+  // REVIEW-v15 F1：restoreHierarchySnapshot 可能改了 obj.name（marker rename undo 场景），
+  // originalParentMap 是按 name 索引的，必须跟着重建，否则 reparent 回放用错 key
+  keyframeManager.snapshotOriginalParents(sceneManager.sceneRoot);
   const selected = findObjectById(snapshot.selectedObjectId);
   selectionManager.selectObject(selected || null);
   keyframeManager.evaluateAllAt(keyframeManager.currentTime, sceneManager.sceneRoot);
@@ -1918,11 +1927,18 @@ function refreshPkfParamsUI() {
      */
     onUpdate: (id, patch) => {
       pushUndoSnapshot(); // 修改前保存快照，支持 Ctrl+Z
-      const ok = keyframeManager.updatePkfParameter(id, patch);
+      // REVIEW-v15 F4：兜 updatePkfParameter 的意外异常（例如 new RegExp 因用户塞进正则元字符
+      // 抛 SyntaxError）。把兜底放在调用方而非 KeyframeManager 里，保持 core 的错误透明
+      let ok = false;
+      try {
+        ok = keyframeManager.updatePkfParameter(id, patch);
+      } catch (err) {
+        console.error('[pkf-param] updatePkfParameter 抛异常:', err);
+      }
       if (!ok) {
-        // 修改失败（比如改名冲突），撤回快照并提示
+        // 修改失败（格式非法 / 改名冲突 / 异常），撤回快照并提示
         undoStack.pop();
-        alert(`参数更新失败：ID "${patch.id || id}" 可能已存在。`);
+        alert(`参数更新失败：ID "${patch.id || id}" 必须是合法 JS 标识符（字母/下划线开头，含字母数字下划线），且不与现有参数重名。`);
       }
       refreshPkfParamsUI(); // 无论成功失败都刷新，确保 UI 与数据一致
     },

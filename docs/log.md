@@ -165,6 +165,17 @@ mvp3 密集迭代两周后做了一份 [REVIEW-v15.md](REVIEW-v15.md) 止损（1
 
 83 单测通过。状态：mvp3 主线功能完整，可 merge `main` 打 `mvp3` tag。
 
+## [2026-04-23] review | GPT 外部 review 回合：F1/F3/F4 已修 + F44 XSS 跟踪
+
+[REVIEW-v15.md](REVIEW-v15.md) 合并后接 GPT 独立 review，交叉验证 4 条 finding 全部成立：
+
+- **#57 F1 marker rename undo 散**（🔴 高）：captureHierarchySnapshot 没存 `obj.name`，rename 后 undo 导致 Three.js 对象名、marker metadata、reparent events 三者分裂 → reparent 播放按老名查对象静默失效。修：snapshot 加 `name` + undo 补 `snapshotOriginalParents`
+- **#58 F4 PKF 参数 ID 未校验**（🟡 中）：`addPkfParameter` 只查空+重名，带正则元字符的 id 会让 `new RegExp(\\b${id}\\b)` 抛异常；带空格的 id 公式求值器识别不出来。修：`PKF_ID_VALID_RE` 白名单 + main.js try/catch + HTML5 `pattern` 属性 + 12 个新单测
+- **F3 转换服务资源保护**（🟡 中）：v14 F3 只修了 AI 接口漏了 `/api/convert-to-glb`。修：multer 200MB limit + Blender 60s timeout + app.listen 绑 127.0.0.1 + convertRateLimit 10 次/分钟
+- **F44 innerHTML XSS**（🟡 中）：20+ 处散布 DOM 注入面。本地工具风险低，**暂不修**，等做 toast 组件统一治理（和 F38 一起）
+
+95 单测通过（83 + 12 新 F4/F35/F34）。commit 本次。
+
 ## [2026-04-23] decision | 状态机框架对齐：17 段模板保留，不重构
 
 看到 mentor 的《固定资源状态动画》文档（状态拆分 + 姿态继承框架，覆盖升降机/RGV/转台/堆垛机/机械臂），初判我们的 17 段模板应该重构成 5 个原子状态（load/travelEmpty/travelLoaded/unload/idle）。

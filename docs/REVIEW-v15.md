@@ -4,9 +4,14 @@ updated: 2026-04-23
 ---
 # MotionForge mvp3 全仓 Review（v14 → v15）
 
-> **⚠️ 更新 2026-04-23（同日下午）**：首版写完后**当天完成 mvp3 收尾 checklist 中的文档/代码必修项**。
-> - P0 **F28** 已修（commit TBD，导出前 clear + exporter 过滤 userData 兜底）
-> - P1 **F29 / F30 / F31 / F32 / F33 / F34 / F35** 全部已修
+> **⚠️ 更新 2026-04-23（同日下午）**：首版写完后**当天完成 mvp3 收尾 checklist + GPT 外部 review 回合**。
+> - P0 **F28** 已修（commit `58697e2`，导出前 clear + exporter 过滤 userData 兜底）
+> - P1 **F29 / F30 / F31 / F32 / F33 / F34 / F35** 全部已修（commit `58697e2`）
+> - **GPT review 回合**新增 + 已修（commit 本次）：
+>   - **F1 marker rename undo 散** 🔴 已修（bugfix-log #57，captureHierarchySnapshot 加 name 字段 + undoLastChange 补 snapshotOriginalParents）
+>   - **F4 PKF 参数 ID 校验** 🟡 已修（bugfix-log #58，PKF_ID_VALID_RE 白名单 + try/catch + HTML5 pattern + 12 个新单测）
+>   - **F3 转换服务资源保护** 🟡 已修（multer 200MB limit + Blender 60s timeout + 127.0.0.1 only + convertRateLimit）
+> - **F44 innerHTML XSS**（见 §3 新增）——已知未修，加入 F2 tracking（本地工具风险低，等做 toast 组件时一起治理）
 > - 剩余 P2 仍未做（F37 main.js 拆分、F38 alert→toast、F39 UUID、F40 diag 整理、F41 flag 模式写进 CONTRIBUTING、F42 marker 拖动刷新）+ F36 TrajectoryOverlay 单测仍待补
 > - 下面正文是首版写作时的快照，具体哪条已修以本框为准
 
@@ -452,6 +457,44 @@ diag-zero-pose.js
 - 未跑：F28 的实机验证（用户下次手工测试即可确认是否真烘焙了轨迹进 GLB）
 - 省略：a11y、i18n、移动端、USD 转换链、CI/CD
 - 省略：AI 打关节研究（`docs/ai-rigging/` 是独立产品线）
+
+---
+
+## 7.5. GPT review 追加 findings（2026-04-23 同日下午）
+
+独立 GPT review 的发现，已与静态代码分析交叉验证为真实问题。
+
+### F1（GPT review 提）marker rename undo 后 reparent 静默失效 — 🔴 高 / ✅ 已修
+
+- **根因**：`captureHierarchySnapshot`（[main.js:74](../src/main.js#L74)）不存 `obj.name`，但 rename 路径同时改 4 个数据源（metadata + scene.name + reparent events + originalParentMap）。undo 后 scene.name 停在新名，其他三者回老名，`applyReparentEventsAtTime` 用 `nameMap.get(老名)` 查不到对象
+- **修复**（commit 本次）：snapshot 加 `name`、restore 改回老名、undoLastChange 补 `snapshotOriginalParents`
+- bugfix-log #57
+
+### F4（GPT review 提）PKF 参数 ID 未校验 — 🟡 中 / ✅ 已修
+
+- **根因**：`addPkfParameter` 只查空+重名，允许空格/正则元字符塞进 id。`updatePkfParameter` 的 `new RegExp(${id})` 遇元字符抛 SyntaxError，`onUpdate` handler 未 catch
+- **修复**（commit 本次）：新增 `PKF_ID_VALID_RE` 白名单 + UI `pattern` 属性 + main.js try/catch + 12 个新单测
+- bugfix-log #58
+
+### F3（GPT review 提）转换服务资源保护 — 🟡 中 / ✅ 已修
+
+- **根因**：v14 F3 修了 AI 接口（CORS + rate limit + express.json size），但漏了 `/api/convert-to-glb`——multer 无 fileSize limit，Blender 子进程无 timeout，app.listen 默认 0.0.0.0
+- **修复**（commit 本次）：
+  - multer `limits.fileSize = CONVERTER_UPLOAD_MAX`（默认 200MB，env 可调）
+  - Blender 子进程 `BLENDER_TIMEOUT_MS` 默认 60s 超时，到期 SIGKILL
+  - `app.listen(PORT, HOST)` 默认 `127.0.0.1`（env `CONVERTER_HOST=0.0.0.0` 才监听所有网卡，启动会打 warn）
+  - `convertRateLimit` 10 次/分钟挂 `/api/convert-to-glb`
+  - multer 错误 wrapper：413 时返回明确 JSON 不是默认 HTML 500
+
+### F44 innerHTML XSS 面 — 🟡 中 / ⏸ 已记录未修（本地工具风险低，统一治理划算）
+
+- **位置**：
+  - [main.js:1555 `out.innerHTML = html`](../src/main.js#L1555) 拼 AI warnings / rhythm.name / error message
+  - [EditorUI.js:1183-1185 `panel.innerHTML`](../src/ui/EditorUI.js#L1183) 直接插 model.nodeName / parentName
+  - [EditorUI.js:1180 `<option>${opt.name}</option>`](../src/ui/EditorUI.js#L1180) parent 下拉同问题
+- **攻击向量**：用户加载第三方叉车 GLB，其中 mesh 叫 `<img src=x onerror=...>` → 选中该节点打开关节配置面板即可触发
+- **不立即修的理由**：本地工具无 cookie/token 偷，实际危害低；散布 20+ 处 innerHTML 点位，零星改不如做 toast 组件 + `escapeHtml` helper 统一治理一次
+- **建议时机**：和 F38（alert → toast）一起做，因为都涉及 DOM 输出层
 
 ---
 

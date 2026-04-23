@@ -153,7 +153,7 @@ __mf.trajectoryOverlay  // 🎨 轨迹 overlay（.refresh() 手动刷 / .setEnab
 docs/
 ├── index.md          # 分类导航索引（新 session 从这里开始）
 ├── log.md            # Append-only 时间线（重要决策/里程碑记录）
-├── bugfix-log.md     # Bug 修复完整历史（#1-#56+）
+├── bugfix-log.md     # Bug 修复完整历史（#1-#58+）
 ├── diagnostics.md    # 诊断脚本指南（9 脚本 + 8 场景 + 单行命令）
 ├── architecture/     # 系统架构文档（模块职责、数据流、坐标系）
 ├── concepts/         # 领域概念（PKF、ZIP schema、forklift-pickup-model）

@@ -336,3 +336,136 @@ describe('addReparentEvent / 缓存失效（bug #39）', () => {
     expect(km._forkAnchorZeroCached).toEqual({ fork_anchor_zero_y: 2.13 });
   });
 });
+
+// REVIEW-v15 F4：PKF 参数 ID 必须是合法 JS 标识符
+// 历史：之前 addPkfParameter 只查重不查格式，带空格/正则元字符的 id 能塞进去：
+//   1. 公式求值器按 /[a-zA-Z_]\w*/g 提 token → 非标识符 id 在公式里永远是"未知标识符"
+//   2. updatePkfParameter 改名时 new RegExp(id) 遇正则元字符抛 SyntaxError，状态半修改
+describe('F4 addPkfParameter / updatePkfParameter ID 格式校验', () => {
+  let km;
+  beforeEach(() => { km = new KeyframeManager(); });
+
+  it('合法标识符（字母/下划线开头）可以 add', () => {
+    expect(km.addPkfParameter({ id: 'foo' })).toBeTruthy();
+    expect(km.addPkfParameter({ id: '_bar' })).toBeTruthy();
+    expect(km.addPkfParameter({ id: 'x_1' })).toBeTruthy();
+    expect(km.addPkfParameter({ id: 'cargo_pos_x' })).toBeTruthy();
+  });
+
+  it('数字开头非法', () => {
+    expect(km.addPkfParameter({ id: '1foo' })).toBeNull();
+    expect(km.addPkfParameter({ id: '123' })).toBeNull();
+  });
+
+  it('带空格/连字符/点号/正则元字符全拒绝', () => {
+    const bad = ['my param', 'my-id', 'foo.bar', 'a+b', 'x*y', '[abc]', '(paren)', 'dot.'];
+    for (const id of bad) {
+      expect(km.addPkfParameter({ id })).toBeNull();
+    }
+  });
+
+  it('updatePkfParameter 改名也走格式校验，返回 false', () => {
+    km.addPkfParameter({ id: 'foo' });
+    expect(km.updatePkfParameter('foo', { id: 'my bad id' })).toBe(false);
+    // 状态没被破坏：旧 id 还在
+    expect(km.pkfParameters.has('foo')).toBe(true);
+    expect(km.pkfParameters.size).toBe(1);
+  });
+
+  it('updatePkfParameter 合法改名会替换公式里的引用', () => {
+    km.addPkfParameter({ id: 'foo' });
+    km.addPkfStep({ value_start: '0', value_end: 'foo + 1', joint: 'j' });
+    expect(km.updatePkfParameter('foo', { id: 'bar' })).toBe(true);
+    expect(km.pkfSteps[0].value_end).toBe('bar + 1');
+  });
+
+  it('空 id 拒绝', () => {
+    expect(km.addPkfParameter({ id: '' })).toBeNull();
+    expect(km.addPkfParameter({})).toBeNull();
+  });
+});
+
+// REVIEW-v15 F35：_pkfTemplateMeta 进 undo snapshot
+// 历史：之前 serialize 不含此字段，undo 后 pkfSteps 回到模板态但 _pkfTemplateMeta=null
+//       → applyReparentEventsAtTime 重新启用 snap-attach → cargo 被强拽瞬移
+describe('F35 _pkfTemplateMeta undo 往返', () => {
+  let km;
+  beforeEach(() => { km = new KeyframeManager(); });
+
+  it('serializeState 含 _pkfTemplateMeta，restoreState 恢复', () => {
+    km._pkfTemplateMeta = { template_version: 1, total_duration: 12.5 };
+    const snap = km.serializeState();
+    expect(snap._pkfTemplateMeta).toEqual({ template_version: 1, total_duration: 12.5 });
+
+    const km2 = new KeyframeManager();
+    km2.restoreState(snap);
+    expect(km2._pkfTemplateMeta).toEqual({ template_version: 1, total_duration: 12.5 });
+  });
+
+  it('null meta 可以正确 round-trip', () => {
+    km._pkfTemplateMeta = null;
+    const snap = km.serializeState();
+    expect(snap._pkfTemplateMeta).toBeNull();
+
+    const km2 = new KeyframeManager();
+    km2._pkfTemplateMeta = { template_version: 1 }; // 预存一个
+    km2.restoreState(snap); // restore 应该覆盖为 null
+    expect(km2._pkfTemplateMeta).toBeNull();
+  });
+
+  it('老 snapshot（缺 _pkfTemplateMeta 字段）不覆盖当前值', () => {
+    // 模拟老版本 serialize 的 state，缺 _pkfTemplateMeta 字段
+    const oldSnap = {
+      currentTime: 0,
+      jointDefinitions: [],
+      objects: [],
+      globalClips: [],
+      pkfParameters: [],
+      pkfSteps: [],
+      sceneMarkers: [],
+      // 注意：没有 _pkfTemplateMeta 字段
+    };
+    km._pkfTemplateMeta = { template_version: 1 };
+    km.restoreState(oldSnap);
+    // 老 snapshot 没这字段 → 保留当前值不动
+    expect(km._pkfTemplateMeta).toEqual({ template_version: 1 });
+  });
+});
+
+// REVIEW-v15 F34：addPkfStep 保留 template_segment / template_segment_name
+// 历史：之前这两字段在 addPkfStep 构造时被丢，导致轨迹 overlay 段号标签一直走 idx0+1 兜底
+describe('F34 addPkfStep 保留模板元数据字段', () => {
+  let km;
+  beforeEach(() => { km = new KeyframeManager(); });
+
+  it('传入的 template_segment / template_segment_name 被保留', () => {
+    const step = km.addPkfStep({
+      joint: 'mast',
+      value_end: '1',
+      template_segment: 5,
+      template_segment_name: '取货',
+    });
+    expect(step.template_segment).toBe(5);
+    expect(step.template_segment_name).toBe('取货');
+  });
+
+  it('未传入时默认为 null（非模板来源的 step 也能正常用）', () => {
+    const step = km.addPkfStep({ joint: 'j', value_end: '0' });
+    expect(step.template_segment).toBeNull();
+    expect(step.template_segment_name).toBeNull();
+  });
+
+  it('serialize/restore 保持模板元数据', () => {
+    km.addPkfStep({
+      joint: 'mast',
+      value_end: '1',
+      template_segment: 5,
+      template_segment_name: '取货',
+    });
+    const snap = km.serializeState();
+    const km2 = new KeyframeManager();
+    km2.restoreState(snap);
+    expect(km2.pkfSteps[0].template_segment).toBe(5);
+    expect(km2.pkfSteps[0].template_segment_name).toBe('取货');
+  });
+});
