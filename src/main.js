@@ -1226,6 +1226,77 @@ function snapshotForkAnchorZero() {
 }
 
 /**
+ * 三向车专用：给定 rotate joint 名和角度数组，snapshot 每个角度下 fork 承载点的世界坐标。
+ * 因 fork 旋转后承载点会相对 rotation pivot 镜像/偏移，各 axis 的公式需要各自的
+ * "anchor at that orientation" 才能准确把承载点对到 cargo/drop 位置。
+ *
+ * 绕过 computeForkAnchorZero 的缓存（它按 hash 不按 joint value 缓存，多次调用会返回同一值）。
+ *
+ * @param {string} rotateJointName
+ * @param {Array<{key: string, angleDeg: number}>} angles
+ * @returns {Object<string, {fork_anchor_zero_x, fork_anchor_zero_y, fork_anchor_zero_z}>}
+ */
+function snapshotForkAnchorAtRotations(rotateJointName, angles) {
+  const THREE_NS = window.__mf?.THREE || window.THREE;
+  const saved = keyframeManager.getAllJointDefs().map((d) => ({ id: d.id, value: d.currentValue }));
+  const results = {};
+
+  // 从当前 reparent 事件找 fork object（和 computeForkAnchorZero 同逻辑）
+  const events = keyframeManager.getReparentEvents?.() || [];
+  const attachEvent = events.find((e) => e.new_parent_name);
+  if (!attachEvent) {
+    angles.forEach((a) => { results[a.key] = {}; });
+    return results;
+  }
+  const forkObj = sceneManager.sceneRoot.getObjectByName(attachEvent.new_parent_name);
+  if (!forkObj) {
+    angles.forEach((a) => { results[a.key] = {}; });
+    return results;
+  }
+
+  const rotDef = keyframeManager.getAllJointDefs().find((d) => d.name === rotateJointName);
+  if (!rotDef) {
+    angles.forEach((a) => { results[a.key] = {}; });
+    return results;
+  }
+
+  try {
+    for (const { key, angleDeg } of angles) {
+      // 所有关节归零
+      saved.forEach((s) => {
+        const d = keyframeManager.jointDefinitions.get(s.id);
+        if (d) d.currentValue = 0;
+      });
+      // 只有 rotate joint 设到目标角度
+      rotDef.currentValue = angleDeg;
+      keyframeManager.applyAllJointDrives(sceneManager.sceneRoot);
+      sceneManager.sceneRoot.updateMatrixWorld(true);
+
+      // 直接算 bbox 底面中心（绕过 computeForkAnchorZero 的缓存）
+      const box = new THREE_NS.Box3().setFromObject(forkObj);
+      if (box.isEmpty()) {
+        results[key] = {};
+        continue;
+      }
+      const center = box.getCenter(new THREE_NS.Vector3());
+      results[key] = {
+        // Three.js y = UI z；Three.js z = UI y；保持和 computeForkAnchorZero 同 schema
+        fork_anchor_zero_x: +center.x.toFixed(3),
+        fork_anchor_zero_y: +center.z.toFixed(3),
+        fork_anchor_zero_z: +box.min.y.toFixed(3),
+      };
+    }
+  } finally {
+    saved.forEach((s) => {
+      const d = keyframeManager.jointDefinitions.get(s.id);
+      if (d) d.currentValue = s.value;
+    });
+    keyframeManager.applyAllJointDrives(sceneManager.sceneRoot);
+  }
+  return results;
+}
+
+/**
  * #47：attach 前必须三维都到位，否则 snap-attach 会把 cargo 瞬间拉到 fork 位置 → 视觉跳变。
  * AI 生成的 PKF 经常漏某个方向（多半是门架升降）。此函数检查 x/y/z 三维目标位移，
  * 缺失的自动注入一段 step；找不到对应 role 关节则加 warning。
@@ -1614,6 +1685,20 @@ ui.aiOneshotBtn?.addEventListener('click', async () => {
 
         // 先算 fork_anchor_zero（公式要用）
         const forkAnchorZeroTpl = snapshotForkAnchorZero();
+
+        // 三向车：额外 snapshot 承载点在 +y 和 -x 旋转姿态下的位置。
+        // fork 旋转后承载点相对 _CS19110 pivot 偏移，单一 fork_anchor_zero 不够用。
+        let forkAnchorByAxisTpl = null;
+        if (templateKind === 'threeway' && ctx.rotateJoint?.name) {
+          // axisToAngle 当前返回：+x → 0, +y → -90, -x → -180（负值修正左手系映射）
+          forkAnchorByAxisTpl = snapshotForkAnchorAtRotations(ctx.rotateJoint.name, [
+            { key: '+x', angleDeg: 0 },
+            { key: '+y', angleDeg: -90 },
+            { key: '-x', angleDeg: -180 },
+          ]);
+          console.info('[oneshot] 三向车 fork_anchor by axis:', forkAnchorByAxisTpl);
+        }
+
         // 用完 placeholder 就清掉（applyCompiledTemplate 也会清，但双保险防异常路径残留）
         if (placeholderEventId) {
           keyframeManager.removeReparentEvent(placeholderEventId);
@@ -1625,7 +1710,7 @@ ui.aiOneshotBtn?.addEventListener('click', async () => {
         let preCompiled = null; // 三向车场景下提前编译的结果，拿段序
         if (templateKind === 'threeway') {
           // 先用默认节奏编译一把，只是为了拿 step 列表
-          preCompiled = template.compileTemplate(ctx, undefined, forkAnchorZeroTpl);
+          preCompiled = template.compileTemplate(ctx, undefined, forkAnchorZeroTpl, forkAnchorByAxisTpl);
           segmentsForAi = preCompiled.steps.map((s, i) => ({ index: i + 1, name: s.template_segment_name || s.joint }));
         } else {
           segmentsForAi = FORKLIFT_TEMPLATE.map((s) => ({ index: s.index, name: s.name }));
@@ -1645,7 +1730,7 @@ ui.aiOneshotBtn?.addEventListener('click', async () => {
 
         ui.aiOneshotBtn.textContent = '2/3 模板: 编译 PKF...';
         setOut(`✅ 节奏: ${rhythm.name || '(未命名)'}<br>🚀 Step 2: 编译模板 → PKF...`, '#93c5fd');
-        const compiled = template.compileTemplate(ctx, rhythm, forkAnchorZeroTpl);
+        const compiled = template.compileTemplate(ctx, rhythm, forkAnchorZeroTpl, forkAnchorByAxisTpl);
         window.__mf = window.__mf || {};
         window.__mf.lastTemplate = { intent, rhythm, compiled, templateKind };
 

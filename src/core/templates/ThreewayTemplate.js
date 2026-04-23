@@ -264,10 +264,12 @@ export function buildDefaultRhythm(totalSeconds = 12, segCount = 18) {
  *
  * @param {Object} ctx canApply().data
  * @param {Object} [rhythm] { name, segments:[{index,duration,easing}] }
- * @param {Object} [forkAnchorZero] { fork_anchor_zero_x/y/z }
+ * @param {Object} [forkAnchorZero] { fork_anchor_zero_x/y/z } - 默认 +x 朝向下的承载点
+ * @param {Object} [forkAnchorByAxis] { '+x':{...}, '+y':{...}, '-x':{...} } - 各 axis 旋转姿态下承载点
+ *   fork 旋转后承载点相对 rotation pivot 会偏移，每个 axis 需要各自的锚点才能把承载点对准 cargo/drop
  * @returns {{parameters, steps, reparent_events, meta}}
  */
-export function compileTemplate(ctx, rhythm, forkAnchorZero = {}) {
+export function compileTemplate(ctx, rhythm, forkAnchorZero = {}, forkAnchorByAxis = null) {
   if (!ctx) throw new Error('compileTemplate(threeway): ctx required');
   const { carJoint, mastJoint, lateralJoint, rotateJoint, cargoName, forkName } = ctx;
 
@@ -276,7 +278,22 @@ export function compileTemplate(ctx, rhythm, forkAnchorZero = {}) {
   const cargoAxis = decideAxis(ctx.cargoPos, threshold);
   const dropAxis = decideAxis(ctx.dropPos, threshold);
 
-  // ── parameters：复用 ForkliftTemplate 的约定 + 三向车新参 ──
+  // 承载点 per axis：缺省 fallback 到 forkAnchorZero（相当于所有 axis 共享 +x 锚点，老行为）
+  const anchorByAxis = {
+    '+x': (forkAnchorByAxis && forkAnchorByAxis['+x']) || forkAnchorZero,
+    '+y': (forkAnchorByAxis && forkAnchorByAxis['+y']) || forkAnchorZero,
+    '-x': (forkAnchorByAxis && forkAnchorByAxis['-x']) || forkAnchorZero,
+  };
+  // 辅助：给定 axis 和 coord，返回 PKF 参数 id
+  // 保留 'fork_anchor_zero_*' 命名给 +x 轴（向后兼容）；+y/-x 加 axis 后缀
+  const anchorParamId = (axis, coord) => {
+    if (axis === '+x') return `fork_anchor_zero_${coord}`;
+    if (axis === '+y') return `fork_anchor_py_${coord}`;
+    if (axis === '-x') return `fork_anchor_nx_${coord}`;
+    return `fork_anchor_zero_${coord}`;
+  };
+
+  // ── parameters：复用 ForkliftTemplate 的约定 + 三向车新参 + axis 专属 anchor ──
   const parameters = [
     { id: 'cargo_pos_x', type: 'number', unit: 'm', desc: '货物 X', default: +ctx.cargoPos.x.toFixed(3) },
     { id: 'cargo_pos_y', type: 'number', unit: 'm', desc: '货物 Y', default: +ctx.cargoPos.y.toFixed(3) },
@@ -284,9 +301,18 @@ export function compileTemplate(ctx, rhythm, forkAnchorZero = {}) {
     { id: 'drop_pos_x', type: 'number', unit: 'm', desc: '放货点 X', default: +ctx.dropPos.x.toFixed(3) },
     { id: 'drop_pos_y', type: 'number', unit: 'm', desc: '放货点 Y', default: +ctx.dropPos.y.toFixed(3) },
     { id: 'drop_pos_z', type: 'number', unit: 'm', desc: '放货面高度', default: +ctx.dropPos.z.toFixed(3) },
-    { id: 'fork_anchor_zero_x', type: 'number', unit: 'm', desc: '叉齿零位锚点 X', default: +((forkAnchorZero.fork_anchor_zero_x ?? 0)).toFixed(3) },
-    { id: 'fork_anchor_zero_y', type: 'number', unit: 'm', desc: '叉齿零位锚点 Y', default: +((forkAnchorZero.fork_anchor_zero_y ?? 0)).toFixed(3) },
-    { id: 'fork_anchor_zero_z', type: 'number', unit: 'm', desc: '叉齿零位锚点 Z', default: +((forkAnchorZero.fork_anchor_zero_z ?? 0)).toFixed(3) },
+    // +x 朝向承载点（默认 axis）
+    { id: 'fork_anchor_zero_x', type: 'number', unit: 'm', desc: '叉齿承载点 +x 朝向 X', default: +((anchorByAxis['+x'].fork_anchor_zero_x ?? 0)).toFixed(3) },
+    { id: 'fork_anchor_zero_y', type: 'number', unit: 'm', desc: '叉齿承载点 +x 朝向 Y', default: +((anchorByAxis['+x'].fork_anchor_zero_y ?? 0)).toFixed(3) },
+    { id: 'fork_anchor_zero_z', type: 'number', unit: 'm', desc: '叉齿承载点 +x 朝向 Z', default: +((anchorByAxis['+x'].fork_anchor_zero_z ?? 0)).toFixed(3) },
+    // +y 朝向承载点（cargo 或 drop 在正前方时用）
+    { id: 'fork_anchor_py_x', type: 'number', unit: 'm', desc: '叉齿承载点 +y 朝向 X', default: +((anchorByAxis['+y'].fork_anchor_zero_x ?? 0)).toFixed(3) },
+    { id: 'fork_anchor_py_y', type: 'number', unit: 'm', desc: '叉齿承载点 +y 朝向 Y', default: +((anchorByAxis['+y'].fork_anchor_zero_y ?? 0)).toFixed(3) },
+    { id: 'fork_anchor_py_z', type: 'number', unit: 'm', desc: '叉齿承载点 +y 朝向 Z', default: +((anchorByAxis['+y'].fork_anchor_zero_z ?? 0)).toFixed(3) },
+    // -x 朝向承载点（cargo 或 drop 在 -x 侧时用）
+    { id: 'fork_anchor_nx_x', type: 'number', unit: 'm', desc: '叉齿承载点 -x 朝向 X', default: +((anchorByAxis['-x'].fork_anchor_zero_x ?? 0)).toFixed(3) },
+    { id: 'fork_anchor_nx_y', type: 'number', unit: 'm', desc: '叉齿承载点 -x 朝向 Y', default: +((anchorByAxis['-x'].fork_anchor_zero_y ?? 0)).toFixed(3) },
+    { id: 'fork_anchor_nx_z', type: 'number', unit: 'm', desc: '叉齿承载点 -x 朝向 Z', default: +((anchorByAxis['-x'].fork_anchor_zero_z ?? 0)).toFixed(3) },
     { id: 'cargo_width',  type: 'number', unit: 'm', desc: 'cargo 宽', default: +(ctx.cargoSize.w || 0).toFixed(3) },
     { id: 'cargo_height', type: 'number', unit: 'm', desc: 'cargo 高', default: +(ctx.cargoSize.h || 0).toFixed(3) },
     { id: 'cargo_depth',  type: 'number', unit: 'm', desc: 'cargo 深', default: +(ctx.cargoSize.d || 0).toFixed(3) },
@@ -308,55 +334,59 @@ export function compileTemplate(ctx, rhythm, forkAnchorZero = {}) {
     forkAngle = targetAngleDeg;
   };
 
+  // 当前 fork 朝向的 axis（跟随 rotateToAngle 更新），决定 anchor 参数用哪套
+  let currentAxis = '+x'; // 初始 fork 朝 +x
+  const ax = (coord) => anchorParamId(currentAxis, coord); // anchor 参数名 shortcut
+
   // ══════════════ PICKUP ══════════════
-  // 1. 车体前进到 cargo.y（+y 取货时止于 safe 距离）
+  // 1. 车体前进到 cargo.y（+y 取货时止于 safe 距离）—— 此时 fork 还未旋转，用 +x anchor
   const carYCargo = (cargoAxis === '+y')
-    ? 'cargo_pos_y - fork_anchor_zero_y - fork_insertion_depth'
-    : 'cargo_pos_y - fork_anchor_zero_y';
+    ? `cargo_pos_y - ${ax('y')} - fork_insertion_depth`
+    : `cargo_pos_y - ${ax('y')}`;
   emit('车体前进到 cargo.y', ROLE_CAR_FORWARD, carJoint, carYCargo);
 
-  // 2. 旋转到 cargoAxis
+  // 2. 旋转到 cargoAxis（更新 currentAxis）
   rotateToAngle(axisToAngle(cargoAxis), `叉齿旋转到取货朝向 (${cargoAxis})`);
+  currentAxis = cargoAxis;
 
-  // 3. 升到取货高度（低 clearance）
+  // 3. 升到取货高度（低 clearance）—— 用 cargoAxis anchor
   emit('门架升到取货高度', ROLE_MAST_LIFT, mastJoint,
-    'cargo_pos_z - cargo_height / 2 + cargo_fork_height - lift_clearance - fork_anchor_zero_z');
+    `cargo_pos_z - cargo_height / 2 + cargo_fork_height - lift_clearance - ${ax('z')}`);
 
   // 4. approach safe（仅 ±x 需要，+y 已在 step 1 止于 safe）
   if (cargoAxis === '+x') {
     emit('门架横移到 cargo 前 safe', ROLE_MAST_LATERAL, lateralJoint,
-      'cargo_pos_x - fork_insertion_depth - fork_anchor_zero_x');
+      `cargo_pos_x - fork_insertion_depth - ${ax('x')}`);
   } else if (cargoAxis === '-x') {
     emit('门架横移到 cargo 前 safe', ROLE_MAST_LATERAL, lateralJoint,
-      'cargo_pos_x + fork_insertion_depth - fork_anchor_zero_x');
+      `cargo_pos_x + fork_insertion_depth - ${ax('x')}`);
   }
 
   // 5. insert（attach 触发段）
   if (cargoAxis === '+x' || cargoAxis === '-x') {
     emit('门架横移插入 cargo', ROLE_MAST_LATERAL, lateralJoint,
-      'cargo_pos_x - fork_anchor_zero_x',
+      `cargo_pos_x - ${ax('x')}`,
       { reparent: 'attach' });
   } else {
-    // +y: 车体继续前进到 cargo.y
     emit('车体前进插入 cargo', ROLE_CAR_FORWARD, carJoint,
-      'cargo_pos_y - fork_anchor_zero_y',
+      `cargo_pos_y - ${ax('y')}`,
       { reparent: 'attach' });
   }
 
   // 6. 取货上顶 lift_clearance
   emit('取货（上顶 lift_clearance）', ROLE_MAST_LIFT, mastJoint,
-    'cargo_pos_z - cargo_height / 2 + cargo_fork_height - fork_anchor_zero_z');
+    `cargo_pos_z - cargo_height / 2 + cargo_fork_height - ${ax('z')}`);
 
   // 7. retract
   if (cargoAxis === '+x') {
     emit('门架横移退回 safe', ROLE_MAST_LATERAL, lateralJoint,
-      'cargo_pos_x - fork_insertion_depth - fork_anchor_zero_x');
+      `cargo_pos_x - fork_insertion_depth - ${ax('x')}`);
   } else if (cargoAxis === '-x') {
     emit('门架横移退回 safe', ROLE_MAST_LATERAL, lateralJoint,
-      'cargo_pos_x + fork_insertion_depth - fork_anchor_zero_x');
+      `cargo_pos_x + fork_insertion_depth - ${ax('x')}`);
   } else {
     emit('车体后退到 safe', ROLE_CAR_FORWARD, carJoint,
-      'cargo_pos_y - fork_anchor_zero_y - fork_insertion_depth');
+      `cargo_pos_y - ${ax('y')} - fork_insertion_depth`);
   }
 
   // 8. reset lateral（仅 ±x 用过）
@@ -365,60 +395,61 @@ export function compileTemplate(ctx, rhythm, forkAnchorZero = {}) {
   }
 
   // 9. 抬到运输避让高度
-  emit('抬到运输高度', ROLE_MAST_LIFT, mastJoint, 'transport_height - fork_anchor_zero_z');
+  emit('抬到运输高度', ROLE_MAST_LIFT, mastJoint, `transport_height - ${ax('z')}`);
 
   // ══════════════ TRAVEL ══════════════
-  // 10. 旋转到 +y 运输姿态
+  // 10. 旋转到 +y 运输姿态（更新 currentAxis）
   rotateToAngle(-90, '叉齿旋转到 +y 运输姿态');
+  currentAxis = '+y';
 
-  // 11. 车体前进到 drop.y
+  // 11. 车体前进到 drop.y —— 此时 fork 在 +y，用 +y anchor
   const carYDrop = (dropAxis === '+y')
-    ? 'drop_pos_y - fork_anchor_zero_y - fork_insertion_depth'
-    : 'drop_pos_y - fork_anchor_zero_y';
+    ? `drop_pos_y - ${ax('y')} - fork_insertion_depth`
+    : `drop_pos_y - ${ax('y')}`;
   emit('车体前进到 drop.y', ROLE_CAR_FORWARD, carJoint, carYDrop);
 
   // ══════════════ DROP ══════════════
-  // 12. 旋转到 dropAxis（已 +y 则可能省）
+  // 12. 旋转到 dropAxis（更新 currentAxis）
   rotateToAngle(axisToAngle(dropAxis), `叉齿旋转到放货朝向 (${dropAxis})`);
+  currentAxis = dropAxis;
 
-  // 13. 升到放货工作面（drop.z + cargo_fork_height 承载面）
+  // 13. 升到放货工作面
   emit('门架调整到放货工作面', ROLE_MAST_LIFT, mastJoint,
-    'drop_pos_z + cargo_fork_height - fork_anchor_zero_z');
+    `drop_pos_z + cargo_fork_height - ${ax('z')}`);
 
   // 14. approach safe
   if (dropAxis === '+x') {
     emit('门架横移到 drop 前 safe', ROLE_MAST_LATERAL, lateralJoint,
-      'drop_pos_x - fork_insertion_depth - fork_anchor_zero_x');
+      `drop_pos_x - fork_insertion_depth - ${ax('x')}`);
   } else if (dropAxis === '-x') {
     emit('门架横移到 drop 前 safe', ROLE_MAST_LATERAL, lateralJoint,
-      'drop_pos_x + fork_insertion_depth - fork_anchor_zero_x');
+      `drop_pos_x + fork_insertion_depth - ${ax('x')}`);
   }
 
   // 15. 送到 drop
   if (dropAxis === '+x' || dropAxis === '-x') {
     emit('门架横移送到 drop', ROLE_MAST_LATERAL, lateralJoint,
-      'drop_pos_x - fork_anchor_zero_x');
+      `drop_pos_x - ${ax('x')}`);
   } else {
     emit('车体前进到 drop', ROLE_CAR_FORWARD, carJoint,
-      'drop_pos_y - fork_anchor_zero_y',
-      { reparent: null }); // 注意：不是 attach，这里是放货定位
+      `drop_pos_y - ${ax('y')}`);
   }
 
   // 16. 放货下降（detach 触发段）
   emit('放货（下降 lift_clearance）', ROLE_MAST_LIFT, mastJoint,
-    'drop_pos_z + cargo_fork_height - lift_clearance - fork_anchor_zero_z',
+    `drop_pos_z + cargo_fork_height - lift_clearance - ${ax('z')}`,
     { reparent: 'detach' });
 
   // 17. retract
   if (dropAxis === '+x') {
     emit('门架横移退回 safe', ROLE_MAST_LATERAL, lateralJoint,
-      'drop_pos_x - fork_insertion_depth - fork_anchor_zero_x');
+      `drop_pos_x - fork_insertion_depth - ${ax('x')}`);
   } else if (dropAxis === '-x') {
     emit('门架横移退回 safe', ROLE_MAST_LATERAL, lateralJoint,
-      'drop_pos_x + fork_insertion_depth - fork_anchor_zero_x');
+      `drop_pos_x + fork_insertion_depth - ${ax('x')}`);
   } else {
     emit('车体后退到 safe', ROLE_CAR_FORWARD, carJoint,
-      'drop_pos_y - fork_anchor_zero_y - fork_insertion_depth');
+      `drop_pos_y - ${ax('y')} - fork_insertion_depth`);
   }
 
   // 18. reset lateral
@@ -427,8 +458,9 @@ export function compileTemplate(ctx, rhythm, forkAnchorZero = {}) {
   }
 
   // ══════════════ RETURN ══════════════
-  // 19. 旋转归零
+  // 19. 旋转归零（回 +x）
   rotateToAngle(0, '叉齿旋转归零');
+  currentAxis = '+x';
 
   // 20. 门架降归零
   emit('门架下降归零', ROLE_MAST_LIFT, mastJoint, '0');
