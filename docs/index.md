@@ -49,6 +49,7 @@ updated: 2026-04-23
 - [scene-marker-system.md](concepts/scene-marker-system.md) — 场景标记（cargo/pickup/dropoff）及 schema v6
 - [forklift-pickup-model.md](concepts/forklift-pickup-model.md) — 叉车取放货领域模型：fork_anchor_zero（mvp2 = auto bbox 底面中心）+ snap-attach + 12 条隐含假设 + 失效矩阵
 - **[forklift-pickup-template.md](concepts/forklift-pickup-template.md)** — mvp3 核心契约：17 段叉车取放模板（14 必选 + 3 可选横移），前端锁死几何，AI 只出节奏
+- **[threeway-template.md](concepts/threeway-template.md)** — 三向车（VNA）参数化模板：车体不横移，靠门架横移 + 叉齿旋转实现 +x/+y/-x 三向取放；动态 13-22 段；模板库架构（src/core/templates/）
 
 ---
 

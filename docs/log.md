@@ -231,4 +231,29 @@ commit `a558925`。
 
 **经验教训**：采样逻辑复现播放逻辑时要对齐**所有前置步骤**，不能只看"活跃 step 的结果"。这个 bug 纯 t=0 测试不会暴露（此时 joint 理应为 0），以后写诊断要覆盖"从非零状态进入"的路径。
 
-commit 待推。
+commits `28b9244` / `fdf0ee1` / `8b8290e`。
+
+## [2026-04-23] feature | 三向车（VNA）参数化模板 + 模板库架构
+
+用户的三向车模型在 17 段普通叉车模板下跑不对——三向车**车体不横移**（没有 role=车体横移 关节），靠 `_CS198` 门架横移 + `_CS19110` 叉齿旋转完成 +x / +y / -x 三个方向的侧取。用户同时提到"以后会遇到更多特立独行的模型"，不希望每次都重写模板。
+
+**架构决策**：把 `src/core/ForkliftTemplate.js` 搬到 `src/core/templates/` 目录，建 `index.js` 注册表 + `detectTemplate(km, root)` 自动识别机制。加新模板只需新建一个文件实现 canApply + compileTemplate 契约 + 注册表加一行。
+
+**ThreewayTemplate.js**（动态段数 13-22）：
+- `decideAxis(pos, threshold=0.3)`: |x| > 阈值 → ±x 侧；否则 +y 正面。先沿 y 对齐 → diagonal cargo 自然吸收进单轴
+- 9 种 (cargoAxis, dropAxis) 组合参数化生成段序
+- 旋转优化：`rotateToAngle` 检查 forkAngle，已到位不 emit 多余段
+- 新参数 `fork_insertion_depth`（0.5m）+ `x_axis_threshold`（0.3m，用户可改）
+- 复用：`findPrimaryByRole`（双段门架 overflow）、`fork_anchor_zero`、`_pkfTemplateMeta` snap-attach 禁用
+
+**后端**：`/api/template-rhythm` 加 `template_kind` 参数，forklift（17 段固定）和 threeway（动态段数）两套 prompt；校验 expectedCount 动态。
+
+**前端**：main.js 🚀 按钮 `detectTemplate` 取代 `collectTemplateContext`，三向车先默认编译拿段序 → 传给 AI 拿节奏 → 重新编译应用。
+
+**测试**：+30 单测（145 passing，+30）。9 种轴组合 + 排他 + 参数注入 + value_start 级联。
+
+**文档**：新增 `docs/concepts/threeway-template.md` 完整设计文档。
+
+commits 分 4 个：`refactor(templates):` 搬目录 + `feat(threeway):` 模板 + tests + `feat(threeway):` 集成 + `docs(threeway):` 文档。
+
+未来加新模板模式已确立：新建 MyTemplate.js → 注册到 index.js → 后端加第 N 套 prompt（可选）。
