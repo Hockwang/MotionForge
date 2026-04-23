@@ -216,3 +216,19 @@ commit `1223e62`（对齐文档）。
 commit `a558925`。
 
 **UX 后续补丁**：主 commit 推完用户实测发现需要"清空其中一个门架的 role"才能 work，反直觉——两个关节明明都是门架。加 `KeyframeManager.findPrimaryByRole(role)` helper，按 role 命中时自动跳过"被别人 `overflow_to` 指向的"关节（slave），让用户可以给所有门架段都贴 role="门架升降"；`ForkliftTemplate` 两处 `find(role)` 改走 helper。单关节/无 overflow → 等价于原 `find`，100% 向后兼容。+8 单测（115 passing）。
+
+## [2026-04-23] fix | #60 轨迹 overlay 采样残留污染 — 非 t=0 刷新时画出 fork 实际不经过的线
+
+双段门架功能跑通后用户发现：右下角一段 L 形蓝线，播放时 fork 不从那里过。拖 t=0 再切 toggle 后 L 消失；从中段切 toggle 又出现。
+
+**根因**：`TrajectoryOverlay.refresh` 采样循环只 `evaluatePkfAt` + 覆盖活跃 step 的 joint，未开始的 step 对应的 joint（比如 t=0 时的 `_AHR23`）保留用户打开 toggle 前的 currentValue（可能是 6.5）→ fork z 被污染 → 画出错误轨迹线。
+
+实际播放的 `applyPkfAtTime` 每帧清零所有 PKF-target joint，采样代码漏了同样的清零逻辑。
+
+**修复**：for 循环开始前一次性清零（一次足够：evaluatePkfAt 对完成的 step 会返回 value_end hold，自动覆盖）。
+
+**新增诊断脚本** `tests/diag-trajectory-vs-playback.js`——双路 dense 采样对比（仿 playback vs 仿 overlay），超阈值偏差打印。`__diagTraj.all()` 一把梭 + 残留压力测试。留在 docs/diagnostics.md 作为以后的回归守护。
+
+**经验教训**：采样逻辑复现播放逻辑时要对齐**所有前置步骤**，不能只看"活跃 step 的结果"。这个 bug 纯 t=0 测试不会暴露（此时 joint 理应为 0），以后写诊断要覆盖"从非零状态进入"的路径。
+
+commit 待推。

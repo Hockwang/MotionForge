@@ -103,6 +103,20 @@ export class TrajectoryOverlay {
     const savedTime = km.currentTime;
     const savedJointValues = km.getAllJointDefs().map((d) => ({ id: d.id, v: d.currentValue }));
 
+    // #60 修：把所有 PKF 触及的 joint 先一次性清零——否则若用户在非 t=0 时刻
+    //     打开轨迹 toggle，那些"在当前 t 有 value 但在 sample 的小 t 下 step 还没开始"
+    //     的关节会残留污染，导致轨迹线画在 fork 实际不会经过的位置（bug #60）。
+    //     和 main.js:applyPkfAtTime 的每帧重置逻辑同构，只是这里循环外一次搞定足够：
+    //     evaluatePkfAt 对完成的 step 也会返回 value_end（自动覆盖），对未开始的 step
+    //     不返回 → 靠这次清零让它们保持 0，和实际播放行为一致。
+    const defByName = new Map();
+    km.jointDefinitions.forEach((d) => { if (d.name) defByName.set(d.name, d); });
+    (km.pkfSteps || []).forEach((step) => {
+      let d = step.joint_def_id ? km.jointDefinitions.get(step.joint_def_id) : null;
+      if (!d && step.joint) d = defByName.get(step.joint);
+      if (d) d.currentValue = 0;
+    });
+
     const forkPts = [];
     const cargoPts = [];
     const samples = this.samples;

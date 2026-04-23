@@ -57,6 +57,7 @@ updated: 2026-04-23
 | [tests/diag-oneshot.js](../tests/diag-oneshot.js) | 🚀 一键生成流程排查（L1 / L2 / PKF eval / markers） | `__diagO.report/l1/l2/plan/actual` |
 | [tests/diag-fork-anchor.js](../tests/diag-fork-anchor.js) | 承载锚点 / 叉齿 mesh / bbox / PKF eval 一把梭 | `__diagFA.run/listForkSubmeshes` |
 | ⭐ [tests/diag-template.js](../tests/diag-template.js) | **叉车模板 + 轨迹可视化**（和 AI 沟通首选） | `__diagTpl.drawTrajectory / all / compiled / ...` |
+| [tests/diag-trajectory-vs-playback.js](../tests/diag-trajectory-vs-playback.js) | 轨迹 overlay 采样 vs 实际播放 fork 世界坐标的 diff（bug #60 回归检测） | `__diagTraj.all / compare / stressResidue` |
 
 ---
 

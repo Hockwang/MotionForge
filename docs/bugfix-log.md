@@ -527,6 +527,26 @@ updated: 2026-04-22
 - **经验教训**：**含歧义的 role 匹配应该集中在一个 helper 里**而不是每处 `find(role === x)` 散落。以后加新 role 查找自动享受"跳过 slave"规则，无需每次 code review 想特殊 case
 - 单元测试：+8 case（KeyframeManager `findPrimaryByRole` block 7 个 + ForkliftTemplate `collectTemplateContext` 双段门架 1 个），覆盖单关节/多关节同 role/双段/三段嵌套/空 role/fallback slave 兜底
 
+#### #60 轨迹 overlay 采样残留污染 —— 非 t=0 时刻刷新会画出"fork 实际不经过"的线
+
+- **症状**（用户在双段门架测试时发现）：三向车跑完取放，轨迹 overlay 右下角多出一段直角 L 形蓝线，播放时 fork **不从那条线经过**。拖回 t=0 再切 toggle，L 消失；从 t=11 之类中段位置切 toggle，L 又出现
+- **排查**：
+  - 双路采样对比（见新加的 [tests/diag-trajectory-vs-playback.js](../tests/diag-trajectory-vs-playback.js)）：
+    - 路径 A 仿 `applyPkfAtTime`（每帧清零 + evaluatePkfAt）
+    - 路径 B 仿 `TrajectoryOverlay.refresh`（只调 evaluatePkfAt，不清零）
+  - 确认两者的 fork 世界坐标在"首段之前"时段有显著偏差（>10cm），偏差量级正好对应"用户打开 toggle 时 `_AHR23` 当前的 value"
+- **根因**：[TrajectoryOverlay.js:111](../src/core/TrajectoryOverlay.js#L111) 采样循环只 `evaluatePkfAt` + 覆盖活跃/完成 step 的 joint，不碰其他 joint：
+  - `evaluatePkfAt` 对**未开始**的 step（t < t_start）**不返回结果** → 对应 joint 不被触及
+  - 如果用户在 t=11 时打开 toggle（此时 `_AHR23.currentValue=6.5`，seg 10 的终值），采样 t=0 时 seg 1 step（`_AHR23_joint_group`）active 被覆盖，但 `_AHR23` 的 seg 2 step 还没到 → `_AHR23` **保留 6.5** → fork z 被多推 6.5m → 轨迹线画在完全错误的位置
+  - 实际播放的 `applyPkfAtTime` [main.js:983-987](../src/main.js#L983-L987) **每帧清零**所有 PKF-target joint，所以实际播放没问题，**只是 overlay 在撒谎**
+- **修复**（[TrajectoryOverlay.js:107-120](../src/core/TrajectoryOverlay.js#L107)）：
+  - `refresh()` 在 for 循环**开始前一次性清零**所有 PKF 触及的 joint（和 `applyPkfAtTime` 构造 `defByName` / `pkfSteps.forEach(reset)` 同构）
+  - 一次性 vs 每帧：`evaluatePkfAt` 对**完成**的 step 会返回 value_end（hold），自动覆盖 → 循环内 joint 从来不会"回滚"到需要重新清零的状态，一次清零足够
+- **经验教训**：
+  1. **采样逻辑复现播放逻辑时要对齐所有前置步骤**，不能只看"活跃 step 算出的值"——未被覆盖的 joint 默认值同样重要
+  2. 这个 bug 藏得深的原因：**纯 t=0 测试不会暴露**（所有 joint 此时理应为 0）。回归诊断脚本必须覆盖"从非零状态进入"的路径
+- 诊断工具：新增 [tests/diag-trajectory-vs-playback.js](../tests/diag-trajectory-vs-playback.js)（`__diagTraj.all` 一把梭正常对比 + 残留压力测试）作为以后的回归守护
+
 ---
 
 ## 核心经验教训（跨 bug 总结）
