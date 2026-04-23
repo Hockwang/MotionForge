@@ -19,6 +19,7 @@
 import * as THREE from 'three';
 
 export const FORKLIFT_TEMPLATE_VERSION = 1;
+export const kind = 'forklift'; // 模板库注册标识，后端 /api/template-rhythm 分支 key
 
 // ── 角色常量（和 keyframeManager.jointDefinitions[].role 对齐）──
 export const ROLE_CAR_FORWARD = '车体前进';

@@ -19,11 +19,13 @@
  */
 
 import * as ForkliftTemplate from './ForkliftTemplate.js';
+import * as ThreewayTemplate from './ThreewayTemplate.js';
 
 // 模板注册表：顺序即优先级
-// 以后加新模板（例如三向车）：import * as ThreewayTemplate from './ThreewayTemplate.js'
-// 然后把它放在 ForkliftTemplate 之前（因为它更特异）
+// **三向车更特异**（要求有 门架横移 + 叉齿旋转，且无 车体横移）→ 放在前面先问
+// ForkliftTemplate 兼容大多数叉车（普通/三向都带 车体横移）→ 放在兜底
 const TEMPLATES = [
+  ThreewayTemplate,
   ForkliftTemplate,
 ];
 
