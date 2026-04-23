@@ -475,6 +475,44 @@ updated: 2026-04-22
   2. **任何把用户输入塞进 `new RegExp()` 的代码都要转义或校验**——要么白名单（现在选的），要么 `escapeRegExp` helper
 - 单元测试：12 个新 case（`tests/unit/keyframe-manager.test.js` F4 block），覆盖合法/非法/改名冲突/公式替换等场景
 
+#### #59 内外双段门架 lift 没法联动（三向车 / 前移式叉车）
+
+- **症状**（用户观察）：
+  - 三向车场景里有两个 z 方向 prismatic 关节：cAR201（内门架）和 _____10（外门架），parent 关系是 cAR201 ⊂ _____10
+  - 现有模板/公式只能把"门架升降"绑到**一个**关节，选谁都不对：
+    - 绑 cAR201 → 高度超过内门架自由升降时外门架不动 → 叉不到高架货
+    - 绑 _____10 → 即使只抬 0.5m 也要整个外门架框架一起上推 → 视觉 + 物理都不对
+  - 真实叉车的 free-lift 机制：内门架先在外门架框架里自由升降，升到顶（limit_upper）后外门架才开始整体上推
+- **排查**（用户对话 + 架构分析）：
+  - `setJointDef` 原本只支持"1 role = 1 joint"，没有表达"溢出联动"的语义
+  - `applyAllJointDrives` 单纯按拓扑顺序驱动，无法跨关节分摊
+  - 用户模型很多都是双段门架（三向车、前移式），临时往 PKF 公式里写分段逻辑会把模板锁死到特定车型
+- **修复**（架构级，见 [src/core/KeyframeManager.js:557-563](../src/core/KeyframeManager.js#L557)）：
+  - `jointDef` 加两个可选字段：
+    - `limit_upper`（number|null）—— 触发溢出的上限值
+    - `overflow_to`（string|null）—— 溢出目标关节的 **name**（跨 ZIP roundtrip 稳定）
+  - 新增 `_redistributeOverflows()` 私有方法（[:848](../src/core/KeyframeManager.js#L848)）：
+    - target ≤ limit_upper：self=target，overflow 关节归零（防上一帧残留）
+    - target > limit_upper：self=limit_upper，overflow 关节 = target - limit
+    - 负值不触发溢出（直接透传给 self）
+    - overflow 关节找不到时静默跳过（demo 级，不炸告警）
+  - `applyAllJointDrives` 在驱动前调用 `_redistributeOverflows()`（[:912](../src/core/KeyframeManager.js#L912)）—— 溢出后的 value 再走原来的拓扑排序驱动
+  - `setJointValue` 在 overflow 启用时不夹上限（[:658-663](../src/core/KeyframeManager.js#L658)），否则溢出量会被提前砍掉
+  - 父子嵌套（cAR201 parent = _____10）天然帮我们在视觉空间合成总 lift（外门架升 1m，内门架自动跟随 1m via parent transform）
+  - UI：关节配置面板加"运动上限" + "溢出到" 两栏（[EditorUI.js:1250-1263](../src/ui/EditorUI.js#L1250)）
+  - ZIP schema bump v6 → v7，`joints.json.definitions[]` 加 `limit_upper` + `overflow_to` 字段
+  - `serializeState` / `restoreState` / `exporter` / `loader` 四处同步新字段，老 ZIP 没字段 → null 兜底
+  - **模板 / AI prompt 完全没动**：`门架升降` role 还是绑 cAR201；target 公式照旧；溢出全在 runtime 处理，AI 根本不知道有两段门架
+- **下降方向天然对称**（不需要写镜像逻辑）：
+  - 上升：target 从 0 涨到 max → inner 先填到 limit → outer 开始涨
+  - 下降：target 从 max 跌到 0 → outer 先归零（因为 target 仍 > limit，inner 被夹住不变）→ target < limit 时 inner 才开始降
+  - 一个正向公式覆盖两个方向
+- **经验教训**：
+  1. 当某个假设（"1 role = 1 joint"）撞到第一个反例（双段门架）时，权衡"是否会出现更多反例"：用户说有多个双段车型 → 走架构级修复而不是特例打补丁
+  2. **父子嵌套的关节链是 overflow 最自然的载体**：分摊在数值层做，视觉合成由 Three.js 的 matrixWorld 自动完成
+  3. **demo 级不追求物理真实**：简单 clamp + 余量分摊即可，不必做动力学仿真。一个正向公式能对称处理上升/下降，就不用写反向
+- 单元测试：12 个新 case（`tests/unit/keyframe-manager.test.js` "双段门架 overflow 分摊" block），覆盖 limit 内/正好/超限/负值/下降穿越/未启用/目标缺失/setJointValue 夹值/序列化往返等边界
+
 ---
 
 ## 核心经验教训（跨 bug 总结）

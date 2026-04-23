@@ -558,6 +558,12 @@ export class KeyframeManager {
       childId: nodeId,
       currentValue: 0,
       baseTransform: null, // 关节零点姿态，由首次创建关节时捕获
+      // #59 双段门架（内外嵌套）overflow 机制（见 bugfix-log #59 / REVIEW-v15 后续）：
+      //   limit_upper=null 表示未启用；启用时，currentValue 超过 limit_upper 的部分
+      //   会由 _redistributeOverflows 在每次 applyAllJointDrives 前派给 overflow_to 指
+      //   向的关节。overflow_to 存关节 **名字**（跨 ZIP roundtrip 稳定），不是 uuid。
+      limit_upper: null,
+      overflow_to: null,
     };
     if (typeof patch.name !== 'undefined') def.name = String(patch.name);
     if (typeof patch.role !== 'undefined') def.role = String(patch.role);
@@ -597,6 +603,18 @@ export class KeyframeManager {
     }
     if (typeof patch.childId !== 'undefined') def.childId = patch.childId;
     if (typeof patch.currentValue !== 'undefined') def.currentValue = normalizeValue(patch.currentValue, 0);
+    // #59 overflow 机制：null / 空字符串 / undefined 均视为"未启用"
+    if (typeof patch.limit_upper !== 'undefined') {
+      if (patch.limit_upper === null || patch.limit_upper === '' || !Number.isFinite(Number(patch.limit_upper))) {
+        def.limit_upper = null;
+      } else {
+        def.limit_upper = Number(patch.limit_upper);
+      }
+    }
+    if (typeof patch.overflow_to !== 'undefined') {
+      const trimmed = patch.overflow_to == null ? '' : String(patch.overflow_to).trim();
+      def.overflow_to = trimmed || null;
+    }
     // 仅在 patch 显式传入时更新 baseTransform，避免后续修改类型/轴时覆盖零点
     // 支持两种旋转格式：qx/qy/qz/qw（四元数，推荐）或 rx/ry/rz（Euler，兼容旧数据）
     if (patch.baseTransform) {
@@ -648,7 +666,10 @@ export class KeyframeManager {
   setJointValue(nodeId, value) {
     const def = this.jointDefinitions.get(nodeId);
     if (!def || def.type === 'fixed') return 0;
-    const clamped = Math.max(def.limits.min, Math.min(def.limits.max, normalizeValue(value, 0)));
+    // #59 若启用 overflow（双段门架等）：上界由 _redistributeOverflows 按 limit_upper
+    //     拆给 overflow_to 关节；这里不能提前 clamp 掉，否则溢出量全被砍掉。
+    const effectiveMax = def.overflow_to ? Number.POSITIVE_INFINITY : def.limits.max;
+    const clamped = Math.max(def.limits.min, Math.min(effectiveMax, normalizeValue(value, 0)));
     def.currentValue = clamped;
     return clamped;
   }
@@ -826,8 +847,62 @@ export class KeyframeManager {
    *
    * 效果：场景树平级的节点也能正确级联（例如门架和叉齿平级，但叉齿的关节 parent 是门架）。
    */
+  /**
+   * #59 双段门架 overflow 机制：在驱动前重新分配溢出值。
+   *
+   * 典型场景：三向车 / 前移式叉车有内外两节门架
+   *   - 内门架 cAR201（parent = 外门架 _____10，嵌套在外门架框架里）
+   *   - 外门架 _____10
+   *   - 自由升降阶段：只有 cAR201 在外门架内爬升
+   *   - 高架阶段：cAR201 爬到顶（limit_upper），继续升高靠 _____10 整体上推
+   *
+   * 对 cAR201（limit_upper=4, overflow_to="_____10"）：
+   *   currentValue=3 → 自己=3，_____10 的 currentValue=0
+   *   currentValue=5 → 自己=4，_____10 的 currentValue=1
+   *   currentValue=9 → 自己=4，_____10 的 currentValue=5
+   *
+   * 下降天然对称：target 从高到低减 → outer 先归零 → inner 才减。
+   *
+   * ⚠️ 只处理单级（inner → outer），多级嵌套（3 段门架）当前不支持。
+   * ⚠️ overflow_to 指向的关节不应有独立动画（PKF step / 关键帧），会被强制覆盖为 overflow 值。
+   *
+   * @private
+   */
+  _redistributeOverflows() {
+    // 建立 name → def 索引（overflow_to 按名字存，跨 ZIP roundtrip 稳定）
+    let nameIndex = null;
+    const getByName = (name) => {
+      if (!nameIndex) {
+        nameIndex = new Map();
+        this.jointDefinitions.forEach((d) => {
+          if (d.name) nameIndex.set(d.name, d);
+        });
+      }
+      return nameIndex.get(name) || null;
+    };
+
+    this.jointDefinitions.forEach((def) => {
+      if (!def.overflow_to || def.limit_upper == null) return;
+      const targetDef = getByName(def.overflow_to);
+      if (!targetDef) return; // 目标关节找不到 → 静默跳过（demo 级，避免烦人告警）
+      const raw = def.currentValue;
+      const limit = def.limit_upper;
+      if (raw > limit) {
+        def.currentValue = limit;
+        targetDef.currentValue = raw - limit;
+      } else {
+        // 在 limit 范围内：inner 保持 raw 值，outer 归零（防止上一帧残留）
+        targetDef.currentValue = 0;
+      }
+    });
+  }
+
   applyAllJointDrives(root) {
     if (!root) return;
+
+    // #59 overflow 分摊必须在驱动之前：让溢出量先落到 outer 关节的 currentValue 上，
+    //     再走下面的拓扑排序 / applyJointDrive → 外门架先驱动、内门架在外门架的新位置里驱动。
+    this._redistributeOverflows();
 
     // 建立 nodeMap 缓存（避免每个 joint 都 traverse 一遍）
     const nodeMap = new Map();
@@ -1207,6 +1282,9 @@ export class KeyframeManager {
         currentValue: d.currentValue,
         // 关节零点姿态（深拷贝），undo/redo 时不能丢
         baseTransform: d.baseTransform ? { ...d.baseTransform } : null,
+        // #59 双段门架 overflow：null 表示未启用（默认），数字为 limit_upper 值
+        limit_upper: d.limit_upper ?? null,
+        overflow_to: d.overflow_to ?? null,
       })),
       objects: [...this.objectDataById.values()].map((obj) => ({
         objectId: obj.objectId,
@@ -1274,6 +1352,9 @@ export class KeyframeManager {
         currentValue: normalizeValue(d.currentValue, 0),
         // 关节零点姿态：可能为 null（旧数据），applyJointDrive 会 fallback
         baseTransform: d.baseTransform ? { ...d.baseTransform } : null,
+        // #59 overflow 字段：老 snapshot 没有 → null（未启用），向后兼容
+        limit_upper: (d.limit_upper != null && Number.isFinite(Number(d.limit_upper))) ? Number(d.limit_upper) : null,
+        overflow_to: d.overflow_to || null,
       });
     });
 

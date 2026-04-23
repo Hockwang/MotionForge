@@ -217,6 +217,11 @@ function refreshObjectTree() {
           id: obj.uuid,
           name: obj.name || obj.uuid,
         })),
+        // #59 提供 overflow_to 下拉候选：所有已定义的可驱动关节（revolute/prismatic）名字
+        //     排除 fixed / none，避免用户选到不动的关节
+        getOverflowTargetOptions: () => keyframeManager.getAllJointDefs()
+          .filter((d) => d.type === 'revolute' || d.type === 'prismatic')
+          .map((d) => ({ name: d.name, role: d.role || '' })),
 
         onChange: (patch) => {
           pushUndoSnapshot();
@@ -768,6 +773,9 @@ async function handleImportPackage(file) {
           // v5 修复：清空 baseTransform，让 applyJointDrive 懒捕获重建。
           // 导出时 GLB 是零位态，懒捕获从零位态建立正确的 base。
           baseTransform: null,
+          // #59 双段门架 overflow：老 ZIP 没这俩字段 → undefined → setJointDef 不改动 def 默认 null
+          limit_upper: d.limit_upper,
+          overflow_to: d.overflow_to,
         });
       });
     }

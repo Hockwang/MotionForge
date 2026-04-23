@@ -192,3 +192,25 @@ mvp3 密集迭代两周后做了一份 [REVIEW-v15.md](REVIEW-v15.md) 止损（1
 **影响**：对外 PKF/ZIP 格式不变，继续打磨 17 段本身（几何精度、AI 节奏、UI 体验）。充电/巡检/拆码垛不作为 MotionForge 的产品需求处理。
 
 commit `1223e62`（对齐文档）。
+
+## [2026-04-23] feature | 双段门架 overflow 机制（bug #59）—— 架构级，支持所有内外门架叉车
+
+三向车场景暴露"1 role = 1 joint"假设的第一个反例：内门架（cAR201）+ 外门架（_____10）两个 z 方向 prismatic 关节，谁绑"门架升降"都不对。
+
+**决策**：走架构级而不是特例打补丁，因为用户有多个内外门架车型（三向车、前移式等）。
+
+**方案**：
+- `jointDef` 加 `limit_upper` + `overflow_to` 两个可选字段
+- `applyAllJointDrives` 在驱动前调 `_redistributeOverflows()` —— target > limit 时拆到 overflow 关节
+- 父子嵌套（cAR201 parent = _____10）负责在视觉空间合成总 lift —— runtime 只管分数值
+- **模板 / AI prompt 完全没动**：AI 不知道有两段门架，仍绑"门架升降"到 cAR201
+
+**意外发现**：一个正向公式天然对称处理上升/下降两个方向，不用写镜像逻辑（target 递减时 outer 先归零 → inner 才降，符合物理直觉）。
+
+**配套**：
+- ZIP schema bump v6 → v7
+- UI 关节配置面板加"运动上限" + "溢出到" 两栏
+- 12 个新单元测试（107 passing，+12）
+- bugfix-log #59
+
+commit 待推。

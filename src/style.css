@@ -451,6 +451,20 @@ hr {
   border-top: 1px solid #334155;
 }
 
+/* #59 双段门架 overflow 控件区块 */
+.jc-overflow-group {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid #334155;
+}
+
+.jc-overflow-hint {
+  font-size: 11px;
+  font-weight: 600;
+  color: #fbbf24;
+  margin-bottom: 4px;
+}
+
 .jc-origin-label {
   font-size: 11px;
   font-weight: 600;

@@ -10,6 +10,9 @@
  *  - v4：model.glb 由 GLTFExporter 重新序列化当前 sceneRoot，
  *       包含运行时插入的父级 group（onInsertGroup）和其他 reparent 修改。
  *       这样导入时场景树状态完整，joint def 的 parent/child 关系不会丢。
+ *  - v5：motion.json clips 加 reparent_events（cargo 在时间轴上换 parent）
+ *  - v6：sceneMarkers（货物占位 / 取货点 / 放货点 metadata），pkf（参数化公式）
+ *  - v7：joint def 加 limit_upper + overflow_to（双段门架 overflow 机制，bugfix #59）
  */
 import JSZip from 'jszip';
 import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js';
@@ -114,7 +117,7 @@ export class ResultPackageExporter {
     }));
 
     const manifest = {
-      schema_version: 6,
+      schema_version: 7,
       generator: editorName,
       exported_at: new Date().toISOString(),
       source: {
@@ -159,6 +162,10 @@ export class ResultPackageExporter {
         child_id: d.childId,
         current_value: d.currentValue ?? 0,
         base_transform: d.baseTransform || null,
+        // v7+ 双段门架 overflow（bugfix #59）：limit_upper=null 表示未启用，向后兼容老 ZIP
+        // overflow_to 存目标关节 **名字**，跨 roundtrip 稳定（uuid 会变）
+        limit_upper: (d.limit_upper != null && Number.isFinite(d.limit_upper)) ? d.limit_upper : null,
+        overflow_to: d.overflow_to || null,
       })),
     };
 

@@ -1160,6 +1160,9 @@ export class EditorUI {
     const showDrive = !isFixed && !isNone;
     const currentParentId = currentDef?.parentId || '';
     const currentRole = currentDef?.role || '';
+    // #59 双段门架 overflow：limit_upper (number|null) + overflow_to (joint name|null)
+    const limitUpper = currentDef?.limit_upper;
+    const currentOverflowTo = currentDef?.overflow_to || '';
 
     // 预定义 role 词汇表（动作语义标签）— 供 AI 按意图匹配关节
     // 用户也可以选"其他"手写自定义 role
@@ -1180,6 +1183,18 @@ export class EditorUI {
     const parentOptionsHtml = parentOptions
       .filter((opt) => opt.id !== nodeId) // 排除自己
       .map((opt) => `<option value="${opt.id}" ${opt.id === currentParentId ? 'selected' : ''}>${opt.name}</option>`)
+      .join('');
+
+    // #59 overflow_to 下拉：列出其他关节的名字（排除自己 + 非 prismatic 类型在 demo 阶段也不过滤，
+    // 用户自担责任）。按关节 **名字** 存，跨 ZIP roundtrip 稳定。
+    const overflowTargets = handlers?.getOverflowTargetOptions?.() || [];
+    const overflowOptionsHtml = overflowTargets
+      .filter((opt) => opt.name && opt.name !== nodeName)
+      .map((opt) => {
+        const sel = opt.name === currentOverflowTo ? 'selected' : '';
+        const roleTag = opt.role ? ` · ${opt.role}` : '';
+        return `<option value="${opt.name}" ${sel}>${opt.name}${roleTag}</option>`;
+      })
       .join('');
 
     panel.innerHTML = `
@@ -1228,6 +1243,19 @@ export class EditorUI {
         </label>
         <label>最大值
           <input class="jc-max" type="number" step="1" value="${limMax}" />
+        </label>
+      </div>
+      <div class="jc-overflow-group" style="${isFixed || isNone ? 'display:none' : ''}">
+        <div class="jc-overflow-hint">双段门架联动（内门架 → 外门架）</div>
+        <label>运动上限
+          <input class="jc-limit-upper" type="number" step="0.1" placeholder="留空=不启用"
+                 value="${limitUpper != null ? limitUpper : ''}" />
+        </label>
+        <label>溢出到
+          <select class="jc-overflow-to">
+            <option value="" ${currentOverflowTo === '' ? 'selected' : ''}>（不溢出）</option>
+            ${overflowOptionsHtml}
+          </select>
         </label>
       </div>
       <div class="jc-origin-group" style="${showDrive ? '' : 'display:none'}">
@@ -1290,6 +1318,10 @@ export class EditorUI {
     const minInput = panel.querySelector('.jc-min');
     const maxInput = panel.querySelector('.jc-max');
     const axisGroup = panel.querySelector('.jc-axis-group');
+    // #59 overflow 控件
+    const overflowGroup = panel.querySelector('.jc-overflow-group');
+    const limitUpperInput = panel.querySelector('.jc-limit-upper');
+    const overflowToSelect = panel.querySelector('.jc-overflow-to');
     const originGroup = panel.querySelector('.jc-origin-group');
     const originXInput = panel.querySelector('.jc-origin-x');
     const originYInput = panel.querySelector('.jc-origin-y');
@@ -1308,6 +1340,8 @@ export class EditorUI {
       driveGroup.style.display = showAxis ? '' : 'none';
       if (parentGroup) parentGroup.style.display = newType === 'none' ? 'none' : '';
       if (roleGroup) roleGroup.style.display = newType === 'none' ? 'none' : '';
+      // #59 overflow 只在可驱动关节（revolute/prismatic）显示
+      if (overflowGroup) overflowGroup.style.display = showAxis ? '' : 'none';
     };
 
     // 读取当前选中的 role（如果选了"其他"就读文本框，否则读下拉值）
@@ -1325,6 +1359,15 @@ export class EditorUI {
       z: Number(originZInput.value) || 0,
     });
 
+    // #59 读取 overflow 输入：空字符串 / 非数字 → null（未启用）
+    const readLimitUpper = () => {
+      if (!limitUpperInput) return null;
+      const raw = limitUpperInput.value.trim();
+      if (!raw) return null;
+      const num = Number(raw);
+      return Number.isFinite(num) ? num : null;
+    };
+
     const emitChange = () => {
       const newType = typeSelect.value;
       updateDriveVisibility(newType);
@@ -1338,6 +1381,9 @@ export class EditorUI {
           min: Number(minInput.value) || -180,
           max: Number(maxInput.value) || 180,
         },
+        // #59 双段门架 overflow：null 表示不启用
+        limit_upper: readLimitUpper(),
+        overflow_to: overflowToSelect?.value || null,
       });
     };
 
@@ -1378,6 +1424,14 @@ export class EditorUI {
     axisSelect.addEventListener('change', emitChange);
     minInput.addEventListener('change', () => { syncSliderRange(); emitChange(); });
     maxInput.addEventListener('change', () => { syncSliderRange(); emitChange(); });
+    // #59 overflow 输入：input 事件让用户输数字时立即生效（方便边拖边看效果）
+    if (limitUpperInput) {
+      limitUpperInput.addEventListener('input', emitChange);
+      limitUpperInput.addEventListener('change', emitChange);
+    }
+    if (overflowToSelect) {
+      overflowToSelect.addEventListener('change', emitChange);
+    }
     // 同时监听 'input'（每次按键都触发）和 'change'（blur 时触发）
     // 让用户改 X/Y/Z 数值时立即看到 origin marker 移动 + 关节驱动跟着重算
     originXInput.addEventListener('input', emitChange);

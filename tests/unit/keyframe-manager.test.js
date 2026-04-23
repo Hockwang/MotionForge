@@ -469,3 +469,132 @@ describe('F34 addPkfStep 保留模板元数据字段', () => {
     expect(km2.pkfSteps[0].template_segment_name).toBe('取货');
   });
 });
+
+// ══════════════════════════════════════════════════════════════
+//  双段门架 overflow 机制（bugfix #59）
+//
+//  场景：三向车 / 前移式叉车有内外两节门架
+//   - 内门架（inner，parent=外门架）limit_upper 内独立升降
+//   - 外门架（outer）承接内门架溢出的升降量
+//
+//  _redistributeOverflows 由 applyAllJointDrives 在驱动前调用。
+//  测试不依赖 Three.js scene，直接改 currentValue → 调 redistribute → 断言分摊结果。
+// ══════════════════════════════════════════════════════════════
+describe('双段门架 overflow 分摊（bugfix #59）', () => {
+  let km;
+  beforeEach(() => {
+    km = new KeyframeManager();
+    // outer 关节：无 overflow 配置，作为 overflow_to 的落点
+    km.setJointDef('outer', { name: 'outer', type: 'prismatic', axis: 'z', parentId: null });
+    // inner 关节：limit_upper=4，溢出给 outer（按名字引用）
+    km.setJointDef('inner', {
+      name: 'inner',
+      type: 'prismatic',
+      axis: 'z',
+      parentId: 'outer',
+      limit_upper: 4,
+      overflow_to: 'outer',
+    });
+  });
+
+  it('target=3（范围内）：inner=3，outer=0（归零避免前帧残留）', () => {
+    km.jointDefinitions.get('inner').currentValue = 3;
+    km.jointDefinitions.get('outer').currentValue = 99; // 脏值，应被归零
+    km._redistributeOverflows();
+    expect(km.jointDefinitions.get('inner').currentValue).toBe(3);
+    expect(km.jointDefinitions.get('outer').currentValue).toBe(0);
+  });
+
+  it('target=4（正好 limit）：inner=4，outer=0', () => {
+    km.jointDefinitions.get('inner').currentValue = 4;
+    km._redistributeOverflows();
+    expect(km.jointDefinitions.get('inner').currentValue).toBe(4);
+    expect(km.jointDefinitions.get('outer').currentValue).toBe(0);
+  });
+
+  it('target=5（超 limit 1m）：inner=4（夹到 limit），outer=1', () => {
+    km.jointDefinitions.get('inner').currentValue = 5;
+    km._redistributeOverflows();
+    expect(km.jointDefinitions.get('inner').currentValue).toBe(4);
+    expect(km.jointDefinitions.get('outer').currentValue).toBe(1);
+  });
+
+  it('target=9（大幅溢出）：inner=4，outer=5', () => {
+    km.jointDefinitions.get('inner').currentValue = 9;
+    km._redistributeOverflows();
+    expect(km.jointDefinitions.get('inner').currentValue).toBe(4);
+    expect(km.jointDefinitions.get('outer').currentValue).toBe(5);
+  });
+
+  it('target=-2（负值）：不触发溢出，inner=-2，outer=0', () => {
+    km.jointDefinitions.get('inner').currentValue = -2;
+    km._redistributeOverflows();
+    expect(km.jointDefinitions.get('inner').currentValue).toBe(-2);
+    expect(km.jointDefinitions.get('outer').currentValue).toBe(0);
+  });
+
+  it('下降对称：从 target=9 降到 target=5，outer 从 5 降到 1，inner 保持 limit', () => {
+    km.jointDefinitions.get('inner').currentValue = 9;
+    km._redistributeOverflows();
+    expect(km.jointDefinitions.get('outer').currentValue).toBe(5);
+
+    km.jointDefinitions.get('inner').currentValue = 5;
+    km._redistributeOverflows();
+    expect(km.jointDefinitions.get('inner').currentValue).toBe(4);
+    expect(km.jointDefinitions.get('outer').currentValue).toBe(1);
+  });
+
+  it('下降穿过 limit：target=3 时 outer 归零，inner 开始下降', () => {
+    km.jointDefinitions.get('inner').currentValue = 9;
+    km._redistributeOverflows();
+    km.jointDefinitions.get('inner').currentValue = 3;
+    km._redistributeOverflows();
+    expect(km.jointDefinitions.get('inner').currentValue).toBe(3);
+    expect(km.jointDefinitions.get('outer').currentValue).toBe(0);
+  });
+
+  it('未启用 overflow 的关节不受影响（老 ZIP 向后兼容）', () => {
+    km.setJointDef('single', {
+      name: 'single',
+      type: 'prismatic',
+      axis: 'z',
+      parentId: null,
+    });
+    km.jointDefinitions.get('single').currentValue = 99;
+    km._redistributeOverflows();
+    expect(km.jointDefinitions.get('single').currentValue).toBe(99);
+  });
+
+  it('overflow_to 指向不存在的关节：静默跳过，不崩', () => {
+    km.setJointDef('inner', {
+      name: 'inner',
+      limit_upper: 4,
+      overflow_to: '不存在的关节',
+    });
+    km.jointDefinitions.get('inner').currentValue = 9;
+    expect(() => km._redistributeOverflows()).not.toThrow();
+    // inner 保持原值（overflow 被静默跳过）
+    expect(km.jointDefinitions.get('inner').currentValue).toBe(9);
+  });
+
+  it('setJointValue 在 overflow 启用时不夹上限（否则溢出量被砍）', () => {
+    // inner.limits.max 默认是 180，够了；但若用户设成 4，setJointValue(9) 应不夹到 4
+    km.setJointDef('inner', { limits: { min: 0, max: 4 } });
+    km.setJointValue('inner', 9);
+    expect(km.jointDefinitions.get('inner').currentValue).toBe(9);
+  });
+
+  it('serialize/restore 保留 limit_upper + overflow_to', () => {
+    const snap = km.serializeState();
+    const km2 = new KeyframeManager();
+    km2.restoreState(snap);
+    const innerDef = km2.jointDefinitions.get('inner');
+    expect(innerDef.limit_upper).toBe(4);
+    expect(innerDef.overflow_to).toBe('outer');
+    expect(km2.jointDefinitions.get('outer').limit_upper).toBeNull();
+  });
+
+  it('applyAllJointDrives 在没有 scene root 时不崩（边界）', () => {
+    expect(() => km.applyAllJointDrives(null)).not.toThrow();
+  });
+});
