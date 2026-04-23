@@ -592,8 +592,63 @@ const TEMPLATE_RHYTHM_SYSTEM_PROMPT = `你是叉车取放动作的节奏编排�
 - 不要加其他字段（parameters、steps、reparent_events 都由前端生成，你不管）
 - 不要输出解释、不要 markdown 代码块围栏`;
 
+// ── 三向车（VNA）节奏 prompt ──
+// 段数动态（13~22 之间，取决于 cargoAxis / dropAxis 组合），前端传 template_segments
+// 告诉 AI 本次实际有几段 + 每段名字；AI 根据名字调节奏。
+const TEMPLATE_RHYTHM_SYSTEM_PROMPT_THREEWAY = `你是三向车（VNA forklift）取放动作的节奏编排师。
+
+和普通叉车不同：三向车的段序**动态**——根据 cargo / drop 在 ±x / +y 三个轴向的位置，
+段数可能在 13~22 之间浮动。前端在 user message 里会告诉你**本次实际有几段 + 每段语义**。
+你不管数值，只管节奏。
+
+## 你的任务
+
+1. 为 user message 给定的**每一段**决定持续时长（秒，> 0.1）
+2. 每段选一个 easing：'linear' | 'ease-in' | 'ease-out' | 'ease-in-out'
+3. 给整个 clip 起个名字（中文，12 字以内）
+
+## 三向车段语义（仅参考，实际段以 user message 为准）
+
+典型段名（非全部）：
+  - "车体前进到 cargo.y / drop.y" —— 移动类，1.5-3s
+  - "叉齿旋转到取货朝向 / +y / 放货朝向 / 归零" —— 旋转类，0.8-1.5s
+  - "门架升到取货高度 / 运输高度 / 放货工作面 / 归零" —— 抬叉类，0.8-1.5s
+  - "门架横移到 cargo 前 safe / 插入 / 退回 / 复位" —— 横向类，0.8-2s
+  - "车体前进插入 cargo / 车体后退 safe" —— 正面取货插/抽
+  - "取货（上顶 lift_clearance）/ 放货（下降 lift_clearance）" —— **慢**（精细），1-1.5s
+  - "车体退回原位" —— 长距离回归，2-3s
+
+## 节奏原则
+
+- **attach / detach 相关段**（插入/放货）**慢**（精细操作，1-1.5s）
+- **旋转段**中等（0.8-1.2s，太快看着突兀）
+- **纯移动段**较快（1-2s，距离远可更长）
+- **复位段**可快（0.5-1s）
+- 整体总时长建议 **12-20 秒**
+
+## 输出格式（严格 JSON，无任何 markdown）
+
+假设 user message 告诉你有 18 段：
+
+{
+  "name": "三向车侧取侧放",
+  "segments": [
+    { "index": 1, "duration": 1.5, "easing": "ease-in-out" },
+    { "index": 2, "duration": 0.8, "easing": "ease-in-out" },
+    ...（列完 18 段）
+  ]
+}
+
+## 规则
+
+- 段数**必须等于 user message 里的 template_segments 长度**（不多不少）
+- index 从 1 开始递增至 N（与 user message 里的 index 对齐）
+- 每段 duration ≥ 0.1s
+- 不要加其他字段
+- 不要 markdown 围栏`;
+
 app.post('/api/template-rhythm', aiRateLimit, async (req, res) => {
-  const { intent, template_segments: templateSegments } = req.body || {};
+  const { intent, template_segments: templateSegments, template_kind: templateKind = 'forklift' } = req.body || {};
   if (!intent) {
     res.status(400).json({ error: '缺少 intent 字段' });
     return;
@@ -602,11 +657,37 @@ app.post('/api/template-rhythm', aiRateLimit, async (req, res) => {
     res.status(500).json({ error: 'AI_API_KEY 未配置，请在 .env 文件中设置' });
     return;
   }
+
+  // 按 template_kind 选 prompt 分支
+  //   'forklift' → 17 段固定语义 prompt（老路径）
+  //   'threeway' → 动态段数 prompt（段数来自 template_segments 长度）
+  //   其他未知 kind → 默认走 forklift，打印警告
+  const isThreeway = templateKind === 'threeway';
+  const systemPrompt = isThreeway
+    ? TEMPLATE_RHYTHM_SYSTEM_PROMPT_THREEWAY
+    : TEMPLATE_RHYTHM_SYSTEM_PROMPT;
+  if (!['forklift', 'threeway'].includes(templateKind)) {
+    console.warn(`[RHYTHM] 未知 template_kind="${templateKind}"，按 forklift 处理`);
+  }
+
+  // 预期段数：三向车按 template_segments 长度动态；普通叉车固定 17
+  const expectedCount = isThreeway
+    ? (Array.isArray(templateSegments) ? templateSegments.length : 18)
+    : 17;
+  if (isThreeway && expectedCount < 1) {
+    res.status(400).json({ error: '三向车模板需传 template_segments 告知实际段数' });
+    return;
+  }
+
   try {
     const segmentList = (templateSegments || []).length
       ? (templateSegments || []).map((s) => `  ${s.index}. ${s.name}`).join('\n')
-      : '（前端未传 template_segments，请按 system prompt 里的 17 段语义）';
-    const userMessage = `用户意图：${intent}\n\n模板段列表（仅作参考，语义以 system prompt 为准）：\n${segmentList}\n\n请返回 17 段的节奏 JSON（即使场景无横移，段 1/9/17 也要给；前端编译时会跳过）。`;
+      : (isThreeway
+          ? '（前端未传 template_segments——请按 18 段估算）'
+          : '（前端未传 template_segments，请按 system prompt 里的 17 段语义）');
+    const userMessage = isThreeway
+      ? `用户意图：${intent}\n\n本次三向车模板编译出 **${expectedCount} 段**，每段语义：\n${segmentList}\n\n请严格按这 ${expectedCount} 段的 index 返回节奏 JSON。`
+      : `用户意图：${intent}\n\n模板段列表（仅作参考，语义以 system prompt 为准）：\n${segmentList}\n\n请返回 17 段的节奏 JSON（即使场景无横移，段 1/9/17 也要给；前端编译时会跳过）。`;
 
     const response = await fetch(`${AI_BASE_URL}/v1/chat/completions`, {
       method: 'POST',
@@ -617,7 +698,7 @@ app.post('/api/template-rhythm', aiRateLimit, async (req, res) => {
       body: JSON.stringify({
         model: AI_MODEL,
         messages: [
-          { role: 'system', content: TEMPLATE_RHYTHM_SYSTEM_PROMPT },
+          { role: 'system', content: systemPrompt },
           { role: 'user', content: userMessage },
         ],
         temperature: 0.3,
@@ -630,7 +711,7 @@ app.post('/api/template-rhythm', aiRateLimit, async (req, res) => {
     }
     const data = await response.json();
     const content = data.choices?.[0]?.message?.content || '';
-    console.log('\n[RHYTHM] ═══ AI 原始返回 ═══\n' + content + '\n═══════════════════\n');
+    console.log(`\n[RHYTHM/${templateKind}] ═══ AI 原始返回 ═══\n${content}\n═══════════════════\n`);
     const match = content.match(/\{[\s\S]*\}/);
     if (!match) {
       res.status(422).json({ error: 'AI 返回内容中未找到有效 JSON', raw_response: content });
@@ -638,10 +719,10 @@ app.post('/api/template-rhythm', aiRateLimit, async (req, res) => {
     }
     const parsed = JSON.parse(match[0]);
 
-    // 基础校验：segments 数组 + 17 项
-    if (!Array.isArray(parsed.segments) || parsed.segments.length !== 17) {
+    // 基础校验：segments 数组 + 期望段数
+    if (!Array.isArray(parsed.segments) || parsed.segments.length !== expectedCount) {
       res.status(422).json({
-        error: `AI 返回 segments 必须为 17 项数组，实际 ${parsed.segments?.length || 0} 项`,
+        error: `AI 返回 segments 必须为 ${expectedCount} 项数组，实际 ${parsed.segments?.length || 0} 项`,
         raw_response: content,
       });
       return;
@@ -651,8 +732,8 @@ app.post('/api/template-rhythm', aiRateLimit, async (req, res) => {
     const indicesSeen = new Set();
     for (const seg of parsed.segments) {
       const idx = Number(seg.index);
-      if (!Number.isInteger(idx) || idx < 1 || idx > 17) {
-        res.status(422).json({ error: `段 index 不合法：${seg.index}`, raw_response: content });
+      if (!Number.isInteger(idx) || idx < 1 || idx > expectedCount) {
+        res.status(422).json({ error: `段 index 不合法：${seg.index}（期望 1..${expectedCount}）`, raw_response: content });
         return;
       }
       if (indicesSeen.has(idx)) {
@@ -673,13 +754,14 @@ app.post('/api/template-rhythm', aiRateLimit, async (req, res) => {
       if (!seg.easing) seg.easing = 'ease-in-out';
       seg.duration = +dur.toFixed(3);
     }
-    // 检查 17 项齐全
-    if (indicesSeen.size !== 17) {
-      res.status(422).json({ error: `段 index 不全，缺失的：${[...Array(17).keys()].map((i) => i + 1).filter((i) => !indicesSeen.has(i))}`, raw_response: content });
+    // 检查全部 index 齐全
+    if (indicesSeen.size !== expectedCount) {
+      const missingIdx = [...Array(expectedCount).keys()].map((i) => i + 1).filter((i) => !indicesSeen.has(i));
+      res.status(422).json({ error: `段 index 不全，缺失：${missingIdx}`, raw_response: content });
       return;
     }
 
-    parsed.name = String(parsed.name || '叉车取放').trim() || '叉车取放';
+    parsed.name = String(parsed.name || (isThreeway ? '三向车取放' : '叉车取放')).trim() || (isThreeway ? '三向车取放' : '叉车取放');
     // 按 index 排序返回（前端也会再 map 一次，但排好序更整齐）
     parsed.segments.sort((a, b) => a.index - b.index);
     res.json(parsed);

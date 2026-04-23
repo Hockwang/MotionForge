@@ -14,6 +14,7 @@ import {
   compileTemplate,
   buildDefaultRhythm,
   FORKLIFT_TEMPLATE,
+  detectTemplate,
 } from './core/templates/index.js';
 
 // [trajectory-overlay] 功能开关：出问题随时置 false 完全关闭（不实例化 overlay、隐藏按钮、所有 hook 变 no-op）
@@ -1477,11 +1478,11 @@ ui.aiDecomposeBtn?.addEventListener('click', async () => {
  * 后端返回 { name, segments: [{index, duration, easing}] }。
  * 失败时 throw，调用方决定是否降级到默认节奏。
  */
-async function requestTemplateRhythm(intent, templateSegments) {
+async function requestTemplateRhythm(intent, templateSegments, templateKind = 'forklift') {
   const resp = await fetch(`${AI_SERVICE_URL}/api/template-rhythm`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ intent, template_segments: templateSegments }),
+    body: JSON.stringify({ intent, template_segments: templateSegments, template_kind: templateKind }),
   });
   if (!resp.ok) {
     const body = await resp.json().catch(() => ({}));
@@ -1578,34 +1579,37 @@ ui.aiOneshotBtn?.addEventListener('click', async () => {
   try {
     pushUndoSnapshot();
 
-    // ── 路由：先尝试叉车模板路径 ──
-    // 四要素（cargo + drop + 两 role + attach 事件）满足时弹窗让用户选精确模板 vs 自由生成。
-    // 不满足直接走老 L1/L2 管道（行为不变）。
+    // ── 路由：模板库自动识别（ThreewayTemplate 优先，ForkliftTemplate 兜底）──
+    // 不匹配任何模板 → 走老 L1/L2 管道（行为不变）。
     //
     // 读位置前先把 reparent 状态回退到 t=0：如果用户之前跑过一次 🚀 并停在动画中间，
     // cargo 可能还挂在 fork 下 → 读到的"cargo 世界坐标"是动画态不是初始态。
     keyframeManager.applyReparentEventsAtTime(0, sceneManager.sceneRoot);
-    const templateCheck = collectTemplateContext(keyframeManager, sceneManager.sceneRoot);
-    if (templateCheck.ok) {
+    const detected = detectTemplate(keyframeManager, sceneManager.sceneRoot);
+    if (detected) {
+      const { template, ctx } = detected;
+      const templateKind = template.kind || 'forklift';
+      const templateLabel = templateKind === 'threeway' ? '三向车（VNA）' : '叉车 17 段';
       const useTemplate = window.confirm(
-        '检测到叉车取放场景（cargo + drop + 车体前进 + 门架升降 + attach 事件）。\n\n'
-        + '确定 = 用【叉车取放 17 段模板】（14 必选 + 3 段可选横移；结构性零瞬移，AI 只管节奏）\n'
-        + '取消 = 走自由生成（AI 按高级意图自由输出，支持非标准动作）',
+        `检测到【${templateLabel}】模板。\n\n`
+        + `确定 = 用模板（结构性零瞬移，AI 只管节奏）\n`
+        + `取消 = 走自由生成（AI 按高级意图自由输出，支持非标准动作）`,
       );
       if (useTemplate) {
         ui.aiOneshotBtn.textContent = '1/3 模板: AI 节奏...';
-        setOut('🚀 模板路径 Step 1: 请求 AI 节奏...', '#93c5fd');
+        setOut(`🚀 模板路径 (${templateLabel}) Step 1: 请求 AI 节奏...`, '#93c5fd');
 
         // 如果 fork 是自动识别的（用户没配 attach event），snapshotForkAnchorZero 需要 attach event 才能工作 —
         // 临时加一个 placeholder reparent event，applyCompiledTemplate 会在最后清掉重写
         let placeholderEventId = null;
-        if (templateCheck.data.forkSource === 'auto_from_mast_joint') {
+        const forkSource = ctx.forkSource;
+        if (forkSource === 'auto_from_mast_joint' || forkSource === 'auto_from_rotate_joint') {
           placeholderEventId = keyframeManager.addReparentEvent(
             0.5,
-            templateCheck.data.cargoName,
-            templateCheck.data.forkName,
+            ctx.cargoName,
+            ctx.forkName,
           );
-          console.info('[oneshot] 模板路径：fork 自动识别为', templateCheck.data.forkName, '（加临时 placeholder 算 fork_anchor_zero）');
+          console.info(`[oneshot] 模板路径 (${templateKind})：fork 自动识别为`, ctx.forkName, '（加临时 placeholder 算 fork_anchor_zero）');
         }
 
         // 先算 fork_anchor_zero（公式要用）
@@ -1615,42 +1619,55 @@ ui.aiOneshotBtn?.addEventListener('click', async () => {
           keyframeManager.removeReparentEvent(placeholderEventId);
         }
 
+        // 三向车：先编译一次拿 segment 列表（段数动态），再传给 AI 求节奏
+        //   forklift: 17 段固定，直接用 FORKLIFT_TEMPLATE
+        let segmentsForAi;
+        let preCompiled = null; // 三向车场景下提前编译的结果，拿段序
+        if (templateKind === 'threeway') {
+          // 先用默认节奏编译一把，只是为了拿 step 列表
+          preCompiled = template.compileTemplate(ctx, undefined, forkAnchorZeroTpl);
+          segmentsForAi = preCompiled.steps.map((s, i) => ({ index: i + 1, name: s.template_segment_name || s.joint }));
+        } else {
+          segmentsForAi = FORKLIFT_TEMPLATE.map((s) => ({ index: s.index, name: s.name }));
+        }
+
         // 尝试拿 AI 节奏；拿不到就用默认
         let rhythm;
-        const segmentsForAi = FORKLIFT_TEMPLATE.map((s) => ({ index: s.index, name: s.name }));
         try {
-          rhythm = await requestTemplateRhythm(intent, segmentsForAi);
+          rhythm = await requestTemplateRhythm(intent, segmentsForAi, templateKind);
         } catch (err) {
           console.warn('[template] AI 节奏请求失败，降级默认匀速:', err.message);
-          rhythm = buildDefaultRhythm();
+          rhythm = templateKind === 'threeway'
+            ? template.buildDefaultRhythm(12, segmentsForAi.length)
+            : buildDefaultRhythm();
           rhythm.name = `(默认节奏：AI 不可用 - ${err.message})`;
         }
 
         ui.aiOneshotBtn.textContent = '2/3 模板: 编译 PKF...';
         setOut(`✅ 节奏: ${rhythm.name || '(未命名)'}<br>🚀 Step 2: 编译模板 → PKF...`, '#93c5fd');
-        const compiled = compileTemplate(templateCheck.data, rhythm, forkAnchorZeroTpl);
+        const compiled = template.compileTemplate(ctx, rhythm, forkAnchorZeroTpl);
         window.__mf = window.__mf || {};
-        window.__mf.lastTemplate = { intent, rhythm, compiled };
+        window.__mf.lastTemplate = { intent, rhythm, compiled, templateKind };
 
         ui.aiOneshotBtn.textContent = '3/3 模板: 应用...';
         applyCompiledTemplate(compiled);
 
         setOut(
-          `✅ 模板路径完成<br>`
+          `✅ 模板路径完成 (${templateLabel})<br>`
           + `· 节奏: ${rhythm.name || '(未命名)'}<br>`
           + `· 参数: ${compiled.parameters.length}，步骤: ${compiled.steps.length}，reparent: ${compiled.reparent_events.length}<br>`
           + `· 总时长: ${compiled.meta.total_duration}s<br>`
           + `按下方"播放"键开始`,
           '#34d399',
         );
-        ui.setLoadStatus('🚀 叉车模板生成完成！按下方"播放"键看动画');
+        ui.setLoadStatus(`🚀 ${templateLabel} 模板生成完成！按下方"播放"键看动画`);
         return;
       }
       // 用户选了"取消" → 走自由生成（继续走 L1/L2）
     } else {
-      // 模板不适用：把缺的要素打印出来（不 alert，只 console，避免打扰用户）
-      console.info('[oneshot] 模板路径不适用，缺:', templateCheck.missing);
-      keyframeManager._pkfTemplateMeta = null; // 清掉老模板标记（若存在）
+      // 模板不适用：清掉老模板标记，走自由生成
+      console.info('[oneshot] 无匹配模板，走 L1/L2 自由生成路径');
+      keyframeManager._pkfTemplateMeta = null;
     }
 
     // ── Step 1: L1 拆解（老路径） ──
