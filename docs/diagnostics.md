@@ -309,6 +309,36 @@ __diagTpl.playbackSample([3.0, 3.01, 3.99, 4.0])  // 自定义采样 attach 前�
 - **loopBoundary**：偏移 < 0.01 = cargo 正常回原位；偏移大 = 可能 originalWorldTransforms 未快照
 - **playbackSample**：attach 前后 t（如 3.0 vs 3.01）cargo 世界坐标差 > 0.05m = 瞬移未消除
 
+---
+
+## 场景 9：轨迹 overlay 画出 "fork 实际不经过" 的线（bug #60 回归检测）
+
+**典型症状**
+- 播放时 fork 轨迹看着不对——蓝色轨迹线里有一段 fork 视觉上**从未经过**的线段
+- **从非 t=0 位置**切 `🎨 轨迹` toggle 容易出现；拖回 t=0 再切反而正常
+- 最常见在**首段之前**（seg 1 / 段 2 之前的区域）出现异常分支，方向似乎和 `_AHR23` 当前 value 一致
+
+**根因**：TrajectoryOverlay.refresh 采样循环漏了"每次采样前清零 PKF 触及的 joint"（修复前）——未开始的 step 对应的 joint 保留用户当前 t 的残留值 → 采样点被污染。修复见 [bugfix-log #60](bugfix-log.md#60-轨迹-overlay-采样残留污染-非-t0-时刻刷新会画出fork-实际不经过的线)。
+
+### 快速验证是不是这个 bug
+
+**不用写脚本**：拖时间轴到 **t=0**，再切轨迹 toggle 重新刷新。
+- L 线**消失** → 就是 #60 的症状
+- L 线**还在** → 走下面的诊断脚本
+
+### 诊断脚本：`__diagTraj`
+
+```js
+__diagTraj.all()              // 一把梭：正常对比 + 残留压力测试
+__diagTraj.compare()          // 当前 joint 状态下 overlay vs playback 路径的 fork 世界坐标对比
+__diagTraj.stressResidue()    // 人为给可动关节灌 2.5 残留，模拟"用户在中段时开 toggle"
+__diagTraj.help()
+```
+
+**输出**：每个采样 t 的两路距离 diff；超阈值（默认 1cm）列出前 10 个。
+- **`✅ 采样一致`**：TrajectoryOverlay 已修过 #60，overlay 采样和实际播放路径一致
+- **`❌ 有 X 个超阈值`**：overlay 又偏了，检查 `TrajectoryOverlay.refresh` 是否还保留了预清零逻辑（修复在 for 循环前对 `pkfSteps.forEach` 清零）
+
 **相关 bug / 契约**：[#47-#52](bugfix-log.md) + [concepts/forklift-pickup-template](concepts/forklift-pickup-template.md)
 
 ---
