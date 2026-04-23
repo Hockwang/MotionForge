@@ -138,10 +138,10 @@
 
 ## 架构坏味道（本轮不动）
 
-1. **main.js 1400+ 行**：有该下沉的逻辑（`applyPkfAtTime`、`buildExportClips`、`getScenePath` 等应在 core/）。但重构面积大，等 AI 打关节方向定了一起做
+1. **main.js 2400+ 行**：god file 越发严重（v14.1 2083 → mvp3 2440）。有该下沉的逻辑（`applyPkfAtTime`、`buildExportClips`、`getScenePath`、oneshotPipeline、importExport 等应在 core/app/）。但重构面积大，等 AI 打关节方向定了一起做
 2. **三套状态管理**：`keyframeManager`、`selectionManager`、main.js 里的 `editableObjects`/`sceneTreeNodes`/`undoStack`。没有集中入口，同步靠约定
 3. **Undo 只是 serializeState/restoreState 快照**：每次全量序列化，场景大时会慢
-4. **没有测试**：所有回归靠手动冒烟和 5 个 console 诊断脚本
+4. **集成测试空白**：83 个 vitest 单测（keyframe-manager + forklift-template）已覆盖核心逻辑，但 UI / main.js / import-export 路径仍只能靠手动冒烟和 9 个 console 诊断脚本
 
 这些都是 C 档（架构重构）的目标，不在 B 档范围。
 

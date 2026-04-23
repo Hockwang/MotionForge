@@ -145,6 +145,26 @@ mvp3 三向车调试过程中发现 `__diagTpl.drawTrajectory` 极其有用：
 
 当前状态：🚧 主线 mvp3 仍在迭代，有已知问题未解决，继续打磨。先推当前状态到 git。
 
+## [2026-04-23] milestone | mvp3 收尾：REVIEW-v15 P0/P1 清完 + 文档全仓对齐
+
+mvp3 密集迭代两周后做了一份 [REVIEW-v15.md](REVIEW-v15.md) 止损（16 条 finding F28-F43）。同日下午清完 P0 和所有 P1：
+
+**代码修复**：
+- **F28 P0**：轨迹 overlay 导出时会被烘焙进 GLB → 导出 handler 开头 `trajectoryOverlay?.clear()` + ResultPackageExporter 过滤 `userData.__isTrajectoryOverlay`/`__isDiagTrajectory`（两层防护）
+- **F34**：`addPkfStep` 保留 `template_segment` / `template_segment_name`（之前静默丢）
+- **F35**：`serializeState` / `restoreState` 纳入 `_pkfTemplateMeta`（避免 undo 后 snap-attach 被误激活）
+
+**文档对齐**（F29-F33）：
+- 代码注释 / 用户对话框 / AI prompt 7 处 `14 段` → `17 段（14 必选 + 3 可选横移）`
+- README: mvp2 → mvp3，补 83 tests 里程碑
+- bugfix-log: 补 #53（autoDetectForkName fork role）/ #54（export race）/ #55（_pkfTemplateMeta 序列化）/ #56（isV2 检测放宽）
+- docs/index.md: 补 forklift-pickup-template / alignment 文档 / gotcha 008 / log.md 条目，更新脚本数 7→9
+- CLAUDE.md: `__mf.trajectoryOverlay` 调试钩子登记，诊断脚本数 7→9，bug 编号 #52 → #56
+
+**仍欠（P2 / 非必修）**：F36 TrajectoryOverlay 单测 + F37 main.js 拆分 + F38 alert→toast + F39 UUID 统一 + F40 diag 整理 + F41 CONTRIBUTING 加 feature-flag 模式 + F42 marker 拖动刷新。等下个大 feature 触发一起做。
+
+83 单测通过。状态：mvp3 主线功能完整，可 merge `main` 打 `mvp3` tag。
+
 ## [2026-04-23] decision | 状态机框架对齐：17 段模板保留，不重构
 
 看到 mentor 的《固定资源状态动画》文档（状态拆分 + 姿态继承框架，覆盖升降机/RGV/转台/堆垛机/机械臂），初判我们的 17 段模板应该重构成 5 个原子状态（load/travelEmpty/travelLoaded/unload/idle）。

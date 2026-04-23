@@ -406,6 +406,42 @@ updated: 2026-04-22
 
 ---
 
+### mvp3 修复（17 段模板扩展期间）
+
+#### #53 autoDetectForkName 优先"叉齿*" role（修 cargo 穿车体）
+- **症状**：三向车场景 🚀 模板路径生成后，cargo 被 attach 到整个门架 bbox 中心，车体横移到 `cargo.x - 门架中部.x` 时车身穿进 cargo。用户反馈"cargo 又到车体里面了"
+- **排查**：`__mf.keyframeManager.getReparentEvents()` 指向 `_____10`（整个门架对象，bbox 5.3m 高），对比 `_CS19110`（叉齿旋转 joint 的 childId，bbox 1.2 × 0.55 × 1.6m 就是叉齿本体）
+- **根因**：`autoDetectForkName`（[ForkliftTemplate.js:154](../src/core/ForkliftTemplate.js#L154)）之前只找 `门架升降` role → 拿到整个门架节点 → `computeForkAnchorZero` 取 bbox 中部（= 门架几何中部）
+- **修复**：优先级改为 `role.startsWith('叉齿')`（叉齿旋转/叉齿侧移/叉齿前伸），`门架升降` 作为兜底。**运动链越深、bbox 越只含叉齿**
+- **验证**：17 段轨迹正确，cargo 从 cargo_pos 到 drop_pos 误差 < 0.01m。commit `ee55716`
+
+#### #54 导出前暂停播放 + 重置时间轴（修 cargo 变巨大）
+- **症状**：播放动画中途点"导出 ZIP" → 导入后 cargo 变成 **原尺寸 × 3-5 倍的巨型箱子**，看起来像 cargo 吃了 fork 的 scale
+- **排查**：diag `__mf.sceneManager.sceneRoot.getObjectByName('cargo_name').getWorldScale(...)` 显示异常 scale
+- **根因**：导出流程是 async，GLTFExporter 序列化需要 I/O 时间。导出期间 requestAnimationFrame 循环每帧继续跑，`applyReparentEventsAtTime(currentTime)` 把 cargo 重新 attach 到 fork 下（fork 有 scale 补偿逻辑），于是 GLB 烘焙了一个 attach 到 fork 且 scale 非 1 的 cargo
+- **修复**（[main.js:2323-2405](../src/main.js#L2323)）：导出 handler 开头保存 `savedIsPlaying` + `savedTime`，然后 `isPlaying=false; currentTime=0; applyReparentEventsAtTime(0)`，finally 恢复
+- **经验教训**：**async 操作期间的 runtime loop 是隐藏污染源**。对任何"快照"语义的动作都要先冻结时间线。commit `4cb90e7`
+
+#### #55 序列化 _pkfTemplateMeta 到 pkf.json（修导入后 attach 瞬移）
+- **症状**：模板路径生成的 ZIP 导出再导入，播放到 attach 点 cargo 下跳 ~0.3m（模板路径号称"零瞬移"）
+- **排查**：`__diagTpl.postImportCheck()` 显示 `_pkfTemplateMeta: null`——导入后这个字段是空的
+- **根因**：`_pkfTemplateMeta` 是 runtime 状态（标识当前 PKF 是否由模板生成），之前没有序列化到 `pkf.json`。导入后 `applyReparentEventsAtTime` 检查 `!this._pkfTemplateMeta` → 重新走 snap-attach 路径 → cargo 被强拽到 bbox 底面中心
+- **修复**：
+  - [ResultPackageExporter.js](../src/core/ResultPackageExporter.js)：`pkf.json` 加 `template_meta` 字段，接收 caller 传的 `pkfTemplateMeta`
+  - [main.js](../src/main.js) 导出：`pkfTemplateMeta: keyframeManager._pkfTemplateMeta || null`
+  - [main.js](../src/main.js) 导入：`keyframeManager._pkfTemplateMeta = pkfData.template_meta || null`
+- commit `95f4c65`
+
+#### #56 isV2 检测放宽（修 PKF-only clip 导入 duration/reparent_events 丢失）
+- **症状**：模板路径生成的动画导出后导入，clip.duration 被重置为默认 10 秒（应该是 20.3 秒），reparent_events 丢空 → 播放不 attach
+- **排查**：`__diagTpl.postImportCheck()` 显示 `clip.duration=10`、`reparent_events: 0`，但 `pkf_steps` 完整
+- **根因**：main.js 导入逻辑原本判断 `isV2 = clipsArr[0].keyframes.length > 0`。模板路径生成的 clip 只有 PKF 没关键帧（keyframes 空）→ 判成非 v2 → 整块 clip 恢复代码跳过 → duration 和 reparent_events 都丢
+- **修复**（[main.js:780-785](../src/main.js#L780)）：`isV2` 放宽为"有 keyframes 数组 OR 有 duration OR 有 reparent_events"
+- **经验教训**：**导入的格式检测不要用"单一必需字段"判断**。mvp3 引入 PKF-only clip 后老判断失效，应按语义等价（任一结构性字段出现）识别
+- commit `41f914c`
+
+---
+
 ## 核心经验教训（跨 bug 总结）
 
 1. **懒捕获 base 的时机很重要**：必须在"所有父级关节都是零位"的状态下捕获，不能在驱动态下捕获（bug #2/#3/#22）

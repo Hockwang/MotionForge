@@ -1124,6 +1124,11 @@ export class KeyframeManager {
       value_start: String(step?.value_start ?? '0'), // 强制转字符串，PKF 核心是公式
       value_end: String(step?.value_end ?? '0'),     // 同上
       easing: step?.easing || 'linear',
+      // 模板元数据（mvp3）：compileTemplate 产出的段会带 template_segment + name
+      // 用于轨迹 overlay / 诊断脚本的段号标签；非模板 step 为 null（不影响常规 PKF 求值）
+      // REVIEW-v15 F34：之前这两字段被静默丢弃，轨迹 overlay 段号标签一直走 idx0+1 兜底
+      template_segment: step?.template_segment ?? null,
+      template_segment_name: step?.template_segment_name ?? null,
     };
     this.pkfSteps.push(created);
     return created;
@@ -1216,6 +1221,10 @@ export class KeyframeManager {
         size: m.size ? { ...m.size } : null,
         color: m.color || null,
       })),
+      // mvp3: 模板路径 runtime 标记（applyReparentEventsAtTime 据此禁用 snap-attach）
+      // REVIEW-v15 F35：之前不进 undo，导致模板→清空→undo 后 pkfSteps 回到模板但 _pkfTemplateMeta=null
+      //                 → snap-attach 被重新激活 → attach 瞬移
+      _pkfTemplateMeta: this._pkfTemplateMeta ? { ...this._pkfTemplateMeta } : null,
     };
   }
 
@@ -1303,6 +1312,14 @@ export class KeyframeManager {
         color: m.color || null,
       });
     });
+    // mvp3 模板路径标记（REVIEW-v15 F35）：
+    // hasOwnProperty 检查区分"老 snapshot 没这字段"（undefined，保持当前值）
+    // 和"新 snapshot 显式写 null"（用户清空了模板，应恢复成 null）
+    if (serializedState && Object.prototype.hasOwnProperty.call(serializedState, '_pkfTemplateMeta')) {
+      this._pkfTemplateMeta = serializedState._pkfTemplateMeta
+        ? { ...serializedState._pkfTemplateMeta }
+        : null;
+    }
   }
 
   // ══════════════════════════════════════════════════════════════

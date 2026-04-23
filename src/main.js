@@ -1452,7 +1452,7 @@ ui.aiDecomposeBtn?.addEventListener('click', async () => {
 });
 
 // ══════════════════════════════════════════════════════════════
-//  叉车取放 14 段模板路径（mvp3 / Phase A+B）
+//  叉车取放 17 段模板路径（mvp3 / Phase A+B，14 必选 + 3 段可选横移）
 // ══════════════════════════════════════════════════════════════
 
 /**
@@ -1572,7 +1572,7 @@ ui.aiOneshotBtn?.addEventListener('click', async () => {
     if (templateCheck.ok) {
       const useTemplate = window.confirm(
         '检测到叉车取放场景（cargo + drop + 车体前进 + 门架升降 + attach 事件）。\n\n'
-        + '确定 = 用【叉车取放 14 段模板】（结构性零瞬移，AI 只管节奏）\n'
+        + '确定 = 用【叉车取放 17 段模板】（14 必选 + 3 段可选横移；结构性零瞬移，AI 只管节奏）\n'
         + '取消 = 走自由生成（AI 按高级意图自由输出，支持非标准动作）',
       );
       if (useTemplate) {
@@ -2337,6 +2337,8 @@ ui.exportPackageBtn.addEventListener('click', async () => {
   const savedValues = [];
   const savedTime = keyframeManager.currentTime;
   const savedIsPlaying = isPlaying;
+  // [trajectory-overlay] 记录导出前是否开启（open 的话导出完后要 requestRefresh 恢复）
+  const trajectoryWasEnabled = !!trajectoryOverlay?.enabled;
   try {
     // 暂停播放循环 + 时间归零（防止导出期间动画继续跑）
     isPlaying = false;
@@ -2344,6 +2346,10 @@ ui.exportPackageBtn.addEventListener('click', async () => {
 
     // 清除选中（防止 emissive 烘焙进 GLB）
     selectionManager.clearSelection();
+
+    // [trajectory-overlay] 关键：清掉轨迹 overlay group，否则 GLTFExporter 把 Line+Sphere 烘焙进 model.glb
+    //   import 回来用户场景里多一堆蓝橙线条（REVIEW-v15 F28）
+    trajectoryOverlay?.clear();
 
     // v5: reparent 状态重置到 t=0（所有对象回到 originalParent）
     // 否则 GLB 会烘焙"当前时间点的 scene graph"，导入后 originalParentMap 错乱
@@ -2401,6 +2407,8 @@ ui.exportPackageBtn.addEventListener('click', async () => {
     }
     // 恢复播放状态（如果之前在播放，继续播放）
     isPlaying = savedIsPlaying;
+    // [trajectory-overlay] 导出前若开着，重绘回来
+    if (trajectoryWasEnabled) trajectoryOverlay?.requestRefresh();
   }
 });
 

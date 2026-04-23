@@ -134,11 +134,16 @@ __mf.editableObjects()  // 当前可编辑对象列表（不含无名 Object3D �
 __mf.getJointDefs()     // 所有关节定义的快照
 __mf.lastOneshot        // 🚀 一键生成最后一次的 AI 请求/响应（{intent, scene, joints, l1, l2, l2Patched}）
 __mf.lastTemplate       // 🚀 模板路径最后一次的 {intent, rhythm, compiled}（mvp3）
+__mf.trajectoryOverlay  // 🎨 轨迹 overlay（.refresh() 手动刷 / .setEnabled(bool) / .group 看 THREE.Group）
 ```
 
 **遇到难定位的 bug，先写诊断脚本再改代码**。已有脚本用法见 [docs/diagnostics.md](docs/diagnostics.md)。
 
-⭐ **和 AI / 外部协作时排查 PKF / 动画问题首选**：粘贴 [tests/diag-template.js](tests/diag-template.js) 到 Console → `__diagTpl.drawTrajectory()` → **3D 视口截图 + console.table 文字表**一起发。图让人看得到走偏，表让 AI 能精确定位是哪段的公式 / 关节 / 坐标出问题。
+⭐ **和 AI / 外部协作时排查 PKF / 动画问题首选**（两种用法同源）：
+- **UI 开关**：时间轴右侧 `🎨 轨迹` toggle（mvp3）——打开即在 3D 视口画蓝/橙轨迹 + console 自动打印段表
+- **Console 脚本**：粘贴 [tests/diag-template.js](tests/diag-template.js) → `__diagTpl.drawTrajectory()`（同逻辑，但覆盖其他 6 个检测）
+
+**3D 视口截图 + console.table 文字表**一起发：图让人看得到走偏，表让 AI 能精确定位是哪段的公式 / 关节 / 坐标出问题。
 
 ---
 
@@ -148,8 +153,8 @@ __mf.lastTemplate       // 🚀 模板路径最后一次的 {intent, rhythm, com
 docs/
 ├── index.md          # 分类导航索引（新 session 从这里开始）
 ├── log.md            # Append-only 时间线（重要决策/里程碑记录）
-├── bugfix-log.md     # Bug 修复完整历史（#1-#52+）
-├── diagnostics.md    # 诊断脚本指南（7 脚本 + 7 场景 + 单行命令）
+├── bugfix-log.md     # Bug 修复完整历史（#1-#56+）
+├── diagnostics.md    # 诊断脚本指南（9 脚本 + 8 场景 + 单行命令）
 ├── architecture/     # 系统架构文档（模块职责、数据流、坐标系）
 ├── concepts/         # 领域概念（PKF、ZIP schema、forklift-pickup-model）
 ├── decisions/        # ADR 架构决策记录

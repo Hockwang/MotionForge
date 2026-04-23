@@ -460,7 +460,7 @@ app.post('/api/generate-pkf', aiRateLimit, async (req, res) => {
 
 // ══════════════════════════════════════════════════════════════
 //  模板节奏编排（mvp3 / Phase B）
-//  前端已用"叉车取放 14 段模板"生成几何结构，后端只负责出节奏（时长 + easing + 命名）。
+//  前端已用"叉车取放 17 段模板"（14 必选 + 3 段可选横移）生成几何结构，后端只负责出节奏（时长 + easing + 命名）。
 //  关系：与 /api/generate-pkf 正交——模板路径**不**调 generate-pkf，只调此接口。
 //  契约：docs/concepts/forklift-pickup-template.md §7
 // ══════════════════════════════════════════════════════════════
@@ -556,8 +556,8 @@ app.post('/api/template-rhythm', aiRateLimit, async (req, res) => {
   try {
     const segmentList = (templateSegments || []).length
       ? (templateSegments || []).map((s) => `  ${s.index}. ${s.name}`).join('\n')
-      : '（前端未传 template_segments，请按 system prompt 里的 14 段语义）';
-    const userMessage = `用户意图：${intent}\n\n模板段列表（仅作参考，语义以 system prompt 为准）：\n${segmentList}\n\n请返回 14 段的节奏 JSON。`;
+      : '（前端未传 template_segments，请按 system prompt 里的 17 段语义）';
+    const userMessage = `用户意图：${intent}\n\n模板段列表（仅作参考，语义以 system prompt 为准）：\n${segmentList}\n\n请返回 17 段的节奏 JSON（即使场景无横移，段 1/9/17 也要给；前端编译时会跳过）。`;
 
     const response = await fetch(`${AI_BASE_URL}/v1/chat/completions`, {
       method: 'POST',

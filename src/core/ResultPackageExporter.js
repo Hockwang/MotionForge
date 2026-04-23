@@ -32,8 +32,15 @@ export class ResultPackageExporter {
     // 不直接导出 sceneRoot（THREE.Scene），避免 GLTFExporter/GLTFLoader 的 Scene roundtrip 不一致
     // GLTFExporter 支持传入数组：所有子节点作为 GLB 的顶层节点
     // 导入后 gltf.scene.children 就是这些节点，结构与原始一致
+    // REVIEW-v15 F28 防御：过滤轨迹 overlay group（UI toggle 的 __isTrajectoryOverlay
+    // 和 Console __diagTpl.drawTrajectory 的 __isDiagTrajectory）。即使 caller 忘记 clear，
+    // 这里也不烘焙进 GLB。
     const exportTargets = (sceneRoot.children || []).filter(
-      (c) => !c.isLight && !c.isCamera && !c.type?.includes('Helper'),
+      (c) => !c.isLight
+        && !c.isCamera
+        && !c.type?.includes('Helper')
+        && !c.userData?.__isTrajectoryOverlay
+        && !c.userData?.__isDiagTrajectory,
     );
     // 如果只有一个子节点，直接传对象；多个传数组
     const target = exportTargets.length === 1 ? exportTargets[0] : exportTargets;

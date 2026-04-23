@@ -4,6 +4,12 @@ updated: 2026-04-23
 ---
 # MotionForge mvp3 全仓 Review（v14 → v15）
 
+> **⚠️ 更新 2026-04-23（同日下午）**：首版写完后**当天完成 mvp3 收尾 checklist 中的文档/代码必修项**。
+> - P0 **F28** 已修（commit TBD，导出前 clear + exporter 过滤 userData 兜底）
+> - P1 **F29 / F30 / F31 / F32 / F33 / F34 / F35** 全部已修
+> - 剩余 P2 仍未做（F37 main.js 拆分、F38 alert→toast、F39 UUID、F40 diag 整理、F41 flag 模式写进 CONTRIBUTING、F42 marker 拖动刷新）+ F36 TrajectoryOverlay 单测仍待补
+> - 下面正文是首版写作时的快照，具体哪条已修以本框为准
+
 > **目的**：v14.1 合并后两周，mvp3 主线（17 段模板 + AI 节奏 + 状态机对齐 + 轨迹 overlay）密集迭代完成。这份 review 给这段工作一个止损点：盘点成绩、列出新欠账、标出仍未兑现的 v14 遗留项。
 >
 > - **审阅元数据**：分支 `feature/pickup-template`，commit `5eddebe`

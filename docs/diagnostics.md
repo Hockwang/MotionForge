@@ -1,6 +1,6 @@
 ---
 tags: [diagnostics, debugging, reference]
-updated: 2026-04-22
+updated: 2026-04-23
 ---
 # 诊断脚本指南
 
@@ -8,7 +8,11 @@ updated: 2026-04-22
 >
 > **先写诊断脚本，再改代码**。多数历史 bug 是通过这条流程定位的（[docs/bugfix-log.md](bugfix-log.md) 经验教训 8）。
 >
-> ⭐ **首选调试工具**：[`__diagTpl.drawTrajectory()`](../tests/diag-template.js) —— 在 3D 视口画出 fork / cargo 整段动画轨迹 + console 打印 14/17 段文字表。**和外部（AI/团队）沟通 PKF 问题时首选此工具**：图给人看、表给 AI 看，定位问题的效率远高于单点快照。详见 [场景 8](#场景-8叉车-14-段模板路径验证mvp3)。
+> ⭐ **首选调试工具（两种用法同源）**：
+> - **UI 开关**：时间轴右侧 `🎨 轨迹` toggle（mvp3，[src/core/TrajectoryOverlay.js](../src/core/TrajectoryOverlay.js)）——打开即画且 PKF 变动自动刷，console 自动输出段表
+> - **Console 脚本**：[`__diagTpl.drawTrajectory()`](../tests/diag-template.js) —— 同逻辑，可在不勾 UI 按钮的情况下临时触发；支持 6 个其他检测（reparentTiming / cascadeCheck / formulas / loopBoundary / playbackSample / postImportCheck）
+>
+> **和外部（AI/团队）沟通 PKF 问题时首选此工具**：图给人看、表给 AI 看，定位问题的效率远高于单点快照。详见 [场景 8](#场景-8叉车-17-段模板路径验证mvp3)。
 
 ---
 
@@ -23,7 +27,7 @@ updated: 2026-04-22
 - [场景 5：判断"归零策略"是否正确](#场景-5判断归零策略是否正确)
 - [场景 6：模型某片零件一直发光高亮](#场景-6模型某片零件一直发光高亮)
 - [场景 7：承载锚点 / 叉齿 mesh 分析](#场景-7承载锚点--叉齿-mesh-分析)
-- [场景 8：叉车 14 段模板路径验证（mvp3）](#场景-8叉车-14-段模板路径验证mvp3)
+- [场景 8：叉车 17 段模板路径验证（mvp3）](#场景-8叉车-17-段模板路径验证mvp3)
 - [附：单行快速检查命令](#附单行快速检查命令)
 
 ---
@@ -249,7 +253,7 @@ __diagFA.listForkSubmeshes()  // 只看叉齿子树所有 mesh 的 bbox（按 mi
 
 ---
 
-## 场景 8：叉车 14/17 段模板路径验证（mvp3）
+## 场景 8：叉车 17 段模板路径验证（mvp3）
 
 **典型症状 / 触发时机**
 - 🚀 一键生成选了"模板"后验证是否真的零瞬移

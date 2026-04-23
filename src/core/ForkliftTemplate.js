@@ -1,5 +1,5 @@
 /**
- * 叉车取放 14 段模板编译器（Phase A / B）
+ * 叉车取放 17 段模板编译器（Phase A / B）—— 14 必选 + 3 段可选横移（段 1/9/17）
  *
  * 契约见 docs/concepts/forklift-pickup-template.md。
  *
@@ -120,8 +120,9 @@ export const TEMPLATE_PARAMETERS = [
 ];
 
 /**
- * 默认节奏：14 段均分 12 秒 + 全部 ease-in-out。
+ * 默认节奏：17 段均分 12 秒 + 全部 ease-in-out。
  * 供 Phase A（不接 AI）使用；Phase B AI 返回的节奏 JSON 必须遵循同 schema。
+ * 场景无横移 role 时编译器跳过 optional 段（1/9/17），只有 14 段生效。
  */
 export function buildDefaultRhythm(totalSeconds = 12) {
   const n = FORKLIFT_TEMPLATE.length;
@@ -278,7 +279,7 @@ export function collectTemplateContext(keyframeManager, sceneRoot) {
 }
 
 /**
- * 把 14 段模板编译成标准 PKF。
+ * 把 17 段模板编译成标准 PKF（场景无横移 role 时 optional 段 1/9/17 编译期跳过，降级为 14 段）。
  *
  * @param {Object} ctx        collectTemplateContext 返回的 data
  * @param {Object} [rhythm]   { name, segments: [{index, duration, easing}] }，缺省用默认
@@ -364,7 +365,7 @@ export function compileTemplate(ctx, rhythm, forkAnchorZero = {}) {
     });
     prevValueByRole.set(cascadeKey, valueEnd);
 
-    // 绑定 reparent 事件（§4.4 attach 在段 3 末尾，detach 在段 11 末尾）
+    // 绑定 reparent 事件（§4.4 attach 在段 4 末尾，detach 在段 13 末尾；17 段扩展后段号调整）
     if (seg.reparent === 'attach') {
       reparentEvents.push({
         t: tEnd,

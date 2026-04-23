@@ -2,7 +2,7 @@
 
 Web 端 3D 动作编辑器（Three.js + Vite），用自然语言或关键帧驱动模型做动画，导出标准化运动包。
 
-**当前版本**：mvp2（2026-04-22，52 条 bug 已修，AI 一键生成 + 承载锚点自动对齐 + vitest 基建）
+**当前版本**：mvp3（2026-04-23，56 条 bug 已修 + 17 段叉车模板 + AI 节奏 + 轨迹可视化 + 状态机框架对齐 + vitest 83 tests）
 
 ---
 
@@ -74,7 +74,7 @@ Web 端 3D 动作编辑器（Three.js + Vite），用自然语言或关键帧驱
 - ✅ 多模型类型（GLB / USDZ / USD / FBX / GLTF）
 - ❌ AI 自动打关节（还在调研，要手配）
 - ❌ 多模型同场景编辑（当前单模型）
-- ❌ 测试套件（回归靠手动 + 诊断脚本）
+- ✅ 单元测试（vitest 83 tests 覆盖 KeyframeManager + ForkliftTemplate 核心路径；集成/UI 仍靠手动 + 9 个诊断脚本）
 - ❌ Redo（只有 Undo，Ctrl+Z）
 
 ---
