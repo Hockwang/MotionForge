@@ -57,20 +57,25 @@ export const ROLE_FORK_ROTATE = '叉齿旋转';
 // 复用：ROLE_CAR_FORWARD / ROLE_MAST_LIFT 从 ForkliftTemplate import
 
 // ── 三向车新增参数（叠加 BASE_TEMPLATE_PARAMETERS）──
+// F45：X_AXIS_THRESHOLD_DEFAULT 作为唯一真值；canApply 读当前 pkfParameters 取用户改过的值，
+// compileTemplate 再传入 ctx.xAxisThreshold。两处都不要再写死 0.3。
+export const X_AXIS_THRESHOLD_DEFAULT = 0.3;
+export const FORK_INSERTION_DEPTH_DEFAULT = 0.5;
+
 export const TEMPLATE_PARAMETERS_THREEWAY = [
   {
     id: 'fork_insertion_depth',
     type: 'number',
     unit: 'm',
     desc: 'fork 从 safe 位置插入到 cargo 中心所需位移（经验 0.5m）',
-    default: 0.5,
+    default: FORK_INSERTION_DEPTH_DEFAULT,
   },
   {
     id: 'x_axis_threshold',
     type: 'number',
     unit: 'm',
     desc: 'decideAxis 判定：|cargo.x| > 此值从 ±x 侧取，否则 +y 正面取',
-    default: 0.3,
+    default: X_AXIS_THRESHOLD_DEFAULT,
   },
 ];
 
@@ -210,6 +215,16 @@ export function canApply(keyframeManager, sceneRoot) {
   const cargoPosUi = { x: cwp.x, y: cwp.z, z: cwp.y };
   const dropPosUi = { x: dwp.x, y: dwp.z, z: dwp.y };
 
+  // F45：若用户在上一轮 🚀 后改过 x_axis_threshold / fork_insertion_depth（PKF 参数面板里可编辑），
+  // 这里读当前值；否则 fallback 到模板默认。保证"面板里改的值"下一次 🚀 能真的生效。
+  const readParamDefault = (id, fallback) => {
+    const p = keyframeManager.pkfParameters?.get?.(id);
+    const v = p && Number.isFinite(Number(p.default)) ? Number(p.default) : null;
+    return v ?? fallback;
+  };
+  const xAxisThreshold = readParamDefault('x_axis_threshold', X_AXIS_THRESHOLD_DEFAULT);
+  const forkInsertionDepth = readParamDefault('fork_insertion_depth', FORK_INSERTION_DEPTH_DEFAULT);
+
   return {
     ok: true,
     data: {
@@ -224,6 +239,8 @@ export function canApply(keyframeManager, sceneRoot) {
       mastJoint,
       lateralJoint,
       rotateJoint,
+      xAxisThreshold,
+      forkInsertionDepth,
     },
   };
 }
@@ -273,8 +290,11 @@ export function compileTemplate(ctx, rhythm, forkAnchorZero = {}, forkAnchorByAx
   if (!ctx) throw new Error('compileTemplate(threeway): ctx required');
   const { carJoint, mastJoint, lateralJoint, rotateJoint, cargoName, forkName } = ctx;
 
-  // 决定 axis（从 rhythm 或默认拿阈值；这里先用 default，future 可从 ctx 或参数传入）
-  const threshold = 0.3; // 和 TEMPLATE_PARAMETERS_THREEWAY 的 default 对齐；compile 时读 default
+  // F45：阈值从 ctx 读（canApply 已从当前 pkfParameters 拿到用户改过的值；首次 🚀 拿 default）。
+  // 不再写死 0.3 —— 面板里改阈值，下一次 🚀 就生效。
+  const threshold = Number.isFinite(Number(ctx.xAxisThreshold))
+    ? Number(ctx.xAxisThreshold)
+    : X_AXIS_THRESHOLD_DEFAULT;
   const cargoAxis = decideAxis(ctx.cargoPos, threshold);
   const dropAxis = decideAxis(ctx.dropPos, threshold);
 
@@ -316,7 +336,18 @@ export function compileTemplate(ctx, rhythm, forkAnchorZero = {}, forkAnchorByAx
     { id: 'cargo_width',  type: 'number', unit: 'm', desc: 'cargo 宽', default: +(ctx.cargoSize.w || 0).toFixed(3) },
     { id: 'cargo_height', type: 'number', unit: 'm', desc: 'cargo 高', default: +(ctx.cargoSize.h || 0).toFixed(3) },
     { id: 'cargo_depth',  type: 'number', unit: 'm', desc: 'cargo 深', default: +(ctx.cargoSize.d || 0).toFixed(3) },
-    ...TEMPLATE_PARAMETERS,
+    // F45：把 TEMPLATE_PARAMETERS 里的 threeway 两参 default 用 ctx 当前值覆盖，
+    // 避免二次 🚀 时用户改过的值被重置回硬编码 default
+    ...TEMPLATE_PARAMETERS.map((p) => {
+      if (p.id === 'x_axis_threshold') return { ...p, default: threshold };
+      if (p.id === 'fork_insertion_depth') {
+        const v = Number.isFinite(Number(ctx.forkInsertionDepth))
+          ? Number(ctx.forkInsertionDepth)
+          : FORK_INSERTION_DEPTH_DEFAULT;
+        return { ...p, default: v };
+      }
+      return p;
+    }),
   ];
 
   // ── 动态生成段描述（先不定 t_start/t_end，rhythm 应用在后）──

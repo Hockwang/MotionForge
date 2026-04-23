@@ -552,6 +552,34 @@ updated: 2026-04-22
 
 ---
 
+#### #61 REVIEW-v16 P0 收尾 —— XSS + x_axis_threshold 写死 + snapshot null safety
+
+背景：[REVIEW-v16](REVIEW-v16.md) 三向车收尾 review 列了 P0/P1/P2 共 14 条；GPT 独立 review 又补了 4 条（其中 XSS 最严重）。此条目记录**合并后的 P0 三条**同批修复。
+
+- **症状**：
+  1. F60（XSS）：[main.js:1644](../src/main.js#L1644) 的 `setOut(html)` 和 [EditorUI.js:1200](../src/ui/EditorUI.js#L1200) 的 `panel.innerHTML` 都往 innerHTML 里塞动态内容，其中 AI 返回的 `rhythm.name` / `l1Body.warnings` / `err.message`、导入 GLB 节点名、用户自定义 role 均未 escape — 恶意 GLB/ZIP 可通过节点名注入脚本
+  2. F45：[ThreewayTemplate.js:277](../src/core/templates/ThreewayTemplate.js#L277) 的 `threshold = 0.3` 写死，`x_axis_threshold` 参数看起来可调实际无效（用户在 PKF 面板改了阈值，下一次 🚀 仍用 0.3 判轴向）
+  3. F47：[main.js:1239 snapshotForkAnchorAtRotations](../src/main.js#L1239) 假设 `sceneManager.sceneRoot`、`window.__mf.THREE`、`angles` 数组等外部依赖都在，缺任何一个就 NPE
+
+- **排查**：同时跑 v16 自查 review 和让 GPT 独立 review，交叉比对 findings → F60 / F61 / F62 / F63 是我漏掉的真实洞
+
+- **根因**：
+  - F60：早期写 `setOut(html)` 时假设内容都是我自己拼的静态字符串，后来陆续把 AI 返回、error message 直接字符串拼进来 — 信任边界破了没人重新审
+  - F45：compileTemplate 写 `// 这里先用 default，future 可从 ctx 或参数传入` 的 TODO 没 follow up，参数暴露给用户面板但读取没打通
+  - F47：snapshotForkAnchorAtRotations 是为 a7547de 新加的，只想着"承载点按 axis 分开 snapshot"本身对不对，没做防御外部调用错参数
+
+- **修复**：
+  - F60：两个文件各加本地 `escapeHtml(s)` helper；所有进 innerHTML 的动态片段（`rhythm.name`、`w`（warning）、`err.message`、`nodeName`、`opt.id/name/role`、`currentRole`）都转义；静态 `<br>` 分隔符保留不变
+  - F45：新增导出常量 `X_AXIS_THRESHOLD_DEFAULT` / `FORK_INSERTION_DEPTH_DEFAULT` 作为**唯一真值**；`canApply` 读当前 `keyframeManager.pkfParameters` 里的值（用户改过则用改过的值，否则 fallback 到常量）并放进 `ctx.xAxisThreshold` / `ctx.forkInsertionDepth`；`compileTemplate` 里的 `threshold` 和 parameters 列表的 default 都从 ctx 读，保证二次 🚀 不重置用户编辑
+  - F47：`snapshotForkAnchorAtRotations` 头部加 guard：`angles` 不是非空数组、`rotateJointName` 非字符串、`THREE` 命名空间缺失、`sceneManager.sceneRoot` / `keyframeManager.getAllJointDefs` 未就绪 — 任一命中立即返回空映射（`angles[i].key → {}`），compileTemplate 会 fallback 到 `forkAnchorZero`，行为降级但不崩；for 循环内按条目做 `Number.isFinite(angleDeg)` 兜底
+
+- **经验教训**：
+  1. **review 要交叉做**：自己写完自己 review 容易盯着"新增代码"不放，漏掉"既有代码经新增逻辑变得危险"的面（innerHTML 就是典型）。让 GPT / 独立 reviewer 也过一遍，视角互补
+  2. **参数"暴露给用户"和"运行时读回来"要一起做**：F45 的 bug 不是功能缺失，是**半做完**。写 TEMPLATE_PARAMETERS 的时候就应该同步把 compileTemplate 里的常量引用改成 ctx 读取
+  3. **防御性编程的分层**：核心业务逻辑里加 null check 等于在"happy path 之外再复现一遍业务决策"；只在**外部边界函数**（接受外部对象、数组、unknown 类型的参数）做集中防御，内部函数假设输入合法
+
+---
+
 ## 核心经验教训（跨 bug 总结）
 
 1. **懒捕获 base 的时机很重要**：必须在"所有父级关节都是零位"的状态下捕获，不能在驱动态下捕获（bug #2/#3/#22）

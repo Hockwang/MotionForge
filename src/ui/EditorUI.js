@@ -1,5 +1,13 @@
 import * as THREE from 'three';
 
+// F60 安全：任何用户/外部数据（GLB 节点名、自定义 role、场景对象名）在进入 innerHTML 前都必须 escape，
+// 防止恶意 GLB / ZIP 通过节点名注入脚本。静态 HTML 结构本身不转义。
+function escapeHtml(s) {
+  return String(s ?? '').replace(/[&<>"']/g, (c) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[c]));
+}
+
 export class EditorUI {
   constructor(appRoot) {
     this.appRoot = appRoot;
@@ -1172,34 +1180,37 @@ export class EditorUI {
       '夹爪开合', '臂段旋转',
     ];
     const isCustomRole = currentRole && !PREDEFINED_ROLES.includes(currentRole);
+    // F60：PREDEFINED_ROLES 是写死的中文字符串，理论可信；但统一走 escape 保持一致
     const roleOptionsHtml = PREDEFINED_ROLES
-      .map((r) => `<option value="${r}" ${r === currentRole ? 'selected' : ''}>${r}</option>`)
+      .map((r) => `<option value="${escapeHtml(r)}" ${r === currentRole ? 'selected' : ''}>${escapeHtml(r)}</option>`)
       .join('');
 
     // 从 handlers 获取可选的 parent 节点列表（所有可编辑对象，排除自己）
     const parentOptions = handlers?.getParentOptions?.() || [];
 
     // 生成 parent 下拉选项
+    // F60：opt.id / opt.name 来自 GLB 场景节点，可能含恶意字符，必须 escape
     const parentOptionsHtml = parentOptions
       .filter((opt) => opt.id !== nodeId) // 排除自己
-      .map((opt) => `<option value="${opt.id}" ${opt.id === currentParentId ? 'selected' : ''}>${opt.name}</option>`)
+      .map((opt) => `<option value="${escapeHtml(opt.id)}" ${opt.id === currentParentId ? 'selected' : ''}>${escapeHtml(opt.name)}</option>`)
       .join('');
 
     // #59 overflow_to 下拉：列出其他关节的名字（排除自己 + 非 prismatic 类型在 demo 阶段也不过滤，
     // 用户自担责任）。按关节 **名字** 存，跨 ZIP roundtrip 稳定。
+    // F60：opt.name / opt.role 都可能来自用户数据，必须 escape
     const overflowTargets = handlers?.getOverflowTargetOptions?.() || [];
     const overflowOptionsHtml = overflowTargets
       .filter((opt) => opt.name && opt.name !== nodeName)
       .map((opt) => {
         const sel = opt.name === currentOverflowTo ? 'selected' : '';
-        const roleTag = opt.role ? ` · ${opt.role}` : '';
-        return `<option value="${opt.name}" ${sel}>${opt.name}${roleTag}</option>`;
+        const roleTag = opt.role ? ` · ${escapeHtml(opt.role)}` : '';
+        return `<option value="${escapeHtml(opt.name)}" ${sel}>${escapeHtml(opt.name)}${roleTag}</option>`;
       })
       .join('');
 
     panel.innerHTML = `
       <div class="joint-config-header">
-        <span>关节配置: ${nodeName || nodeId}</span>
+        <span>关节配置: ${escapeHtml(nodeName || nodeId)}</span>
         <button type="button" class="joint-config-close">✕</button>
       </div>
       <label>类型
@@ -1227,7 +1238,7 @@ export class EditorUI {
           </select>
         </label>
         <input class="jc-role-custom" type="text" placeholder="自定义角色名，如 液压杆伸缩"
-               value="${isCustomRole ? currentRole : ''}"
+               value="${isCustomRole ? escapeHtml(currentRole) : ''}"
                style="${isCustomRole ? '' : 'display:none'}; width: 100%; margin-top: 4px;" />
       </div>
       <div class="jc-axis-group" style="${isFixed || isNone ? 'display:none' : ''}">

@@ -1237,31 +1237,44 @@ function snapshotForkAnchorZero() {
  * @returns {Object<string, {fork_anchor_zero_x, fork_anchor_zero_y, fork_anchor_zero_z}>}
  */
 function snapshotForkAnchorAtRotations(rotateJointName, angles) {
+  // F47 null safety：所有外部输入做早期 guard，任何一个不合法直接返回空表，
+  // 让调用方走 fallback（compileTemplate 会用 forkAnchorZero 兜底所有 axis）。
+  // 空结果 = 每个 key 映射到 {} — 和原来 "没找到 attach event" 的退化行为一致。
+  const emptyResult = () => {
+    const r = {};
+    if (Array.isArray(angles)) angles.forEach((a) => { if (a?.key) r[a.key] = {}; });
+    return r;
+  };
+  if (!Array.isArray(angles) || angles.length === 0) return emptyResult();
+  if (!rotateJointName || typeof rotateJointName !== 'string') return emptyResult();
   const THREE_NS = window.__mf?.THREE || window.THREE;
+  if (!THREE_NS?.Box3 || !THREE_NS?.Vector3) {
+    console.warn('[snapshotForkAnchorAtRotations] THREE 命名空间不可用，跳过');
+    return emptyResult();
+  }
+  if (!sceneManager?.sceneRoot || typeof keyframeManager?.getAllJointDefs !== 'function') {
+    console.warn('[snapshotForkAnchorAtRotations] scene / keyframeManager 未就绪，跳过');
+    return emptyResult();
+  }
+
   const saved = keyframeManager.getAllJointDefs().map((d) => ({ id: d.id, value: d.currentValue }));
   const results = {};
 
   // 从当前 reparent 事件找 fork object（和 computeForkAnchorZero 同逻辑）
   const events = keyframeManager.getReparentEvents?.() || [];
-  const attachEvent = events.find((e) => e.new_parent_name);
-  if (!attachEvent) {
-    angles.forEach((a) => { results[a.key] = {}; });
-    return results;
-  }
+  const attachEvent = events.find((e) => e?.new_parent_name);
+  if (!attachEvent) return emptyResult();
   const forkObj = sceneManager.sceneRoot.getObjectByName(attachEvent.new_parent_name);
-  if (!forkObj) {
-    angles.forEach((a) => { results[a.key] = {}; });
-    return results;
-  }
+  if (!forkObj) return emptyResult();
 
   const rotDef = keyframeManager.getAllJointDefs().find((d) => d.name === rotateJointName);
-  if (!rotDef) {
-    angles.forEach((a) => { results[a.key] = {}; });
-    return results;
-  }
+  if (!rotDef) return emptyResult();
 
   try {
-    for (const { key, angleDeg } of angles) {
+    for (const entry of angles) {
+      // F47：容忍 angles 里混入异常项，跳过不中断整批
+      if (!entry || typeof entry.key !== 'string' || !Number.isFinite(Number(entry.angleDeg))) continue;
+      const { key, angleDeg } = entry;
       // 所有关节归零
       saved.forEach((s) => {
         const d = keyframeManager.jointDefinitions.get(s.id);
@@ -1637,6 +1650,11 @@ ui.aiOneshotBtn?.addEventListener('click', async () => {
     return;
   }
   const out = ui.aiOneshotOutput;
+  // F60 安全：所有进入 innerHTML 的动态片段（AI 返回的 rhythm.name / warnings、err.message、
+  // 用户输入等）必须先 escape，防止 XSS。静态 <br> 分隔符不走动态路径，安全。
+  const escapeHtml = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[c]));
   const setOut = (html, color) => {
     if (!out) return;
     out.style.display = 'block';
@@ -1668,7 +1686,7 @@ ui.aiOneshotBtn?.addEventListener('click', async () => {
       );
       if (useTemplate) {
         ui.aiOneshotBtn.textContent = '1/3 模板: AI 节奏...';
-        setOut(`🚀 模板路径 (${templateLabel}) Step 1: 请求 AI 节奏...`, '#93c5fd');
+        setOut(`🚀 模板路径 (${escapeHtml(templateLabel)}) Step 1: 请求 AI 节奏...`, '#93c5fd');
 
         // 如果 fork 是自动识别的（用户没配 attach event），snapshotForkAnchorZero 需要 attach event 才能工作 —
         // 临时加一个 placeholder reparent event，applyCompiledTemplate 会在最后清掉重写
@@ -1729,7 +1747,7 @@ ui.aiOneshotBtn?.addEventListener('click', async () => {
         }
 
         ui.aiOneshotBtn.textContent = '2/3 模板: 编译 PKF...';
-        setOut(`✅ 节奏: ${rhythm.name || '(未命名)'}<br>🚀 Step 2: 编译模板 → PKF...`, '#93c5fd');
+        setOut(`✅ 节奏: ${escapeHtml(rhythm.name || '(未命名)')}<br>🚀 Step 2: 编译模板 → PKF...`, '#93c5fd');
         const compiled = template.compileTemplate(ctx, rhythm, forkAnchorZeroTpl, forkAnchorByAxisTpl);
         window.__mf = window.__mf || {};
         window.__mf.lastTemplate = { intent, rhythm, compiled, templateKind };
@@ -1738,8 +1756,8 @@ ui.aiOneshotBtn?.addEventListener('click', async () => {
         applyCompiledTemplate(compiled);
 
         setOut(
-          `✅ 模板路径完成 (${templateLabel})<br>`
-          + `· 节奏: ${rhythm.name || '(未命名)'}<br>`
+          `✅ 模板路径完成 (${escapeHtml(templateLabel)})<br>`
+          + `· 节奏: ${escapeHtml(rhythm.name || '(未命名)')}<br>`
           + `· 参数: ${compiled.parameters.length}，步骤: ${compiled.steps.length}，reparent: ${compiled.reparent_events.length}<br>`
           + `· 总时长: ${compiled.meta.total_duration}s<br>`
           + `按下方"播放"键开始`,
@@ -1782,7 +1800,7 @@ ui.aiOneshotBtn?.addEventListener('click', async () => {
 
     const rowsMsg = `✅ L1: ${l1Body.rows.length} 行时间表 + ${l1Body.reparent_events?.length || 0} 个 reparent 事件`;
     const warningsMsg = (l1Body.warnings?.length)
-      ? `<br>⚠️ AI 警告:<br>${l1Body.warnings.map((w) => `· ${w}`).join('<br>')}`
+      ? `<br>⚠️ AI 警告:<br>${l1Body.warnings.map((w) => `· ${escapeHtml(w)}`).join('<br>')}`
       : '';
     setOut(`${rowsMsg}${warningsMsg}<br>🪄 Step 2: 应用 reparent...`, '#93c5fd');
 
@@ -1910,7 +1928,7 @@ ui.aiOneshotBtn?.addEventListener('click', async () => {
     );
     ui.setLoadStatus('🚀 一键生成完成！按下方"播放"键看动画');
   } catch (err) {
-    setOut(`❌ ${err.message}`, '#f87171');
+    setOut(`❌ ${escapeHtml(err.message)}`, '#f87171');
     console.error('[Oneshot]', err);
   } finally {
     ui.aiOneshotBtn.disabled = false;
