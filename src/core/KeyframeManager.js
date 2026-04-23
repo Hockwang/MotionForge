@@ -654,6 +654,34 @@ export class KeyframeManager {
     return [...this.jointDefinitions.values()];
   }
 
+  /**
+   * 按 role 找"主"关节。多个关节共享同一 role 时（如双段门架内外都叫"门架升降"），
+   * 被别人 `overflow_to` 指向的关节（slave）自动被跳过。
+   *
+   * 设计理由（#59 UX 优化）：
+   *   用户自然倾向于把"门架升降"这个 role 贴给**所有**门架段（语义真实）。
+   *   原来的 `find(d => d.role === x)` 命中顺序不稳定，双段门架时可能随机挑到外门架，
+   *   导致模板 PKF 绑错关节 + redistribute 把外门架 value 抢走 → fork 不抬（见 bugfix #59）。
+   *
+   *   这个 helper 统一规则："slave 不被选为主"。规则由 overflow_to 字段**自动推导**，
+   *   用户无需 UI 侧额外操作。单关节 role 或无 overflow 配置 → slave 集合为空 → 退化为原行为。
+   *
+   *   若 role 只有 slave 命中（用户误配），fallback 仍返回 slave（保底行为不破坏），
+   *   模板后续的 missing 检查会捕获真正的配置错误。
+   *
+   * @param {string} role
+   * @returns {Object|null}
+   */
+  findPrimaryByRole(role) {
+    if (!role) return null;
+    const all = [...this.jointDefinitions.values()];
+    const slaveNames = new Set();
+    all.forEach((d) => { if (d.overflow_to) slaveNames.add(d.overflow_to); });
+    return all.find((d) => d.role === role && d.name && !slaveNames.has(d.name))
+      || all.find((d) => d.role === role)
+      || null;
+  }
+
   getJointDefLabel(nodeId) {
     const def = this.jointDefinitions.get(nodeId);
     if (!def) return '无';

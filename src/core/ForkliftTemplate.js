@@ -162,7 +162,11 @@ export function autoDetectForkName(keyframeManager, sceneRoot) {
   //         用 .filter 兼容同时有多个叉齿 role 的情况（如 叉齿侧移 + 叉齿旋转），取第一个命中
   const forkSpecificJoint = allDefs.find((d) => typeof d.role === 'string' && d.role.startsWith('叉齿'));
   // 优先级 2：门架升降（兜底）
-  const mastJoint = allDefs.find((d) => d.role === ROLE_MAST_LIFT);
+  // #59 UX：双段门架场景下内外都贴 role="门架升降"，findPrimaryByRole 自动跳过 slave（外门架），
+  //        返回内门架（free-lift 主），它的 childId 才挂着 fork mesh。
+  const mastJoint = keyframeManager.findPrimaryByRole
+    ? keyframeManager.findPrimaryByRole(ROLE_MAST_LIFT)
+    : allDefs.find((d) => d.role === ROLE_MAST_LIFT);
   const candidate = forkSpecificJoint || mastJoint;
   if (!candidate?.childId) return null;
 
@@ -221,7 +225,10 @@ export function collectTemplateContext(keyframeManager, sceneRoot) {
     ? keyframeManager.getAllJointDefs()
     : [...keyframeManager.jointDefinitions.values()];
   const carJoint = allDefs.find((d) => d.role === ROLE_CAR_FORWARD);
-  const mastJoint = allDefs.find((d) => d.role === ROLE_MAST_LIFT);
+  // #59 UX：多段门架共享"门架升降" role 时，自动挑 primary（跳过 slave=被 overflow_to 指向的）
+  const mastJoint = keyframeManager.findPrimaryByRole
+    ? keyframeManager.findPrimaryByRole(ROLE_MAST_LIFT)
+    : allDefs.find((d) => d.role === ROLE_MAST_LIFT);
   if (!carJoint) missing.push(`role="${ROLE_CAR_FORWARD}" 的关节`);
   if (!mastJoint) missing.push(`role="${ROLE_MAST_LIFT}" 的关节`);
   // 横移关节可选：优先车体横移，fallback 叉齿侧移；都没有 → 降级为 14 段无 x 对齐

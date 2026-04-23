@@ -513,6 +513,20 @@ updated: 2026-04-22
   3. **demo 级不追求物理真实**：简单 clamp + 余量分摊即可，不必做动力学仿真。一个正向公式能对称处理上升/下降，就不用写反向
 - 单元测试：12 个新 case（`tests/unit/keyframe-manager.test.js` "双段门架 overflow 分摊" block），覆盖 limit 内/正好/超限/负值/下降穿越/未启用/目标缺失/setJointValue 夹值/序列化往返等边界
 
+**UX 后续补丁（同 #59，追加 commit）**：
+
+- **症状**：主 commit a558925 推上去后用户发现要让 overflow 生效**必须清空其中一个门架的 role**（cAR201 保留门架升降、`_____10` 改成"未设置"），这反直觉——两个关节明明都是"门架"
+- **根因**：模板 [ForkliftTemplate.js:224](../src/core/ForkliftTemplate.js#L224) 的 `allDefs.find(d => d.role === "门架升降")` 命中顺序不稳定。如果模板绑到外门架（`_____10`）而 overflow 配置在内门架（cAR201）上 → cAR201.currentValue=0（没 PKF 目标）→ `_redistributeOverflows` 在 else 分支**强制把 `_____10` 归零** → fork 永不抬
+- **修复**（[KeyframeManager.js:657-686](../src/core/KeyframeManager.js#L657)）：
+  - 新增 `findPrimaryByRole(role)` helper：按 role 命中时**自动跳过被别人 `overflow_to` 指向的关节**（slave）
+  - 规则由 `overflow_to` 字段隐式推导，用户无需额外 UI 操作
+  - 单 role 关节 / 无 overflow 配置 → slave 集合空 → 等价于原 find（100% 向后兼容）
+  - fallback：若 role 下全是 slave，仍返回第一个（保底不 null，避免破坏单段场景的误配）
+  - [ForkliftTemplate.js:165](../src/core/ForkliftTemplate.js#L165) + [:224](../src/core/ForkliftTemplate.js#L224) 改用这个 helper
+- **效果**：用户现在可以把 role="门架升降" 贴给**全部**门架段（语义真实），primary 由 `overflow_to` 自动锁定
+- **经验教训**：**含歧义的 role 匹配应该集中在一个 helper 里**而不是每处 `find(role === x)` 散落。以后加新 role 查找自动享受"跳过 slave"规则，无需每次 code review 想特殊 case
+- 单元测试：+8 case（KeyframeManager `findPrimaryByRole` block 7 个 + ForkliftTemplate `collectTemplateContext` 双段门架 1 个），覆盖单关节/多关节同 role/双段/三段嵌套/空 role/fallback slave 兜底
+
 ---
 
 ## 核心经验教训（跨 bug 总结）

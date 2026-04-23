@@ -213,4 +213,6 @@ commit `1223e62`（对齐文档）。
 - 12 个新单元测试（107 passing，+12）
 - bugfix-log #59
 
-commit 待推。
+commit `a558925`。
+
+**UX 后续补丁**：主 commit 推完用户实测发现需要"清空其中一个门架的 role"才能 work，反直觉——两个关节明明都是门架。加 `KeyframeManager.findPrimaryByRole(role)` helper，按 role 命中时自动跳过"被别人 `overflow_to` 指向的"关节（slave），让用户可以给所有门架段都贴 role="门架升降"；`ForkliftTemplate` 两处 `find(role)` 改走 helper。单关节/无 overflow → 等价于原 `find`，100% 向后兼容。+8 单测（115 passing）。

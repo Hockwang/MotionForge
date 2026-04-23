@@ -598,3 +598,81 @@ describe('双段门架 overflow 分摊（bugfix #59）', () => {
     expect(() => km.applyAllJointDrives(null)).not.toThrow();
   });
 });
+
+// ══════════════════════════════════════════════════════════════
+//  findPrimaryByRole（bugfix #59 UX 优化）
+//
+//  场景：双段门架允许内外都贴 role="门架升降"，
+//  findPrimaryByRole 根据 overflow_to 自动跳过 slave，返回 primary。
+//  保证模板 role 匹配不因"多关节共享 role"而命中错关节。
+// ══════════════════════════════════════════════════════════════
+describe('findPrimaryByRole（bugfix #59 UX）', () => {
+  let km;
+  beforeEach(() => { km = new KeyframeManager(); });
+
+  it('单关节场景：直接返回该关节（向后兼容）', () => {
+    km.setJointDef('lift1', { name: 'lift1', type: 'prismatic', axis: 'z', role: '门架升降' });
+    const primary = km.findPrimaryByRole('门架升降');
+    expect(primary?.name).toBe('lift1');
+  });
+
+  it('多个关节同 role 但无 overflow 配置：返回第一个（等价于原 find）', () => {
+    km.setJointDef('a', { name: 'a', type: 'prismatic', axis: 'z', role: '门架升降' });
+    km.setJointDef('b', { name: 'b', type: 'prismatic', axis: 'z', role: '门架升降' });
+    const primary = km.findPrimaryByRole('门架升降');
+    expect(['a', 'b']).toContain(primary?.name);
+  });
+
+  it('双段门架：inner 有 overflow_to → outer 是 slave → 返回 inner', () => {
+    km.setJointDef('outer', {
+      name: 'outer', type: 'prismatic', axis: 'z', role: '门架升降',
+    });
+    km.setJointDef('inner', {
+      name: 'inner', type: 'prismatic', axis: 'z', role: '门架升降',
+      limit_upper: 4, overflow_to: 'outer',
+    });
+    const primary = km.findPrimaryByRole('门架升降');
+    expect(primary?.name).toBe('inner'); // inner 才是 primary
+  });
+
+  it('多段嵌套（三段门架）：只有最上游 inner 不是 slave', () => {
+    // chain: a -> b -> c（c overflow 到 b，b overflow 到 a）
+    km.setJointDef('a', { name: 'a', type: 'prismatic', axis: 'z', role: '门架升降' });
+    km.setJointDef('b', {
+      name: 'b', type: 'prismatic', axis: 'z', role: '门架升降',
+      limit_upper: 3, overflow_to: 'a',
+    });
+    km.setJointDef('c', {
+      name: 'c', type: 'prismatic', axis: 'z', role: '门架升降',
+      limit_upper: 2, overflow_to: 'b',
+    });
+    // a 被 b 指向（slave），b 被 c 指向（slave），只剩 c 不是 slave
+    const primary = km.findPrimaryByRole('门架升降');
+    expect(primary?.name).toBe('c');
+  });
+
+  it('role 不存在：返回 null', () => {
+    km.setJointDef('x', { name: 'x', type: 'prismatic', axis: 'z', role: '其他角色' });
+    expect(km.findPrimaryByRole('门架升降')).toBeNull();
+  });
+
+  it('空 role 入参：返回 null（防御）', () => {
+    km.setJointDef('x', { name: 'x', type: 'prismatic', axis: 'z', role: '门架升降' });
+    expect(km.findPrimaryByRole('')).toBeNull();
+    expect(km.findPrimaryByRole(null)).toBeNull();
+    expect(km.findPrimaryByRole(undefined)).toBeNull();
+  });
+
+  it('fallback：唯一命中的关节是 slave 时，仍返回它（保底不破坏）', () => {
+    // 怪配置：只有 outer 带 role=门架升降，但 inner 的 overflow_to 指向 outer → outer 被标为 slave。
+    // 合理 fallback 是返回 outer（总比 null 好）；真实错误由 missing 检查捕获。
+    km.setJointDef('outer', { name: 'outer', type: 'prismatic', axis: 'z', role: '门架升降' });
+    km.setJointDef('inner', {
+      name: 'inner', type: 'prismatic', axis: 'z',
+      role: '车体前进', // 注意：inner 的 role 不是门架升降
+      overflow_to: 'outer',
+    });
+    const primary = km.findPrimaryByRole('门架升降');
+    expect(primary?.name).toBe('outer'); // fallback 返回 slave，保底不 null
+  });
+});

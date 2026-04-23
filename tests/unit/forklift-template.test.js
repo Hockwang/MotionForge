@@ -297,6 +297,28 @@ describe('collectTemplateContext 要素缺失检测', () => {
     expect(r.data.carJoint.name).toBe('car_forward');
     expect(r.data.mastJoint.name).toBe('mast_lift');
   });
+
+  // #59 UX：双段门架用户倾向于把 role="门架升降" 贴给**所有**门架段（语义真实）。
+  // findPrimaryByRole 根据 overflow_to 自动跳过 slave，collectTemplateContext 因此挑到 inner。
+  it('双段门架：内外都 role=门架升降，自动挑 inner（有 overflow_to）为 primary', () => {
+    const { km, sceneRoot } = setupScene();
+    // 把原来的 mast_lift 改造成外门架；新增 inner_lift 作为内门架（overflow 到外）
+    km.setJointDef('mast_joint_id', { name: 'outer_lift' }); // rename only
+    km.setJointDef('inner_joint_id', {
+      name: 'inner_lift',
+      type: 'prismatic',
+      axis: 'z',
+      role: ROLE_MAST_LIFT,
+      limit_upper: 4,
+      overflow_to: 'outer_lift',
+      childId: km.jointDefinitions.get('mast_joint_id').childId, // 内门架挂 fork
+    });
+    // 确保 outer 也是 role=门架升降（默认 setupScene 已设）
+    const r = collectTemplateContext(km, sceneRoot);
+    expect(r.ok).toBe(true);
+    // primary 应该是 inner_lift（outer 是 slave 被跳过）
+    expect(r.data.mastJoint.name).toBe('inner_lift');
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════
