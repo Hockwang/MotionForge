@@ -218,6 +218,10 @@ export class ResultPackageExporter {
             value_start: s.value_start ?? '0',
             value_end: s.value_end ?? '0',
             easing: s.easing || 'linear',
+            // F61: 模板编译产出的段号 / 段名（mvp3），只写非 null 值避免 ZIP 膨胀
+            // 导入端按同字段恢复；TrajectoryOverlay / 诊断脚本据此显示段号列
+            ...(s.template_segment != null ? { template_segment: s.template_segment } : {}),
+            ...(s.template_segment_name != null ? { template_segment_name: s.template_segment_name } : {}),
           })),
         }
       : null;

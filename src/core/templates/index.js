@@ -39,7 +39,15 @@ const TEMPLATES = [
 export function detectTemplate(keyframeManager, sceneRoot) {
   for (const tpl of TEMPLATES) {
     if (typeof tpl.canApply !== 'function') continue;
-    const result = tpl.canApply(keyframeManager, sceneRoot);
+    // F64: 隔离单个模板的 canApply 异常——一个模板 bug 不应阻断后续模板 fallback
+    // 当前 2 个模板影响小，但未来加第 3/4 个模板时这层保护成为必要
+    let result;
+    try {
+      result = tpl.canApply(keyframeManager, sceneRoot);
+    } catch (err) {
+      console.warn(`[detectTemplate] 模板 "${tpl.kind || 'unknown'}" canApply 抛异常，跳过并 fallback 下一个:`, err);
+      continue;
+    }
     if (result?.ok) {
       return { template: tpl, ctx: result.data };
     }
@@ -50,12 +58,18 @@ export function detectTemplate(keyframeManager, sceneRoot) {
 /**
  * 收集所有模板的 canApply 结果（诊断用，不做流程决策）。
  * 方便用户或诊断脚本看"我的场景为什么没命中某个模板"。
+ * F64：异常模板返回 { ok: false, missing: ['throw: ...'] }，不中断遍历。
  */
 export function probeAllTemplates(keyframeManager, sceneRoot) {
-  return TEMPLATES.map((tpl) => ({
-    kind: tpl.kind || tpl.TEMPLATE_KIND || 'unknown',
-    result: typeof tpl.canApply === 'function' ? tpl.canApply(keyframeManager, sceneRoot) : null,
-  }));
+  return TEMPLATES.map((tpl) => {
+    const kind = tpl.kind || tpl.TEMPLATE_KIND || 'unknown';
+    if (typeof tpl.canApply !== 'function') return { kind, result: null };
+    try {
+      return { kind, result: tpl.canApply(keyframeManager, sceneRoot) };
+    } catch (err) {
+      return { kind, result: { ok: false, missing: [`canApply 抛异常: ${err?.message || err}`] } };
+    }
+  });
 }
 
 // 向后兼容：保留老命名导出，其他文件仍能按原名 import（一段过渡期后可以移除）

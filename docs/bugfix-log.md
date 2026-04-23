@@ -580,6 +580,39 @@ updated: 2026-04-22
 
 ---
 
+#### #62 GPT review 第二批 P1/P2 收尾 —— roundtrip 丢段 + material 数组崩 + AssetLoader 多读 + detectTemplate 无隔离
+
+背景：[REVIEW-v16](REVIEW-v16.md) + GPT 独立 review 交叉比对后，上一轮（#61）修完 P0 三条。这一批是 P1/P2 的 4 条代码级问题 + README 版本漂移同批修完。
+
+- **症状**：
+  1. **F61 pkf roundtrip 丢 template_segment**：模板路径编译的 PKF 带 `template_segment` / `template_segment_name`（轨迹 overlay + 诊断脚本用来显示段号/段名列）。[ResultPackageExporter.js:211](../src/core/ResultPackageExporter.js#L211) 导出 `pkf.steps` 时没写这两字段；[main.js:883](../src/main.js#L883) 导入时也没读。ZIP 导回后 `TrajectoryOverlay` console.table 段号列退化成 `-` 或 `idx+1` 兜底，模板语义信息丢失
+  2. **F62 SelectionManager 多材质 mesh 崩**：[SelectionManager.js:83](../src/core/SelectionManager.js#L83) 做 `mesh.material.clone()`；glTF 合并 mesh（multi-primitive）加载后 `mesh.material` 是数组，`.clone` 属于 Material 不属于 Array → 直接 TypeError。`applyHighlight` / `clearHighlight` / `disposeHighlightResources` 一共 3 处同样的单材质假设
+  3. **F63 AssetLoader 大文件多读一次**：[AssetLoader.js:20](../src/core/AssetLoader.js#L20) 对**所有**上传文件调 `file.arrayBuffer()` 整读进内存；但 USD/FBX 分支（[L34](../src/core/AssetLoader.js#L34)）走 `loadViaConverterService` 时只把 `File` 对象塞进 FormData（浏览器 stream 上传），buffer 从头到尾没用。200MB FBX 浏览器端会多占一份 200MB
+  4. **F64 detectTemplate 单点失败阻断 fallback**：[templates/index.js:39](../src/core/templates/index.js#L39) 循环调各模板的 `canApply`，任一抛异常会 bubble 到调用方。当前 2 个模板自己写的还 OK，未来加第 3/4 个模板时一个 bug 会阻断后续模板命中
+  5. **文档漂移**：[README.md:22/52/77/192](../README.md) 还在写 `schema v4` + `83 tests`，实际是 schema v7 + 145 tests
+
+- **排查**：GPT 独立 review 扫出 F61/F62/F63；F64 是上一轮 v16 自审提的延续项；文档漂移两方都看到
+
+- **根因**：
+  - F61：迁移 `template_segment` 字段时先加到 `addPkfStep` 内部存储，忘了回过头打通序列化/反序列化两头
+  - F62：早期项目单材质模型居多（USDZ 自家的 box/cylinder mock + 简单 GLB），glTF 合并 mesh 一直没进测试用例；`mesh.material` 的类型假设就一直是 single
+  - F63：`loadFromFile` 写得顺序化，`arrayBuffer()` 在顶层统一读——没意识到 USD/FBX 分支根本不用 buffer，形成"该读的没少读、不该读的也读了"
+  - F64：写 `detectTemplate` 时只有 2 个自己写的模板，没做异常隔离的必要性
+
+- **修复**：
+  - F61：[ResultPackageExporter.js](../src/core/ResultPackageExporter.js) 导出时条件写（非 null 才写，避免老 ZIP 膨胀 + 兼容）；[main.js](../src/main.js) 导入时 `?? null` 回灌给 `addPkfStep`
+  - F62：[SelectionManager.js](../src/core/SelectionManager.js) 新增 `_forEachMaterial(mesh, fn)` + `_matKey(uuid, subIndex)` 两个私有 helper，把 4 处材质操作都走统一迭代；`originalMaterialState` Map 的 key 改为 `${uuid}:${subIndex}`（单材质 subIndex=-1 还是 `uuid` 纯 key，老数据兼容）；clone/dispose 两处显式 `Array.isArray` 分支
+  - F63：[AssetLoader.js](../src/core/AssetLoader.js) 把 USD/FBX 分支前置到 extension 分流的最前面，`arrayBuffer()` 只在确认要在浏览器端解析时才读
+  - F64：[templates/index.js](../src/core/templates/index.js) 的 `detectTemplate` 和 `probeAllTemplates` 两处都用 try/catch 包 `canApply`；异常模板 warn + continue（不中断），`probeAllTemplates` 返回 `{ok:false, missing:['canApply 抛异常: ...']}` 方便诊断
+  - 文档：README `schema v4` → `v7`（3 处）、`83 tests` → `145 tests` + 提到 ThreewayTemplate；`docs/schema/v4.md` 链接保留（v7 还没单独的 schema 文档，超出本次 scope）
+
+- **经验教训**：
+  1. **跨序列化边界的新字段要一次打通三处**：model → 存储 → 序列化导出 → 反序列化导入。F61 的漏是典型的"只做了前两步"
+  2. **类型假设要早暴露**：Three.js `Object3D.material` 按 API 就是 `Material | Material[]`，早期单材质只是运气好；类似"看似 scalar 实际可以是 array"的 API（`animations`、`children`、`skeletons`）都值得 grep 一遍做审计
+  3. **代码结构"整齐"未必对**：`arrayBuffer()` 放在 extension 分流之前是"整齐"的顺序化写法，但在分支中并非所有分支都需要这一步——**对称不等于正确**
+
+---
+
 ## 核心经验教训（跨 bug 总结）
 
 1. **懒捕获 base 的时机很重要**：必须在"所有父级关节都是零位"的状态下捕获，不能在驱动态下捕获（bug #2/#3/#22）

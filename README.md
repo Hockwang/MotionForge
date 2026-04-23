@@ -19,7 +19,7 @@ Web 端 3D 动作编辑器（Three.js + Vite），用自然语言或关键帧驱
 │  ├─ 全局关键帧            ✅ 稳定     项目级 clips，同步捕获所有关节
 │  ├─ PKF 参数化公式       ✅ 稳定     parameters + steps + 循环闭环
 │  ├─ 视口坐标 gizmo       ✅ 稳定     右上角 Y-up 指示
-│  └─ 导出/导入 ZIP         ✅ 稳定     schema v4，两阶段应用防漂移
+│  └─ 导出/导入 ZIP         ✅ 稳定     schema v7，两阶段应用防漂移
 │
 ├─ AI 服务（Node 后端，localhost:8091）─────────────────────────
 │  ├─ Blender 转换         ✅ 稳定     USD/FBX → GLB
@@ -49,7 +49,7 @@ Web 端 3D 动作编辑器（Three.js + Vite），用自然语言或关键帧驱
   │                │                                         ├→ 场景渲染
   │                └──[自然语言]──→ AI 后端 ──→ PKF ────────┘
   │                                               │
-  └─ 导出 ZIP ←──── schema v4 ←──────────────────┘
+  └─ 导出 ZIP ←──── schema v7 ←──────────────────┘
        │
        └── 其他系统消费
 ```
@@ -74,7 +74,7 @@ Web 端 3D 动作编辑器（Three.js + Vite），用自然语言或关键帧驱
 - ✅ 多模型类型（GLB / USDZ / USD / FBX / GLTF）
 - ❌ AI 自动打关节（还在调研，要手配）
 - ❌ 多模型同场景编辑（当前单模型）
-- ✅ 单元测试（vitest 83 tests 覆盖 KeyframeManager + ForkliftTemplate 核心路径；集成/UI 仍靠手动 + 9 个诊断脚本）
+- ✅ 单元测试（vitest 145 tests 覆盖 KeyframeManager + ForkliftTemplate + ThreewayTemplate 核心路径；集成/UI 仍靠手动 + 诊断脚本）
 - ❌ Redo（只有 Undo，Ctrl+Z）
 
 ---
@@ -189,7 +189,7 @@ Converter 服务同时承载 AI 后端（端口 8091）。设置环境变量：
 - PKF 参数化公式（parameters + steps，支持 AI 自然语言生成）
 - 关节 role 语义标签（供 AI 按意图匹配）
 
-**输出**：ZIP 运动包（schema v4）
+**输出**：ZIP 运动包（schema v7）
 - `manifest.json` — 元信息 + 文件索引
 - `joints.json` — FK 关节定义（含 role / parent_name）
 - `motion.json` — 全局关键帧 clips

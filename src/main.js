@@ -891,6 +891,9 @@ async function handleImportPackage(file) {
           value_start: s.value_start ?? '0',
           value_end: s.value_end ?? '0',
           easing: s.easing || 'linear',
+          // F61: 恢复模板段号/段名（mvp3）；老 ZIP 无此字段 → undefined → addPkfStep 兜底为 null
+          template_segment: s.template_segment ?? null,
+          template_segment_name: s.template_segment_name ?? null,
         });
       });
       restoredPkfSteps = (pkfData.steps || []).length;

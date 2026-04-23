@@ -78,23 +78,26 @@ export class SelectionManager {
     // 不递归更深层级，避免选中父节点时整棵子树都变色
     const meshes = this._getHighlightMeshes(object);
     meshes.forEach((mesh) => {
-      // 共享 material 问题：clone 一份独占的 material，避免改 emissive 影响其他对象
+      // F62: 共享 material 问题——clone 一份独占，避免改 emissive 影响其他对象
+      // 多材质 mesh（glTF multi-primitive 合并后常见）的 material 是数组，逐个 clone
       if (!mesh.userData._ownMaterial) {
-        mesh.material = mesh.material.clone();
+        mesh.material = Array.isArray(mesh.material)
+          ? mesh.material.map((m) => m.clone())
+          : mesh.material.clone();
         mesh.userData._ownMaterial = true;
       }
-      const emissive = mesh.material.emissive;
-      if (!emissive) return;
-      // #40 (F6 修复)：存完整原始状态（colorHex + intensity），不只是颜色。
-      //   之前 clearHighlight 硬编码 intensity=0.2 会永久改自定义强度材质
-      this.originalMaterialState.set(mesh.uuid, {
-        colorHex: emissive.getHex(),
-        intensity: 'emissiveIntensity' in mesh.material ? mesh.material.emissiveIntensity : null,
+      this._forEachMaterial(mesh, (mat, subIndex) => {
+        const emissive = mat?.emissive;
+        if (!emissive) return;
+        // #40 (F6)：存完整原始状态（colorHex + intensity），不只是颜色
+        // F62：多材质时按 ${uuid}:${idx} 存多份，避免互相覆盖
+        this.originalMaterialState.set(this._matKey(mesh.uuid, subIndex), {
+          colorHex: emissive.getHex(),
+          intensity: 'emissiveIntensity' in mat ? mat.emissiveIntensity : null,
+        });
+        emissive.setHex(0x22d3ee);
+        if ('emissiveIntensity' in mat) mat.emissiveIntensity = 0.55;
       });
-      emissive.setHex(0x22d3ee);
-      if ('emissiveIntensity' in mesh.material) {
-        mesh.material.emissiveIntensity = 0.55;
-      }
     });
   }
 
@@ -102,29 +105,29 @@ export class SelectionManager {
     if (!object) return;
     const meshes = this._getHighlightMeshes(object);
     meshes.forEach((mesh) => {
-      const snap = this.originalMaterialState.get(mesh.uuid);
-      const emissive = mesh.material?.emissive;
-      if (!emissive) return;
-      // #40：恢复完整原始状态（兼容老 Map 里存的是 hex 数字）
-      if (snap && typeof snap === 'object' && 'colorHex' in snap) {
-        emissive.setHex(snap.colorHex);
-        if (snap.intensity !== null && 'emissiveIntensity' in mesh.material) {
-          mesh.material.emissiveIntensity = snap.intensity;
+      this._forEachMaterial(mesh, (mat, subIndex) => {
+        const snap = this.originalMaterialState.get(this._matKey(mesh.uuid, subIndex));
+        const emissive = mat?.emissive;
+        if (!emissive) return;
+        // #40：恢复完整原始状态（兼容老 Map 里存的是 hex 数字）
+        if (snap && typeof snap === 'object' && 'colorHex' in snap) {
+          emissive.setHex(snap.colorHex);
+          if (snap.intensity !== null && 'emissiveIntensity' in mat) {
+            mat.emissiveIntensity = snap.intensity;
+          }
+        } else {
+          emissive.setHex(typeof snap === 'number' ? snap : 0x000000);
+          if ('emissiveIntensity' in mat) mat.emissiveIntensity = 0.2;
         }
-      } else {
-        emissive.setHex(typeof snap === 'number' ? snap : 0x000000);
-        if ('emissiveIntensity' in mesh.material) {
-          mesh.material.emissiveIntensity = 0.2;
-        }
-      }
-      // 清掉该 mesh 的状态记录，避免长期累积
-      this.originalMaterialState.delete(mesh.uuid);
+        this.originalMaterialState.delete(this._matKey(mesh.uuid, subIndex));
+      });
     });
   }
 
   /**
    * 释放对象上的 clone material（和关联的原始状态记录）。
    * 调用时机：对象从场景移除前（见 F6，SceneManager.setSceneRoot 统一调）
+   * F62：多材质 mesh 逐个 dispose
    * @param {THREE.Object3D} object
    */
   disposeHighlightResources(object) {
@@ -132,11 +135,33 @@ export class SelectionManager {
     object.traverse?.((o) => {
       if (!o.isMesh) return;
       if (o.userData?._ownMaterial && o.material) {
-        o.material.dispose();
+        if (Array.isArray(o.material)) {
+          o.material.forEach((m) => m?.dispose?.());
+        } else {
+          o.material.dispose();
+        }
         o.userData._ownMaterial = false;
       }
-      this.originalMaterialState.delete(o.uuid);
+      // 清掉该 mesh 所有 sub-material 的状态记录
+      this._forEachMaterial(o, (_mat, subIndex) => {
+        this.originalMaterialState.delete(this._matKey(o.uuid, subIndex));
+      });
     });
+  }
+
+  // F62 辅助：统一处理 single / array material；subIndex=-1 表示单材质
+  _forEachMaterial(mesh, fn) {
+    const m = mesh.material;
+    if (!m) return;
+    if (Array.isArray(m)) {
+      m.forEach((sub, i) => fn(sub, i));
+    } else {
+      fn(m, -1);
+    }
+  }
+
+  _matKey(uuid, subIndex) {
+    return subIndex < 0 ? uuid : `${uuid}:${subIndex}`;
   }
 
   /**

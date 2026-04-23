@@ -16,6 +16,14 @@ export class AssetLoader {
   async loadFromFile(file, onStatus = () => {}) {
     const lower = file.name.toLowerCase();
     const extension = lower.split('.').pop() || '';
+
+    // F63: USD/FBX 走 converter 上传，FormData 直接 stream File（无需 arrayBuffer）
+    // —— 前置此分支避免对大文件做无谓的 arrayBuffer 整读（200MB 文件会多占一份内存）
+    if (extension === 'usd' || extension === 'usda' || extension === 'usdc' || extension === 'fbx') {
+      return this.loadViaConverterService(file, onStatus);
+    }
+
+    // 其余格式（usdz / glb / gltf）都需要 buffer 在浏览器端本地解析
     onStatus('正在读取本地文件...');
     const buffer = await file.arrayBuffer();
 
@@ -29,10 +37,6 @@ export class AssetLoader {
     if (extension === 'glb' || extension === 'gltf') {
       onStatus('正在解析 GLB/GLTF...');
       return this.parseGlbLikeBuffer(buffer, file.name);
-    }
-
-    if (extension === 'usd' || extension === 'usda' || extension === 'usdc' || extension === 'fbx') {
-      return this.loadViaConverterService(file, onStatus);
     }
 
     throw new Error(`Unsupported format: .${extension}`);
