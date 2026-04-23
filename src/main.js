@@ -14,7 +14,7 @@ import {
   compileTemplate,
   buildDefaultRhythm,
   FORKLIFT_TEMPLATE,
-} from './core/ForkliftTemplate.js';
+} from './core/templates/index.js';
 
 // [trajectory-overlay] 功能开关：出问题随时置 false 完全关闭（不实例化 overlay、隐藏按钮、所有 hook 变 no-op）
 const TRAJECTORY_OVERLAY_ENABLED = true;

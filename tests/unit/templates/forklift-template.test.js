@@ -13,7 +13,7 @@
  */
 import { describe, it, expect, beforeEach } from 'vitest';
 import * as THREE from 'three';
-import { KeyframeManager } from '../../src/core/KeyframeManager.js';
+import { KeyframeManager } from '../../../src/core/KeyframeManager.js';
 import {
   FORKLIFT_TEMPLATE,
   FORKLIFT_TEMPLATE_VERSION,
@@ -26,7 +26,7 @@ import {
   ROLE_MAST_LIFT,
   ROLE_CAR_SIDEWAYS_PRIMARY,
   ROLE_CAR_SIDEWAYS_FALLBACK,
-} from '../../src/core/ForkliftTemplate.js';
+} from '../../../src/core/templates/ForkliftTemplate.js';
 
 // ── 辅助：构造模板编译所需的最小可行 KeyframeManager + sceneRoot ──
 // withLateralJoint: 'none' | 'primary' | 'fallback' —— 分别对应无横移 / 车体横移 / 叉齿侧移
