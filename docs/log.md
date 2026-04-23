@@ -144,3 +144,20 @@ mvp3 三向车调试过程中发现 `__diagTpl.drawTrajectory` 极其有用：
 后续协作约定：**任何 PKF / 模板动画的视觉问题，先跑 `__diagTpl.drawTrajectory()` 再沟通**。
 
 当前状态：🚧 主线 mvp3 仍在迭代，有已知问题未解决，继续打磨。先推当前状态到 git。
+
+## [2026-04-23] decision | 状态机框架对齐：17 段模板保留，不重构
+
+看到 mentor 的《固定资源状态动画》文档（状态拆分 + 姿态继承框架，覆盖升降机/RGV/转台/堆垛机/机械臂），初判我们的 17 段模板应该重构成 5 个原子状态（load/travelEmpty/travelLoaded/unload/idle）。
+
+写了对齐文档 [docs/raw/alignment-state-animation-framework-2026-04-23.md](raw/alignment-state-animation-framework-2026-04-23.md) 准备过方案，和 mentor 当面对齐后结论反转：**不重构**。
+
+**Mentor 判定**：17 段模板 = 状态机里 `load + travelLoaded + unload` 三个状态连起来的一个环节（不是与状态机并列的东西）。状态拆分 / idle 待命 / 多次搬运 / 充电巡检是**更上层**的调度职责，MotionForge 作为编辑器不管。
+
+**职责分层**：
+- 上层（仿真/调度）：任务队列、状态切换、`idle` / 多次 `load`（拆码垛）
+- MotionForge：单次完整搬运环节的动画（当前 17 段）
+- MotionForge 运行时：公式求值、关节驱动、attach/detach
+
+**影响**：对外 PKF/ZIP 格式不变，继续打磨 17 段本身（几何精度、AI 节奏、UI 体验）。充电/巡检/拆码垛不作为 MotionForge 的产品需求处理。
+
+commit `1223e62`（对齐文档）。
