@@ -15,10 +15,18 @@
  * 用法（浏览器 Console）：
  *   1. 加载模型、🚀 一键生成、确保 pkfSteps 非空
  *   2. 粘贴本文件全文到 Chrome Console
- *   3. __diagTraj.all()         → 一把梭：正常对比 + 残留污染测试
- *      __diagTraj.compare()     → 当前状态下 overlay vs playback 对比
- *      __diagTraj.stressResidue() → 人为给关节灌残留，测 overlay 是否被污染
+ *   3. __diagTraj.verifyOverlay() ← 【推荐】直接测 TrajectoryOverlay.sampleOnly() vs 真实播放路径
+ *      __diagTraj.compare()       → 概念对比：仿 playback vs 仿 old-buggy overlay（证 bug 存在感）
+ *      __diagTraj.stressResidue() → 压力测试：人为给关节灌残留，证明 old-buggy 算法对污染敏感
+ *      __diagTraj.all()           → 一把梭跑 verifyOverlay + compare + stressResidue
  *      __diagTraj.help()
+ *
+ * 语义差异：
+ *   - verifyOverlay：**真实**调用 __mf.trajectoryOverlay.sampleOnly()（复用 refresh 的采样逻辑），
+ *                    对比实际 playback 路径。bug #60 修复后应始终 ✅ 采样一致。
+ *                    未来若有人又把 TrajectoryOverlay 的预清零去掉 → verifyOverlay 会叫。
+ *   - compare/stressResidue：**模拟**两个算法（老 buggy vs 正确），用于教学和概念验证。
+ *                    即使 #60 已修，stressResidue 在注入残留后仍会显示 diff（因为它对比的是 old-buggy 算法）。
  */
 (() => {
   const mf = window.__mf;
@@ -188,38 +196,145 @@
     });
   }
 
+  // ══════════════════════════════════════════════════════════════
+  //  verifyOverlay —— 推荐主用法
+  //
+  //  真实调用 __mf.trajectoryOverlay.sampleOnly()（复用 TrajectoryOverlay.refresh
+  //  的采样逻辑），对比实际 playback 路径。可以作为持续回归守护——未来若 refresh()
+  //  被重构、预清零被拿掉、sampleOnly 行为偏了，这里能直接抓住。
+  // ══════════════════════════════════════════════════════════════
+  function verifyOverlay({ samples = 200, threshold = 0.01, topN = 10 } = {}) {
+    const overlay = mf.trajectoryOverlay;
+    if (!overlay?.sampleOnly) {
+      console.warn('[diag-traj] __mf.trajectoryOverlay 或其 sampleOnly 方法不可用（TrajectoryOverlay 未 expose？）');
+      return null;
+    }
+    const steps = km.pkfSteps || [];
+    if (steps.length === 0) {
+      console.warn('[diag-traj] PKF 步骤为空');
+      return null;
+    }
+
+    // overlay 默认是 this.samples；临时覆盖让我们 diag 能控制采样数
+    const origSamples = overlay.samples;
+    overlay.samples = samples;
+    let real;
+    try {
+      real = overlay.sampleOnly();
+    } finally {
+      overlay.samples = origSamples;
+    }
+    if (!real) {
+      console.warn('[diag-traj] overlay.sampleOnly 返回 null（无 attach 事件 / fork 不存在？）');
+      return null;
+    }
+
+    if (!real.fork) {
+      console.warn('[diag-traj] overlay.sampleOnly 找不到 fork 对象，跳过对比');
+      return null;
+    }
+
+    // 用同一批 tValues 走 playback 路径（applyPkfAtTime 逻辑），fork 取 overlay 同一个对象
+    const snap = snapshotState();
+    let playbackPts;
+    try {
+      playbackPts = real.tValues.map((t) => {
+        (km.pkfSteps || []).forEach((step) => {
+          let d = step.joint_def_id ? km.jointDefinitions.get(step.joint_def_id) : null;
+          if (!d && step.joint) {
+            km.jointDefinitions.forEach((dd) => { if (dd.name === step.joint) d = dd; });
+          }
+          if (d) d.currentValue = 0;
+        });
+        const results = km.evaluatePkfAt(t) || [];
+        results.forEach((r) => {
+          const d = km.jointDefinitions.get(r.joint_def_id);
+          if (d) d.currentValue = r.value;
+        });
+        km.applyAllJointDrives(sm.sceneRoot);
+        km.applyReparentEventsAtTime(t, sm.sceneRoot);
+        sm.sceneRoot.updateMatrixWorld(true);
+        return real.fork.getWorldPosition(new THREE.Vector3());
+      });
+    } finally {
+      restoreState(snap);
+    }
+
+    const diffs = [];
+    for (let i = 0; i < real.tValues.length; i++) {
+      const a = playbackPts[i];
+      const b = real.forkPts[i];
+      if (!a || !b) continue;
+      const d = a.distanceTo(b);
+      if (d > threshold) {
+        diffs.push({
+          t: Number(real.tValues[i].toFixed(3)),
+          dist_m: Number(d.toFixed(4)),
+          playback: `(${a.x.toFixed(3)}, ${a.y.toFixed(3)}, ${a.z.toFixed(3)})`,
+          overlay: `(${b.x.toFixed(3)}, ${b.y.toFixed(3)}, ${b.z.toFixed(3)})`,
+        });
+      }
+    }
+
+    console.groupCollapsed(`🔍 [diag-traj] verifyOverlay：${real.tValues.length} 点 / 阈值 ${threshold}m / 超阈值 ${diffs.length} 点`);
+    if (diffs.length === 0) {
+      console.log('✅ 采样一致：TrajectoryOverlay.sampleOnly 输出和实际播放路径完全吻合（bug #60 修复就位）');
+    } else {
+      console.log(`❌ TrajectoryOverlay 偏离播放路径 —— 前 ${topN} 个偏差点：`);
+      diffs.sort((x, y) => y.dist_m - x.dist_m);
+      console.table(diffs.slice(0, topN));
+      console.log('（若看到此提示：bug #60 可能重入——检查 TrajectoryOverlay.sampleOnly 是否还做预清零）');
+    }
+    console.groupEnd();
+    return { diffs, samples: real.tValues.length };
+  }
+
   window.__diagTraj = {
+    verifyOverlay,
     compare: (opts = {}) => compareInternal({ label: 'normal', ...opts }),
     stressResidue,
     all() {
       console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-      console.log('[diag-traj] 先做常规对比（当前 joint 状态）');
+      console.log('[diag-traj] (1/3) verifyOverlay：直测 TrajectoryOverlay.sampleOnly vs 实际播放');
+      console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      const v = verifyOverlay();
+      console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      console.log('[diag-traj] (2/3) compare：概念对比仿 playback vs 仿 old-buggy overlay');
       console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
       const a = compareInternal({ label: 'normal' });
       console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-      console.log('[diag-traj] 再做残留压力测试');
+      console.log('[diag-traj] (3/3) stressResidue：人为灌残留，证 old-buggy 算法会失准');
       console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
       const b = stressResidue();
-      const pass = (a?.diffs?.length === 0) && (b?.diffs?.length === 0);
+      const verified = v?.diffs?.length === 0;
       console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-      console.log(pass ? '✅ 整体通过：overlay 采样和 playback 完全一致' : '❌ 检测到偏差：bug #60 仍存在或有其他问题');
+      console.log(verified
+        ? '✅ verifyOverlay 通过：真实 TrajectoryOverlay 输出和 playback 完全一致（#60 修复就位）'
+        : '❌ verifyOverlay 有偏差 → TrajectoryOverlay.sampleOnly 偏离 playback，检查是否有人又把预清零去掉');
+      console.log('（compare/stressResidue 的 diff 是预期的——它们对比的是 old-buggy 算法以证 bug 概念）');
       console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-      return { normal: a, stress: b, pass };
+      return { verifyOverlay: v, compare: a, stress: b, verified };
     },
     help() {
       console.log(`
 [diag-traj] 轨迹 overlay 采样 vs 播放对比（bug #60）
 
+  ⭐ __diagTraj.verifyOverlay({ samples=200, threshold=0.01 })
+      【推荐】真实调 __mf.trajectoryOverlay.sampleOnly() vs playback 路径
+      #60 修复就位时应 ✅ 一致；未来 overlay 走偏会被抓到
+
   __diagTraj.compare({ samples=200, threshold=0.01 })
-      常规对比：当前 joint 状态下两路采样比距离
+      概念对比：仿 playback vs 仿 old-buggy overlay（两个算法的差异）
+
   __diagTraj.stressResidue({ samples=200, threshold=0.01 })
-      压力测试：人为给关节注入 2.5 的残留，测 overlay 是否被污染
+      压力测试：给关节灌 2.5 残留，证 old-buggy 算法对污染敏感
+
   __diagTraj.all()
-      一把梭跑 compare + stressResidue
+      三合一：verifyOverlay + compare + stressResidue
 
   阈值默认 1cm（threshold=0.01 米），超过则打印前 10 个偏差点
       `);
     },
   };
-  console.log('[diag-traj] 就绪。运行 __diagTraj.all() 开始检测。');
+  console.log('[diag-traj] 就绪。推荐运行 __diagTraj.verifyOverlay() 或 __diagTraj.all()');
 })();

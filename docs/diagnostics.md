@@ -329,15 +329,20 @@ __diagTpl.playbackSample([3.0, 3.01, 3.99, 4.0])  // 自定义采样 attach 前�
 ### 诊断脚本：`__diagTraj`
 
 ```js
-__diagTraj.all()              // 一把梭：正常对比 + 残留压力测试
-__diagTraj.compare()          // 当前 joint 状态下 overlay vs playback 路径的 fork 世界坐标对比
-__diagTraj.stressResidue()    // 人为给可动关节灌 2.5 残留，模拟"用户在中段时开 toggle"
+__diagTraj.verifyOverlay()   // ⭐ 推荐：直测 TrajectoryOverlay.sampleOnly() vs 实际播放路径
+__diagTraj.all()             // 三合一：verifyOverlay + compare + stressResidue
+__diagTraj.compare()         // 概念对比：仿 playback vs 仿 old-buggy overlay
+__diagTraj.stressResidue()   // 压力测试：人为给可动关节灌 2.5 残留
 __diagTraj.help()
 ```
 
+**两类功能的区别**：
+- **`verifyOverlay`**：**真实**调用 `__mf.trajectoryOverlay.sampleOnly()`（`TrajectoryOverlay` 暴露的公开方法，`refresh()` 内部也用它采样）对比实际 playback。这是回归守护——未来若 `TrajectoryOverlay.sampleOnly` 被改坏，这里能直接抓住
+- **`compare` / `stressResidue`**：**模拟**对比 old-buggy vs 正确算法，用于教学 / 证 bug 存在感（即使 #60 已修，stressResidue 灌残留后仍显示 diff，因为它对比的是假想的 old-buggy 算法）
+
 **输出**：每个采样 t 的两路距离 diff；超阈值（默认 1cm）列出前 10 个。
-- **`✅ 采样一致`**：TrajectoryOverlay 已修过 #60，overlay 采样和实际播放路径一致
-- **`❌ 有 X 个超阈值`**：overlay 又偏了，检查 `TrajectoryOverlay.refresh` 是否还保留了预清零逻辑（修复在 for 循环前对 `pkfSteps.forEach` 清零）
+- **`✅ verifyOverlay 通过`**：TrajectoryOverlay 当前输出和实际播放路径一致（#60 修复就位）
+- **`❌ verifyOverlay 有偏差`**：overlay 又偏了，检查 `TrajectoryOverlay.sampleOnly` 是否还保留了预清零（for 循环前对 `pkfSteps.forEach` 清零）
 
 **相关 bug / 契约**：[#47-#52](bugfix-log.md) + [concepts/forklift-pickup-template](concepts/forklift-pickup-template.md)
 

@@ -545,7 +545,10 @@ updated: 2026-04-22
 - **经验教训**：
   1. **采样逻辑复现播放逻辑时要对齐所有前置步骤**，不能只看"活跃 step 算出的值"——未被覆盖的 joint 默认值同样重要
   2. 这个 bug 藏得深的原因：**纯 t=0 测试不会暴露**（所有 joint 此时理应为 0）。回归诊断脚本必须覆盖"从非零状态进入"的路径
-- 诊断工具：新增 [tests/diag-trajectory-vs-playback.js](../tests/diag-trajectory-vs-playback.js)（`__diagTraj.all` 一把梭正常对比 + 残留压力测试）作为以后的回归守护
+- 诊断工具：新增 [tests/diag-trajectory-vs-playback.js](../tests/diag-trajectory-vs-playback.js) 作为以后的回归守护
+  - 原版 `compare / stressResidue` 走**模拟对比**（仿 playback vs 仿 old-buggy overlay），用于证 bug 存在感
+  - 补强后新加 `verifyOverlay()` —— 真实调用 `__mf.trajectoryOverlay.sampleOnly()`（从 `refresh()` 里抽出来的公开采样方法）对比实际播放，抓真实 overlay 未来的任何偏离
+  - 为此同步重构 [TrajectoryOverlay.js:78](../src/core/TrajectoryOverlay.js#L78)：抽 `sampleOnly()` 方法，`refresh()` 复用它画 Line geometry。采样和绘制解耦，外部工具可直接访问采样结果
 
 ---
 

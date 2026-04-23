@@ -76,15 +76,24 @@ export class TrajectoryOverlay {
    * 立即重绘。先清旧 group，再按当前 PKF 状态画新的。
    * 返回 { samples, rows } 用于调用方（如果需要看数据）
    */
-  refresh() {
-    this.clear();
-
+  /**
+   * 只采样不画线——供 refresh() 内部复用，也供诊断脚本直接调用做回归检测。
+   *
+   * 采样逻辑（和 main.js:applyPkfAtTime 行为等价）：
+   *   1. 保存 joint currentValue / currentTime 快照
+   *   2. 把所有 PKF 触及的 joint 一次性清零（#60 修）
+   *   3. 对每个 t：evaluatePkfAt → 覆盖活跃/完成 step 的 joint → applyAllJointDrives + reparent
+   *   4. 采样 fork / cargo 的世界坐标
+   *   5. try/finally 复原快照（不污染正在编辑的场景）
+   *
+   * @param {Object} [opts]
+   * @param {number[]} [opts.tValues] - 自定义采样 t 列表；不传则按 this.samples 均分 duration
+   * @returns {{ forkPts: THREE.Vector3[], cargoPts: THREE.Vector3[], tValues: number[], duration: number, fork: THREE.Object3D|null, cargo: THREE.Object3D|null } | null}
+   */
+  sampleOnly(opts = {}) {
     const { km, sm } = this;
     const pkfSteps = km.pkfSteps || [];
-    if (pkfSteps.length === 0) {
-      if (this.logTable) console.log('[TrajectoryOverlay] PKF 步骤为空，无轨迹可绘制');
-      return null;
-    }
+    if (pkfSteps.length === 0) return null;
 
     // 找 cargo / fork（从 reparent 事件推断——attach 事件的 child=cargo，parent=fork）
     const reparentEvents = km.getReparentEvents ? km.getReparentEvents() : [];
@@ -99,6 +108,16 @@ export class TrajectoryOverlay {
     const maxT = pkfSteps.reduce((m, s) => Math.max(m, Number(s.t_end) || 0), 0);
     const duration = Math.max(clip?.duration || 0, maxT, 1);
 
+    // 决定采样 t 数组
+    let tValues;
+    if (Array.isArray(opts.tValues) && opts.tValues.length > 0) {
+      tValues = opts.tValues.map((t) => Number(t) || 0);
+    } else {
+      const samples = this.samples;
+      tValues = [];
+      for (let i = 0; i <= samples; i++) tValues.push((i / samples) * duration);
+    }
+
     // 保存状态（采样会修改 joint value + cargo parent，必须完整复原）
     const savedTime = km.currentTime;
     const savedJointValues = km.getAllJointDefs().map((d) => ({ id: d.id, v: d.currentValue }));
@@ -111,7 +130,7 @@ export class TrajectoryOverlay {
     //     不返回 → 靠这次清零让它们保持 0，和实际播放行为一致。
     const defByName = new Map();
     km.jointDefinitions.forEach((d) => { if (d.name) defByName.set(d.name, d); });
-    (km.pkfSteps || []).forEach((step) => {
+    pkfSteps.forEach((step) => {
       let d = step.joint_def_id ? km.jointDefinitions.get(step.joint_def_id) : null;
       if (!d && step.joint) d = defByName.get(step.joint);
       if (d) d.currentValue = 0;
@@ -119,11 +138,10 @@ export class TrajectoryOverlay {
 
     const forkPts = [];
     const cargoPts = [];
-    const samples = this.samples;
 
     try {
-      for (let i = 0; i <= samples; i++) {
-        const t = (i / samples) * duration;
+      for (let i = 0; i < tValues.length; i++) {
+        const t = tValues[i];
         const pkfResults = km.evaluatePkfAt(t) || [];
         pkfResults.forEach((r) => {
           const d = km.jointDefinitions.get(r.joint_def_id);
@@ -146,6 +164,27 @@ export class TrajectoryOverlay {
       km.applyAllJointDrives(sm.sceneRoot);
       km.applyReparentEventsAtTime(savedTime, sm.sceneRoot);
     }
+
+    return { forkPts, cargoPts, tValues, duration, fork, cargo };
+  }
+
+  refresh() {
+    this.clear();
+
+    const pkfSteps = this.km.pkfSteps || [];
+    if (pkfSteps.length === 0) {
+      if (this.logTable) console.log('[TrajectoryOverlay] PKF 步骤为空，无轨迹可绘制');
+      return null;
+    }
+
+    const sampled = this.sampleOnly();
+    if (!sampled) return null;
+    const { forkPts, cargoPts, duration, fork, cargo } = sampled;
+    const { sm, km } = this;
+    const samples = this.samples;
+
+    // reparentEvents 重新拿一次用于下面画 attach/detach 大球
+    const reparentEvents = km.getReparentEvents ? km.getReparentEvents() : [];
 
     // 构建可视化 group
     const group = new THREE.Group();
