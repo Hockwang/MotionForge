@@ -6,6 +6,7 @@ import { KeyframeManager } from './core/KeyframeManager.js';
 import { ResultPackageExporter } from './core/ResultPackageExporter.js';
 import { SceneManager } from './core/SceneManager.js';
 import { SelectionManager } from './core/SelectionManager.js';
+import { TrajectoryOverlay } from './core/TrajectoryOverlay.js';
 import { EditorUI } from './ui/EditorUI.js';
 import {
   collectTemplateContext,
@@ -21,6 +22,7 @@ const selectionManager = new SelectionManager(sceneManager);
 const keyframeManager = new KeyframeManager();
 const packageExporter = new ResultPackageExporter();
 const assetLoader = new AssetLoader();
+const trajectoryOverlay = new TrajectoryOverlay(sceneManager, keyframeManager);
 
 let editableObjects = [];
 let sceneTreeNodes = [];
@@ -455,6 +457,8 @@ function refreshObjectTree() {
 }
 
 function refreshReparentEventList() {
+  // attach/detach 时刻影响 cargo 轨迹的分支 → 重绘轨迹
+  trajectoryOverlay?.requestRefresh();
   const events = keyframeManager.getReparentEvents();
   ui.renderReparentEvents(events, {
     onDelete: (eventId) => {
@@ -580,6 +584,8 @@ async function handleAssetFile(file) {
       ui.setLoadStatus(`${file.name}：${status}`);
     });
     ui.setLoadStatus(`正在构建场景节点...`);
+    // 切场景前清掉旧轨迹 overlay（group 挂在旧 sceneRoot 上，不清会成幽灵）
+    trajectoryOverlay?.clear();
     sceneManager.setSceneRoot(root);
     editableObjects = collectEditableObjects(root);
     sceneTreeNodes = buildSceneTree(root);
@@ -627,6 +633,8 @@ async function handleImportPackage(file) {
     });
     // v5 修复：导出时已归零关节 + GLB 存的是自然状态，alignObjectToGround 正常运行即可。
     // （之前用 skipAlign:true 是因为 GLB 烘焙了已驱动的 transform + 对齐偏移，现在不需要了）
+    // 切场景前清掉旧轨迹 overlay（同上）
+    trajectoryOverlay?.clear();
     sceneManager.setSceneRoot(root);
 
     // v5 修复：GLTFExporter 会把根节点改名为 "AuxScene"，恢复为原始名字
@@ -1888,6 +1896,8 @@ function buildExportClips() {
  * 从 keyframeManager 获取最新参数，传给 UI 渲染，并绑定修改/删除回调
  */
 function refreshPkfParamsUI() {
+  // 参数值影响公式求值 → 轨迹依赖参数，参数变动时重绘（enabled=false 时是 no-op）
+  trajectoryOverlay?.requestRefresh();
   const params = keyframeManager.getAllPkfParameters();
   ui.renderPkfParameters(params, {
     /**
@@ -1955,6 +1965,8 @@ function refreshAiJointChips() {
 }
 
 function refreshPkfStepsUI() {
+  // 轨迹 overlay 依赖 PKF steps，每次 steps 变动都重绘（enabled=false 时是 no-op）
+  trajectoryOverlay?.requestRefresh();
   const steps = keyframeManager.getAllPkfSteps();
   const jointDefs = keyframeManager.getAllJointDefs();
   ui.renderPkfSteps(steps, jointDefs, {
@@ -2090,6 +2102,11 @@ ui.pkfPlaybackModeInput.addEventListener('change', () => {
   } else {
     keyframeManager.evaluateAllAt(t, sceneManager.sceneRoot);
   }
+});
+
+// ── 🎨 轨迹可视化 toggle ──
+ui.trajectoryToggleInput?.addEventListener('change', () => {
+  trajectoryOverlay.setEnabled(ui.trajectoryToggleInput.checked);
 });
 
 ui.pkfPreviewBtn.addEventListener('click', () => {
@@ -2244,6 +2261,8 @@ ui.removeAllMarkersBtn?.addEventListener('click', () => {
 });
 
 function refreshMarkerList() {
+  // marker 位置注入到 PKF 参数（cargo_pos_* / drop_pos_* / cargo_size）→ 影响轨迹
+  trajectoryOverlay?.requestRefresh();
   ui.renderMarkerList(keyframeManager.getAllMarkers(), {
     onSelect: (markerName) => {
       const obj = sceneManager.sceneRoot?.getObjectByName(markerName);
@@ -2397,6 +2416,7 @@ window.__mf = {
   sceneManager,
   keyframeManager,
   selectionManager,
+  trajectoryOverlay, // Console 里可 __mf.trajectoryOverlay.refresh() 手动触发、inspect group
   editableObjects: () => editableObjects,
   getJointDefs: () => keyframeManager.getAllJointDefs(),
 };

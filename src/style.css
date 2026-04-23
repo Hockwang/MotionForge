@@ -293,7 +293,7 @@ button:hover {
 .timeline {
   grid-area: timeline;
   display: grid;
-  grid-template-columns: 120px 1fr 170px;
+  grid-template-columns: 120px 1fr 170px auto;
   align-items: center;
   gap: 10px;
   padding: 10px 14px;
@@ -305,6 +305,38 @@ button:hover {
   text-align: right;
   color: #cbd5e1;
   font-size: 12px;
+}
+
+.trajectory-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1px solid #334155;
+  border-radius: 4px;
+  background: #1f2937;
+  color: #e2e8f0;
+  font-size: 12px;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+  transition: background-color 0.15s, border-color 0.15s;
+}
+
+.trajectory-toggle:hover {
+  background: #334155;
+  border-color: #475569;
+}
+
+.trajectory-toggle input[type="checkbox"] {
+  margin: 0;
+  cursor: pointer;
+}
+
+.trajectory-toggle:has(input:checked) {
+  background: #1e3a8a;
+  border-color: #3b82f6;
+  color: #dbeafe;
 }
 
 .export-output {
