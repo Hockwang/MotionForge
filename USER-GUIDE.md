@@ -3,6 +3,7 @@
 > 这份文档教你**怎么用**，不讲原理。
 > 不需要任何编程或机械知识，跟着步骤走就行。
 >
+> **进阶用法**（🚀 一键 / 模板 / 轨迹调试 / AI 协作）→ [AI-WORKFLOW.md](AI-WORKFLOW.md)
 > 想了解内部原理 → [HOW-IT-WORKS.md](HOW-IT-WORKS.md)
 > 遇到问题排查 → [FLOW.md](FLOW.md)
 
