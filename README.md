@@ -85,7 +85,8 @@ Web 端 3D 动作编辑器（Three.js + Vite），用自然语言或关键帧驱
 
 | 你是谁 | 先读这个 |
 |---|---|
-| **纯用户**（不懂技术，想用编辑器做动画） | 👉 [USER-GUIDE.md](USER-GUIDE.md)（使用说明，从加载模型到导出） |
+| **纯用户**（不懂技术，想用编辑器做动画） | 👉 [USER-GUIDE.md](USER-GUIDE.md)（基础使用，从加载模型到导出） |
+| **进阶用户**（会基础，想跑 🚀 一键 / 模板 / AI 调试） | 👉 [AI-WORKFLOW.md](AI-WORKFLOW.md)（AI 协作动画指南） |
 | 想快速运行项目 | 继续往下读（本文件） |
 | 想看完整流程和故障排查 | [FLOW.md](FLOW.md) |
 | 想了解技术原理（FK 数学、PKF 求值、roundtrip） | [HOW-IT-WORKS.md](HOW-IT-WORKS.md) |
