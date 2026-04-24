@@ -305,10 +305,23 @@ export class TrajectoryOverlay {
     });
 
     if (this.logTable) {
+      // #66 Y 范围汇总：帮助用户判断"轨迹看起来水平"是数据平还是视觉透视压缩
+      // （典型三向车：pickup 0.5m / transport 0.2m / drop 1.0m，Y 变化 0.8m，但远视角看像水平）
+      const yStats = (pts, label) => {
+        if (!pts.length) return `${label}: 无采样`;
+        let min = Infinity;
+        let max = -Infinity;
+        pts.forEach((p) => { if (p.y < min) min = p.y; if (p.y > max) max = p.y; });
+        return `${label}: [${min.toFixed(3)}, ${max.toFixed(3)}] 变化 ${(max - min).toFixed(3)}m`;
+      };
       console.groupCollapsed(`🎨 轨迹 overlay 刷新（${pkfSteps.length} 段，duration=${duration.toFixed(2)}s）`);
       console.table(rows);
       console.log('蓝=fork 轨迹 / 橙=cargo 轨迹 / 🔴大球=attach / 🟢大球=detach');
       console.log('坐标 Three.js Y-up（y=高度）。UI 里的 z 对应这里的 y。');
+      console.log('━━ Y 范围（看轨迹是不是"真的平"）━━');
+      console.log(`  fork.y ${yStats(forkPts, '')}`);
+      console.log(`  cargo.y ${yStats(cargoPts, '')}`);
+      console.log('  ↑ 数值差 > 0.2m 但视觉看着平 → 相机透视压缩，切正射视图看');
       console.groupEnd();
     }
 
