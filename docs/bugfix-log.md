@@ -702,6 +702,28 @@ updated: 2026-04-22
   2. **抽函数到独立模块是把"难测"变"可测"的最低成本方案**：`ensurePkfCoversAttachPoint` 闭包 `keyframeManager`，改成显式参数只加了 1 行；之后测试里随便构造 stub 就行
   3. **CI 要从第一天起加**：即使只是 `npm test + npm run build` 两条命令，也能兜住 90% 的"本地忘了跑测试就 merge" 问题
 
+#### #66 TrajectoryOverlay 轨迹采样点语义修正 — Object3D 原点 → 功能性锚点（bbox 底面中心）
+
+- **症状**：用户打开 🎨 轨迹 toggle 后，蓝/橙线位于卡车模型上方 1-2m 高度，完全不贴着实际叉齿或货物。用户反馈"给 AI 看截图定位问题时，AI 会以为线飘在空中是 bug"
+- **排查**：
+  - 代码核对：[TrajectoryOverlay.js:154-155](../src/core/TrajectoryOverlay.js#L154-L155) `fork.getWorldPosition()` / `cargo.getWorldPosition()` 直接读 Object3D 的 **pivot 位置**
+  - Object3D pivot 取决于建模时原点设定 —— 叉车模型 `_CS19110` 组的 pivot 在 mast 顶部而非 tine 端，cargo marker 的 pivot 在 box 几何中心
+  - 数据本身真实（每个 t 都真驱动一遍场景），但采样的**语义点**不是用户视觉上关心的"叉齿承载面"和"cargo 底面"
+- **根因**：`getWorldPosition` 的语义 = Object3D 的 `position` 在世界空间 = pivot 世界坐标。和可视化里用户期望的"物体的某个功能点"不是一回事
+- **修复**：[TrajectoryOverlay.js sampleOnly](../src/core/TrajectoryOverlay.js) 改为"功能性锚点"采样：
+  - **fork**：bbox 底面中心（threejs `(center.x, box.min.y, center.z)`），和 [computeForkAnchorZero](../src/core/KeyframeManager.js#L237) 同公式
+  - **cargo**：bbox 底面中心（attach/detach 大球落地面而不是飘半空）
+  - **实现策略**：首帧在 t=0 姿态下用 `Box3.setFromObject` 算 local offset，存 `forkAnchorLocal` / `cargoAnchorLocal`；后续每帧 `object.localToWorld(offsetLocal.clone())` 自动跟随位移 + 旋转（三向车叉齿绕 y 轴旋转 90° 时也正确）
+  - **降级路径**：bbox 空 / 对象 null → 回退到原点采样，和老行为一致不抛错
+- **影响**：
+  - 纯可视化层改动，驱动/导出/关键帧/PKF 求值零影响
+  - 轨迹线现在贴着叉齿 tine + cargo 底面走，attach/detach 大球落在物理合理位置
+  - AI 协作截图更有效 —— z 轴 0.3m bug 在轨迹视图上直接可见，不再被整体偏移掩盖
+- **经验教训**：
+  1. **"采样真实数据"不等于"展示给人看对"**：数据正确和语义正确是两件事，可视化工具要按用户视觉期望选择采样点
+  2. **localToWorld 是处理旋转物体锚点的正确抽象**：比"每帧算 bbox"更轻更正确（后者产生 axis-aligned bbox，旋转后失真）；比"存世界 offset"更通用（后者不跟随动画）
+  3. **工具函数要复用现有口径**：fork anchor 用 `computeForkAnchorZero` 同公式（bbox 底面中心），保证轨迹显示和 AI pipeline 看到的 `fork_anchor_zero` 是**同一个点**，不会让用户迷惑"轨迹位置和 AI 说的 anchor 不一致"
+
 ---
 
 ## 核心经验教训（跨 bug 总结）

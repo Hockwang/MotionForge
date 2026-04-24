@@ -139,6 +139,16 @@ export class TrajectoryOverlay {
     const forkPts = [];
     const cargoPts = [];
 
+    // #66：改用"功能性锚点"而不是 Object3D 原点（见 bugfix #66 / REVIEW-v17 T4）：
+    //   - fork：bbox 底面中心（和 computeForkAnchorZero 同口径，threejs (center.x, box.min.y, center.z)）
+    //     → 轨迹线贴着叉齿 tine 承载面走，视觉上"贴"叉齿运动
+    //   - cargo：bbox 底面中心 → attach/detach 大球落在地面高度，不是悬在半空
+    // 策略：首帧（i=0）在当前姿态算 bbox，转到 object local 空间存下来；
+    //       之后每帧 `object.localToWorld(offsetLocal.clone())` 自动跟随 fork/cargo 动画（含旋转）。
+    //       无法算 bbox（对象空 / 对象不存在）→ 降级到原点采样，保持老行为不炸。
+    let forkAnchorLocal = null;
+    let cargoAnchorLocal = null;
+
     try {
       for (let i = 0; i < tValues.length; i++) {
         const t = tValues[i];
@@ -151,8 +161,41 @@ export class TrajectoryOverlay {
         km.applyReparentEventsAtTime(t, sm.sceneRoot);
         sm.sceneRoot.updateMatrixWorld(true);
 
-        if (fork) forkPts.push(fork.getWorldPosition(new THREE.Vector3()));
-        if (cargo) cargoPts.push(cargo.getWorldPosition(new THREE.Vector3()));
+        // 首帧：在 t=0 姿态下算 local offset，后续帧复用（fork 旋转时 localToWorld 自动跟）
+        if (i === 0) {
+          if (fork) {
+            const box = new THREE.Box3().setFromObject(fork);
+            if (!box.isEmpty()) {
+              const center = box.getCenter(new THREE.Vector3());
+              // 底面中心（threejs y 是高度，box.min.y = 底面）—— 和 computeForkAnchorZero 同公式
+              const anchorWorld = new THREE.Vector3(center.x, box.min.y, center.z);
+              forkAnchorLocal = fork.worldToLocal(anchorWorld);
+            }
+          }
+          if (cargo) {
+            const cbox = new THREE.Box3().setFromObject(cargo);
+            if (!cbox.isEmpty()) {
+              const cc = cbox.getCenter(new THREE.Vector3());
+              const anchorWorld = new THREE.Vector3(cc.x, cbox.min.y, cc.z);
+              cargoAnchorLocal = cargo.worldToLocal(anchorWorld);
+            }
+          }
+        }
+
+        if (fork) {
+          if (forkAnchorLocal) {
+            forkPts.push(fork.localToWorld(forkAnchorLocal.clone()));
+          } else {
+            forkPts.push(fork.getWorldPosition(new THREE.Vector3()));
+          }
+        }
+        if (cargo) {
+          if (cargoAnchorLocal) {
+            cargoPts.push(cargo.localToWorld(cargoAnchorLocal.clone()));
+          } else {
+            cargoPts.push(cargo.getWorldPosition(new THREE.Vector3()));
+          }
+        }
       }
     } finally {
       // 恢复 joint value + 时间 + reparent 状态
