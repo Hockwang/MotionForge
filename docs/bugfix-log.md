@@ -635,6 +635,37 @@ updated: 2026-04-22
   2. **guard 条件要查"实际状态"不是"容器大小"**：`Map/Array.length` 经常因为默认元素恒为非零，用这种值做 guard 等于没加。查字段的**实质内容**（总关键帧数、总步骤数）才可靠
   3. **mutate-first-validate-later 是导入类代码的反模式**：所有解析/校验必须在改全局状态之前做完；把"读取数据"和"应用数据"切分成两段，catch 才能真的零污染。这个模式适用于所有"加载文件覆盖当前工程"的场景
 
+#### #64 REVIEW-v17 #7 集成测试基建 — tests/integration/ + ZIP export roundtrip 5 场景
+
+- **动机**：
+  - 单元测试 145 个全覆盖核心（FK 数学、模板编译、关节环检测），但 **main.js 的导入/导出 / AI pipeline 零测试**
+  - 历史上每个跨序列化边界 bug（#18 / #22 / #30 / F61 / 本轮 #63）修完只能靠手工冒烟"加载 → 配关节 → 🚀 → 导出 → 再导入"
+  - 再次改 main.js 或 exporter 时，回归**只能在用户报告时才发现**
+
+- **排查 / 设计**：
+  - 策略：纯 Node 层集成测试（不上 Playwright，避免 CI 基建成本）
+  - 构造最小 `THREE.Scene` + `KeyframeManager`，调 `ResultPackageExporter.exportZip` 拿回 `{ manifest, joints, motion, pkf }` JS 对象，JSON.stringify → JSON.parse 模拟下游读 ZIP
+  - 不测 `handleImportPackage`（还在 main.js 里没抽出；抽出来风险 > 测试收益）
+
+- **修复 / 新增**：
+  - [vitest.config.js](../vitest.config.js) `include` 加 `tests/integration/**/*.test.js`
+  - [tests/integration/zip-roundtrip.test.js](../tests/integration/zip-roundtrip.test.js) 11 个测试覆盖 5 场景：
+    1. **joint def 跨 roundtrip**（防 #18）：name / parent_name / role / base_transform 四元数
+    2. **PKF template_segment 跨 roundtrip**（防 F61）：模板段号字段在；非模板 step 字段不写入 ZIP
+    3. **limit_upper + overflow_to**（防 #59）：双段门架字段完整；overflow_to 是 name 不是 uuid；未启用时显式 null
+    4. **schema_version 恒为 7**：防版本号退化 + manifest scene_markers + source.root_name 存在
+    5. **PKF-only clip**（防 isV2 误判）：关键帧空但 duration + reparent_events 完整；多个 reparent_events 字段完整
+  - 测试工具：`createSilentExporter` override `serializeSceneToGlb` 和 `downloadBlob`（避 GLTFExporter DOM 依赖和 document 访问）
+
+- **影响**：
+  - 测试总数 145 → **156**（unit 145 + integration 11），全绿
+  - 从此 exporter 的字段丢失 / 版本号退化 / overflow 字段乱用 uuid 都会在 CI 级别立即炸
+
+- **经验教训**：
+  1. **集成测试的价值 = 兜住"单元测试看不见"的跨模块 bug**。单元测试防"单函数算错"，集成测试防"两个函数接起来数据变形"
+  2. **不用上 Playwright 也能起步**：纯 Node 调被测函数 + stub 掉 DOM 依赖，就能覆盖 80% 的序列化边界回归
+  3. **测试要映射到真实历史 bug**：5 个场景每个都对应一个具体 bug 编号，写测试不是为了覆盖率而是为了防退化
+
 ---
 
 ## 核心经验教训（跨 bug 总结）
