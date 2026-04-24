@@ -14,8 +14,8 @@
  *  - v6：sceneMarkers（货物占位 / 取货点 / 放货点 metadata），pkf（参数化公式）
  *  - v7：joint def 加 limit_upper + overflow_to（双段门架 overflow 机制，bugfix #59）
  */
-import JSZip from 'jszip';
-import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js';
+// #65 bundle 瘦身：JSZip (~90 kB) + GLTFExporter (~60 kB) 都只在导出 ZIP 时用，
+// 改动态 import → Vite 切成独立 chunk，首屏 bundle 瘦身 ~150 kB
 
 export class ResultPackageExporter {
   /**
@@ -30,7 +30,7 @@ export class ResultPackageExporter {
    * @param {THREE.Object3D} sceneRoot - sceneManager.sceneRoot（通常是 THREE.Scene）
    * @returns {Promise<ArrayBuffer>}
    */
-  serializeSceneToGlb(sceneRoot) {
+  async serializeSceneToGlb(sceneRoot) {
     // 收集 sceneRoot 下所有有意义的子节点（跳过灯光/相机/Helper）
     // 不直接导出 sceneRoot（THREE.Scene），避免 GLTFExporter/GLTFLoader 的 Scene roundtrip 不一致
     // GLTFExporter 支持传入数组：所有子节点作为 GLB 的顶层节点
@@ -47,6 +47,9 @@ export class ResultPackageExporter {
     );
     // 如果只有一个子节点，直接传对象；多个传数组
     const target = exportTargets.length === 1 ? exportTargets[0] : exportTargets;
+
+    // #65 动态 import GLTFExporter（独立 chunk ~60 kB，首屏不需要）
+    const { GLTFExporter } = await import('three/examples/jsm/exporters/GLTFExporter.js');
 
     return new Promise((resolve, reject) => {
       const exporter = new GLTFExporter();
@@ -93,6 +96,8 @@ export class ResultPackageExporter {
     if (!sceneRoot) {
       throw new Error('exportZip: sceneRoot 为必填参数（v4 schema）');
     }
+    // #65 动态 import JSZip（独立 chunk ~90 kB）
+    const { default: JSZip } = await import('jszip');
     const zip = new JSZip();
     const timestamp = this.getTimestamp();
     const manifestFileName = `manifest-${timestamp}.json`;

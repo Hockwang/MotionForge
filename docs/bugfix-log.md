@@ -666,6 +666,42 @@ updated: 2026-04-22
   2. **不用上 Playwright 也能起步**：纯 Node 调被测函数 + stub 掉 DOM 依赖，就能覆盖 80% 的序列化边界回归
   3. **测试要映射到真实历史 bug**：5 个场景每个都对应一个具体 bug 编号，写测试不是为了覆盖率而是为了防退化
 
+#### #65 REVIEW-v17 T1/T2/T3 — lazy import + AI pipeline 测试 + CI
+
+这是上一条 #64 后用户让按顺序做的三件事，合并一条记录。
+
+- **T1 lazy import（bundle 瘦身）**：
+  - 动机：Vite build 后单 chunk 1,140 kB 有告警；USDZLoader/GLTFExporter/JSZip 都只在特定场景用，没必要首屏加载
+  - 改动：
+    - [AssetLoader.js](../src/core/AssetLoader.js) USDZLoader 改懒加载（只有 .usdz 文件才 `await import`）
+    - [ResultPackageExporter.js](../src/core/ResultPackageExporter.js) GLTFExporter + JSZip 改懒加载（只有导出 ZIP 才下载）
+    - [main.js](../src/main.js) JSZip 改懒加载（只有导入 ZIP 才下载）
+    - GLTFLoader 保留静态 import（绝大多数用户打开页面立即加载 .glb）
+  - 效果：首屏 bundle **1,140 kB → 945 kB（-17%）**，gzip **305 → 247 kB（-19%）**。切出 3 个独立 chunk（GLTFExporter 35kB / USDZLoader 64kB / JSZip 95kB）
+
+- **T2 AI pipeline 测试**：
+  - 动机：🚀 一键流程的 `ensurePkfCoversAttachPoint` 是最复杂的 AI 输出 sanitize + 自动补 step 逻辑，零测试覆盖
+  - 改动：
+    - 抽取 [src/core/aiPipeline/ensurePkfCoversAttachPoint.js](../src/core/aiPipeline/ensurePkfCoversAttachPoint.js)，`keyframeManager` 改为显式参数（原是 main.js 闭包依赖）
+    - 新增 [tests/integration/ai-pipeline.test.js](../tests/integration/ai-pipeline.test.js) 21 个测试分 4 组：
+      1. sanitize 逻辑 6 测：approach_gap 归 0；裸常数清洗 `fork_anchor_zero_x - 0.1`；保留合法 `+ approach_gap`；混合表达式；warning 省略号
+      2. 跳过条件 4 测：无 attach event / cargo 找不到 / forkAnchor 残缺 / 三维都 < 阈值
+      3. 注入行为 7 测：单维注入 / 三维全注入 / 缺 role warning / 已覆盖不重复 / cargo_height 半高 / approach_gap sanitize 后计算 / revolute → rotate
+      4. 边界 4 测：pkf=null / undefined / steps 缺失 / keyframeManager=null
+
+- **T3 GitHub Actions CI**：
+  - 新增 [.github/workflows/ci.yml](../.github/workflows/ci.yml)：push 任意分支 + PR 到 main 自动跑 `npm test` + `npm run build`
+  - 并发保护 `concurrency: cancel-in-progress: true`：连续 push 只跑最后一次
+
+- **效果**：
+  - 测试总数 156 → **177**（unit 145 + integration 32），全绿
+  - 从此改 main.js、exporter、AssetLoader、AI pipeline 任意一处都有 CI 自动兜底
+
+- **经验教训**：
+  1. **lazy import 真实收益 ≈ 15-20% bundle 瘦身**：和预期接近；实际做完没有想象中复杂（改 3 处 import + 相应调用点），10 分钟/处
+  2. **抽函数到独立模块是把"难测"变"可测"的最低成本方案**：`ensurePkfCoversAttachPoint` 闭包 `keyframeManager`，改成显式参数只加了 1 行；之后测试里随便构造 stub 就行
+  3. **CI 要从第一天起加**：即使只是 `npm test + npm run build` 两条命令，也能兜住 90% 的"本地忘了跑测试就 merge" 问题
+
 ---
 
 ## 核心经验教训（跨 bug 总结）

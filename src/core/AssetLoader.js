@@ -1,6 +1,9 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
-import { USDZLoader } from 'three/examples/jsm/loaders/USDZLoader.js';
+
+// USDZLoader 动态 import（#65 bundle 瘦身）：
+// .usdz 是小众格式（绝大多数用户打开 .glb），静态 import 会把 ~100 kB USDZLoader
+// 代码塞进首屏 bundle；改动态 import 后 Vite 切成独立 chunk，只有真用 USDZ 时才下载。
 
 /**
  * Asset loader abstraction.
@@ -9,7 +12,7 @@ import { USDZLoader } from 'three/examples/jsm/loaders/USDZLoader.js';
 export class AssetLoader {
   constructor() {
     this.gltfLoader = new GLTFLoader();
-    this.usdzLoader = new USDZLoader();
+    this.usdzLoader = null; // lazy init：首次加载 .usdz 时才 new（见 loadFromFile）
     this.converterServiceUrl = import.meta.env.VITE_CONVERTER_URL || 'http://localhost:8091';
   }
 
@@ -29,6 +32,11 @@ export class AssetLoader {
 
     if (extension === 'usdz') {
       onStatus('正在解析 USDZ...');
+      // #65 首次加载 USDZ 时才下载 USDZLoader chunk（独立 ~100 kB）
+      if (!this.usdzLoader) {
+        const { USDZLoader } = await import('three/examples/jsm/loaders/USDZLoader.js');
+        this.usdzLoader = new USDZLoader();
+      }
       const object = await this.usdzLoader.parseAsync(buffer);
       object.name = object.name || file.name;
       return object;
