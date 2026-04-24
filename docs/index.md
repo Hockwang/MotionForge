@@ -57,6 +57,13 @@ updated: 2026-04-23
 
 `docs/raw/` 目录用于存放未成型的笔记、草稿、口头决定记录等，不要求格式。
 
+## Articles（技术文章 / 沉淀）
+
+`docs/articles/` 目录放博客风格的技术沉淀，对外可分享。
+
+- [ai-3d-editing-visual-handles.md](articles/ai-3d-editing-visual-handles.md) — AI 编辑 3D 软件的可能性（从轨迹 overlay 切入，讨论 AI + 3D 协作的可视化握把思路）
+- [motionforge-tech-addendum.md](articles/motionforge-tech-addendum.md) — MotionForge 技术补遗（工程基建：轨迹 overlay / ZIP 事务化 / schema v7 / 测试 / CI / lazy import）
+
 ---
 
 ## 其他文档入口
