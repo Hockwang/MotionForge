@@ -81,7 +81,7 @@ tools/
 
 ### 1. 修 bug 必须追加 [docs/bugfix-log.md](docs/bugfix-log.md) 条目
 
-编号延续递增（当前最大 #60），格式：
+编号延续递增（当前最大 #67；查最新：`grep "^#### #" docs/bugfix-log.md | tail -3`），格式：
 
 ```markdown
 #### #编号 简短标题
@@ -107,8 +107,21 @@ tools/
 | 发现新的领域概念需要解释 | `docs/concepts/` 新增文档 |
 | 重要里程碑或决策 | 追加到 [docs/log.md](docs/log.md) |
 | 任何 bug 修复 | 追加到 [docs/bugfix-log.md](docs/bugfix-log.md) |
+| 做完一个 2 周 – 2 月的迭代周期，有可复用原则 | `docs/articles/` 新增博客式技术沉淀 |
 
-### 4. 不能放在 CLAUDE.md 的内容
+**不确定该写到哪**：先看 [docs/doc-types.md](docs/doc-types.md)（文档类型索引 + 模板 + 5 秒决策流程）。
+
+### 4. Schema 版本号变动必须三处联动
+
+ZIP 输出格式版本号改动时，以下三处**必须同时更新**，漏一处下游就按错版本实现：
+
+1. `src/core/ResultPackageExporter.js` 的 `schema_version` 常量
+2. `docs/schema/vN.md`（新建或更新当前版本）
+3. 所有对外引用链接：README / `docs/index.md` / `docs/concepts/zip-output-schema.md`
+
+⚠️ 这条红线的代价来自 [bugfix #63](docs/bugfix-log.md)。
+
+### 5. 不能放在 CLAUDE.md 的内容
 
 以下内容**必须**放到 docs/ 下，不要往 CLAUDE.md 加：
 

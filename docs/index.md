@@ -1,10 +1,18 @@
 ---
-updated: 2026-04-23
+updated: 2026-04-24
 ---
 # MotionForge 项目 Wiki 索引
 
 > Karpathy LLM Wiki 风格文档体系。新 session 接手项目从这里开始。
-> 快速定向：**改代码** → decisions + gotchas；**理解系统** → architecture；**理解格式** → concepts；**决策时间线** → [log.md](log.md)。
+>
+> 快速定向：
+> - **改代码** → [decisions](#decisions架构决策-adr) + [gotchas](#gotchas踩坑记录)
+> - **理解系统** → [architecture](#architecture系统架构)
+> - **理解格式** → [concepts](#concepts领域概念) + [schema](#其他文档入口)
+> - **决策时间线** → [log.md](log.md)
+> - **bug 历史** → [bugfix-log.md](bugfix-log.md)
+> - **对外文章** → [articles](#articles技术文章--沉淀)
+> - **该写到哪个目录？** → [doc-types.md](doc-types.md)
 
 ---
 
@@ -53,32 +61,48 @@ updated: 2026-04-23
 
 ---
 
-## Raw（草稿/待整理）
-
-`docs/raw/` 目录用于存放未成型的笔记、草稿、口头决定记录等，不要求格式。
-
 ## Articles（技术文章 / 沉淀）
 
-`docs/articles/` 目录放博客风格的技术沉淀，对外可分享。
+`docs/articles/` 目录放博客风格的技术沉淀，对外可分享。写这类文档前先看 [doc-types.md § 工程反思博客](doc-types.md#工程反思博客-docsarticles)。
 
+- [motionforge-tech-addendum.md](articles/motionforge-tech-addendum.md) — MotionForge 技术补遗（mvp1 → mvp3 之间的五件工程基建：轨迹 overlay / ZIP 事务化 / schema v7 / 测试 + CI / lazy import）
 - [ai-3d-editing-visual-handles.md](articles/ai-3d-editing-visual-handles.md) — AI 编辑 3D 软件的可能性（从轨迹 overlay 切入，讨论 AI + 3D 协作的可视化握把思路）
-- [motionforge-tech-addendum.md](articles/motionforge-tech-addendum.md) — MotionForge 技术补遗（工程基建：轨迹 overlay / ZIP 事务化 / schema v7 / 测试 / CI / lazy import）
 
 ---
 
-## 其他文档入口
+## Raw（草稿 / 未整理）
 
-- [CLAUDE.md](../CLAUDE.md) — 协作手册（**只放红线规则 + 钩子**，2026-04-22 瘦身至 ~165 行）
-- **[log.md](log.md)** — Append-only 决策/里程碑时间线（mvp2 → mvp3 完整轨迹）
-- **[bugfix-log.md](bugfix-log.md)** — Bug 修复完整历史 #1-#56+（从 CLAUDE.md 拆出）
-- **[diagnostics.md](diagnostics.md)** — 诊断脚本完整指南 9 脚本 + 8 场景（从 CLAUDE.md 拆出）
+`docs/raw/` 目录存未成型的笔记、草稿、口头决定记录，不要求格式。整理时迁移到对应目录。
+
+- [alignment-state-animation-framework-2026-04-23.md](raw/alignment-state-animation-framework-2026-04-23.md) — 和 mentor 对齐的状态机框架决策（结论：17 段模板不重构）
+- [codex-full-repo-review-2026-04-21.md](raw/codex-full-repo-review-2026-04-21.md) — Codex 原版 review（归档）
+- [wiki-setup-prompt.md](raw/wiki-setup-prompt.md) — Wiki 体系搭建的原始提示词
+
+---
+
+## 元文档 / 其他入口
+
+**元文档**（关于"怎么写文档"和"怎么协作"）：
+- **[doc-types.md](doc-types.md)** — 📖 文档类型索引：该写哪里 / 用什么模板（**写任何文档前先看这个**）
+- [CLAUDE.md](../CLAUDE.md) — 协作手册（红线规则 + 钩子，~165 行）
+- [CONTRIBUTING.md](../CONTRIBUTING.md) — 协作流程（commit / PR / 测试）
+
+**时间线**：
+- **[log.md](log.md)** — append-only 决策 / 里程碑时间线（mvp2 → mvp3 完整轨迹）
+- **[bugfix-log.md](bugfix-log.md)** — Bug 修复完整历史 #1-#67+
+
+**Review 快照**：
+- [REVIEW-v16.md](REVIEW-v16.md) — 最新 review
+- [REVIEW-v15.md](REVIEW-v15.md) — mvp3 review（F28-F43）
+- [REVIEW-v14.md](REVIEW-v14.md) — v14.1 master review（F1-F27）
+
+**操作手册**：
 - [README.md](../README.md) — 项目概览（3 分钟版）
 - [FLOW.md](../FLOW.md) — 完整产品操作流程
-- [DEBT.md](../DEBT.md) — 技术债清单（持续跟踪）
-- [docs/schema/v7.md](schema/v7.md) — ZIP schema v7 详细规范（当前版本）
-- [docs/schema/v4.md](schema/v4.md) — ZIP schema v4 字段参考（历史版本）
-- [docs/ROADMAP.md](ROADMAP.md) — 二期路线图
-- **[docs/REVIEW-v15.md](REVIEW-v15.md)** — mvp3 最新 review（F28-F43 + 收尾 checklist）
-- [docs/REVIEW-v14.md](REVIEW-v14.md) — v14.1 master review（F1-F27，多数已完成）
-- [docs/raw/alignment-state-animation-framework-2026-04-23.md](raw/alignment-state-animation-framework-2026-04-23.md) — 和 mentor 对齐的状态机框架决策（结论：17 段模板不重构）
-- [docs/raw/codex-full-repo-review-2026-04-21.md](raw/codex-full-repo-review-2026-04-21.md) — Codex 原版 review（归档）
+- **[diagnostics.md](diagnostics.md)** — 诊断脚本完整指南
+- [DEBT.md](../DEBT.md) — 技术债清单
+- [ROADMAP.md](ROADMAP.md) — 二期路线图
+
+**对外契约**：
+- [schema/v7.md](schema/v7.md) — ZIP schema v7 详细规范（**当前版本**）
+- [schema/v4.md](schema/v4.md) — ZIP schema v4 字段参考（历史版本）
