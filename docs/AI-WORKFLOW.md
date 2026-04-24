@@ -1,7 +1,7 @@
 # MotionForge AI 协作动画指南
 
 > 作者：Hockwang
-> 姊妹篇：[USER-GUIDE.md](USER-GUIDE.md)（从零开始的基础使用）、[HOW-IT-WORKS.md](HOW-IT-WORKS.md)（内部实现原理，mvp1）、[技术补遗](docs/articles/motionforge-tech-addendum.md)（mvp3 工程基建）
+> 姊妹篇：[USER-GUIDE.md](USER-GUIDE.md)（从零开始的基础使用）、[HOW-IT-WORKS.md](HOW-IT-WORKS.md)（内部实现原理，mvp1）、[技术补遗](articles/motionforge-tech-addendum.md)（mvp3 工程基建）
 > 阅读时间：约 12 分钟
 > 适合谁：已经会用基础功能（加载模型、配关节、打关键帧），想用 **AI + 模板 + 可视化调试** 把工作流跑顺的人
 
@@ -403,7 +403,7 @@ InnerMast value = 1.8
 - **pkf.steps[].joint**（关节 name）：PKF 公式绑的关节
 - **manifest.scene_markers**：cargo / pickup / drop 元数据
 
-完整字段定义见 [docs/schema/v7.md](docs/schema/v7.md)。
+完整字段定义见 [docs/schema/v7.md](schema/v7.md)。
 
 ### 9.3 下游集成建议
 
@@ -494,6 +494,6 @@ AI 能直接改对应 PKF 步骤的公式。不用来回猜。
 
 把这两件做到位，AI 协作的效率会从"来回拉扯 5-10 轮"降到"一次或两次命中"。
 
-想了解 🎨 轨迹 overlay / 🚀 一键 / 模板路径背后的实现原理，看 [姊妹篇技术补遗](docs/articles/motionforge-tech-addendum.md)；想讨论 AI + 3D 编辑的更远方向，看 [AI 编辑 3D 软件的可能性](docs/articles/ai-3d-editing-visual-handles.md)。
+想了解 🎨 轨迹 overlay / 🚀 一键 / 模板路径背后的实现原理，看 [姊妹篇技术补遗](articles/motionforge-tech-addendum.md)；想讨论 AI + 3D 编辑的更远方向，看 [AI 编辑 3D 软件的可能性](articles/ai-3d-editing-visual-handles.md)。
 
 有 bug、改进建议、或者想一起搞 —— 评论区见，或者直接找我。

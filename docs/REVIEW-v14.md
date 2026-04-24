@@ -178,7 +178,7 @@ tests/ 12 个纯 console 粘贴脚本
   - [docs/ROADMAP.md:6](ROADMAP.md) 写 `v12+`
   - [README.md:218](../README.md#L218) 写"5 个诊断脚本"（实际 7 个）
   - [CLAUDE.md:137](../CLAUDE.md#L137) 同样
-  - [FLOW.md:11](../FLOW.md#L11) 同样
+  - [FLOW.md:11](FLOW.md#L11) 同样
   - [src/ui/EditorUI.js:629](../src/ui/EditorUI.js#L629) 提示"L2 不要输出 reparent，用户手工加"——但 oneshot 已由前端自动应用
   - [src/core/ResultPackageExporter.js:139](../src/core/ResultPackageExporter.js#L139) `_comment` 把 `origin` 说成"世界空间"——实际是 parent-local/URDF
 - **影响**：新接手的人在"代码 v14.1 但文档 v12+"状态下做错误推断

@@ -2,7 +2,7 @@
 
 > 这份文档解释 MotionForge **怎么算的、为什么这么算**。
 > 面向：开发者、研究者、未来的自己。
-> 配合阅读：[FLOW.md](FLOW.md)（操作流程）、[CLAUDE.md](CLAUDE.md)（架构约束 + bug 历史）
+> 配合阅读：[FLOW.md](FLOW.md)（操作流程）、[CLAUDE.md](../CLAUDE.md)（架构约束 + bug 历史）
 
 ---
 
@@ -30,7 +30,7 @@ MotionForge 内部有两套坐标系：
 | **UI 坐标系** | Z-up | Y-forward | 关节定义面板、origin 输入、axis 选择 |
 | **Three.js 坐标系** | Y-up | Z-forward | 场景渲染、世界空间计算 |
 
-**轴映射函数**（[SceneManager.js:13](src/core/SceneManager.js#L13)）：
+**轴映射函数**（[SceneManager.js:13](../src/core/SceneManager.js#L13)）：
 
 ```
 UI axis    →  Three.js world axis
@@ -47,7 +47,7 @@ UI axis    →  Three.js world axis
 
 ### 2.1 关节定义数据结构
 
-每个关节（[KeyframeManager.js:104](src/core/KeyframeManager.js#L104)）包含：
+每个关节（[KeyframeManager.js:104](../src/core/KeyframeManager.js#L104)）包含：
 
 ```javascript
 {
@@ -83,11 +83,11 @@ UI axis    →  Three.js world axis
   ↳ base 和 origin 都存在这个坐标系里
 ```
 
-两者可以不同。关节系统**只看关节父级**来计算运动链，和场景树层级解耦（[CLAUDE.md #10](CLAUDE.md)）。
+两者可以不同。关节系统**只看关节父级**来计算运动链，和场景树层级解耦（[CLAUDE.md #10](../CLAUDE.md)）。
 
 ### 2.3 懒捕获 baseTransform
 
-**时机**：关节的 `baseTransform` 为 null 时，在首次 `applyJointDrive` 时自动捕获（[KeyframeManager.js:233](src/core/KeyframeManager.js#L233)）。
+**时机**：关节的 `baseTransform` 为 null 时，在首次 `applyJointDrive` 时自动捕获（[KeyframeManager.js:233](../src/core/KeyframeManager.js#L233)）。
 
 **计算方式**：
 
@@ -96,11 +96,11 @@ UI axis    →  Three.js world axis
 子对象世界旋转 → 转到关节父级的 local 四元数 → 存为 base.qx/qy/qz/qw
 ```
 
-**关键约束**：懒捕获**必须在所有父级关节都是零位时**发生。如果父级已经被驱动，子级捕获的 base 包含了父级的驱动偏移，之后父级回零时子级会反向漂移（[CLAUDE.md #22](CLAUDE.md)）。
+**关键约束**：懒捕获**必须在所有父级关节都是零位时**发生。如果父级已经被驱动，子级捕获的 base 包含了父级的驱动偏移，之后父级回零时子级会反向漂移（[CLAUDE.md #22](../CLAUDE.md)）。
 
 ### 2.4 驱动公式
 
-每次调用 `applyJointDrive`（[KeyframeManager.js:215](src/core/KeyframeManager.js#L215)），执行以下计算：
+每次调用 `applyJointDrive`（[KeyframeManager.js:215](../src/core/KeyframeManager.js#L215)），执行以下计算：
 
 **Step 1：恢复零点世界位姿**
 
@@ -158,7 +158,7 @@ newWorldPos  = baseWorldPos   // 直接用 base 的世界位置
 newWorldQuat = baseWorldQuat  // 直接用 base 的世界旋转
 ```
 
-数学含义：**刚性连接到 joint parent，无自由度但跟随运动**。等价于 prismatic value=0。符合 URDF 标准（见 [#35](CLAUDE.md#35-fixed-类型关节不跟-joint-parent-动)）。
+数学含义：**刚性连接到 joint parent，无自由度但跟随运动**。等价于 prismatic value=0。符合 URDF 标准（见 [#35](../CLAUDE.md#35-fixed-类型关节不跟-joint-parent-动)）。
 
 **Step 4：世界 → 场景树 parent local → 写入 child**
 
@@ -188,7 +188,7 @@ childObj.quaternion = sceneParent.worldQuat⁻¹ × newWorldQuat
 
 Euler 角 (rx, ry, rz) 在 Y ≈ ±90° 附近存在**万向锁（Gimbal Lock）**：两个旋转轴退化为同一方向，丢失一个自由度。
 
-实际症状：用户旋转叉齿到 ~90°，Euler 分解失真，实际旋转少 57°（[CLAUDE.md #7](CLAUDE.md)）。
+实际症状：用户旋转叉齿到 ~90°，Euler 分解失真，实际旋转少 57°（[CLAUDE.md #7](../CLAUDE.md)）。
 
 ### 四元数
 
@@ -206,9 +206,9 @@ Euler 角 (rx, ry, rz) 在 Y ≈ ±90° 附近存在**万向锁（Gimbal Lock）
 
 ### Gizmo 旋转解缠
 
-四元数有**双重覆盖**问题：`q` 和 `-q` 表示同一旋转。TransformControls 大角度时可能翻转符号，导致提取的角度跳 ±360°（[CLAUDE.md #23](CLAUDE.md)）。
+四元数有**双重覆盖**问题：`q` 和 `-q` 表示同一旋转。TransformControls 大角度时可能翻转符号，导致提取的角度跳 ±360°（[CLAUDE.md #23](../CLAUDE.md)）。
 
-解缠逻辑（[SceneManager.js:230](src/core/SceneManager.js#L230)）：
+解缠逻辑（[SceneManager.js:230](../src/core/SceneManager.js#L230)）：
 
 ```javascript
 if (this._gizmoLastAngle !== undefined) {
@@ -230,7 +230,7 @@ this._gizmoLastAngle = angle;
 
 ### Kahn's 拓扑排序
 
-[KeyframeManager.js:359](src/core/KeyframeManager.js#L359)：
+[KeyframeManager.js:359](../src/core/KeyframeManager.js#L359)：
 
 ```
 1. 建图：若 jointA.childId === jointB.parentId → B 依赖 A
@@ -274,7 +274,7 @@ pkf = {
 
 ### 5.2 公式安全求值
 
-[KeyframeManager.js:827](src/core/KeyframeManager.js#L827)：
+[KeyframeManager.js:827](../src/core/KeyframeManager.js#L827)：
 
 ```
 1. 白名单检查：提取公式中所有标识符
@@ -291,7 +291,7 @@ pkf = {
 
 ### 5.3 步骤求值管线
 
-[KeyframeManager.js:902](src/core/KeyframeManager.js#L902)：
+[KeyframeManager.js:902](../src/core/KeyframeManager.js#L902)：
 
 ```
 evaluatePkfAt(t):
@@ -311,7 +311,7 @@ evaluatePkfAt(t):
 
 ### 5.4 运行时驱动
 
-[main.js:831](src/main.js#L831)：
+[main.js:831](../src/main.js#L831)：
 
 ```
 applyPkfAtTime(t):
@@ -327,7 +327,7 @@ applyPkfAtTime(t):
 
 ### 设计：全局 vs per-object
 
-早期版本是 per-object 关键帧（每个对象单独的 clip），重构后改为**项目级全局关键帧**（[CLAUDE.md #9](CLAUDE.md)）。
+早期版本是 per-object 关键帧（每个对象单独的 clip），重构后改为**项目级全局关键帧**（[CLAUDE.md #9](../CLAUDE.md)）。
 
 ```javascript
 globalClips = {
@@ -346,7 +346,7 @@ globalClips = {
 
 ### 插值
 
-[KeyframeManager.js:514](src/core/KeyframeManager.js#L514)：
+[KeyframeManager.js:514](../src/core/KeyframeManager.js#L514)：
 
 ```
 给定时间 t：
@@ -361,7 +361,7 @@ globalClips = {
 
 ## 7. 动画循环
 
-[main.js:875](src/main.js#L875)：
+[main.js:875](../src/main.js#L875)：
 
 ```
 loop(now):
@@ -392,7 +392,7 @@ loop(now):
 
 ### 8.1 导出前：零位化
 
-[main.js:1424](src/main.js#L1424)：
+[main.js:1424](../src/main.js#L1424)：
 
 ```
 1. selectionManager.clearSelection()
@@ -422,7 +422,7 @@ ZIP 包（schema v4）：
 
 ### 8.3 导入后：两阶段应用
 
-[main.js:775](src/main.js#L775)：
+[main.js:775](../src/main.js#L775)：
 
 ```
 阶段 A：零位捕获 base
@@ -438,7 +438,7 @@ ZIP 包（schema v4）：
   8. applyAllJointDrives → 正常驱动
 ```
 
-**为什么要两阶段**：如果直接用 JSON 的 currentValue 驱动，拓扑排序会先驱动父级（非零）→ 子级懒捕获 base 时父级已偏移 → 子级的 base 包含了父级的驱动偏移 → 父级回零时子级反向漂移（[CLAUDE.md #22](CLAUDE.md)）。
+**为什么要两阶段**：如果直接用 JSON 的 currentValue 驱动，拓扑排序会先驱动父级（非零）→ 子级懒捕获 base 时父级已偏移 → 子级的 base 包含了父级的驱动偏移 → 父级回零时子级反向漂移（[CLAUDE.md #22](../CLAUDE.md)）。
 
 ### 8.4 跨 roundtrip 的标识
 
@@ -448,7 +448,7 @@ ZIP 包（schema v4）：
 | **uuid** | ❌ 每次加载重新生成 | 仅运行时引用 |
 | **parent_name** | ✅ | 导入时按名字重建关节链 |
 
-永远**导出用 name，导入时重新解析到当前 uuid**（[CLAUDE.md #18, #19](CLAUDE.md)）。
+永远**导出用 name，导入时重新解析到当前 uuid**（[CLAUDE.md #18, #19](../CLAUDE.md)）。
 
 ---
 
@@ -477,7 +477,7 @@ LLM 输出 JSON：{ parameters: [...], steps: [...] }
 
 ### 9.2 role 语义匹配
 
-传统做法：AI 只看 `{name, type, axis}` → 凭 axis 猜用途 → 选错关节（[CLAUDE.md #29](CLAUDE.md)）。
+传统做法：AI 只看 `{name, type, axis}` → 凭 axis 猜用途 → 选错关节（[CLAUDE.md #29](../CLAUDE.md)）。
 
 改进：每个关节带 `role` 字段（"门架升降"、"叉齿侧移"...），AI 按语义匹配意图。匹配不上不硬猜，返回 error。
 
@@ -485,29 +485,29 @@ LLM 输出 JSON：{ parameters: [...], steps: [...] }
 
 system prompt 里嵌一个完整的取货动作示例（parameters + steps + 公式 + 时序）。AI 照格式模仿，关节名从用户当前模型列表里挑。
 
-不做模板库（过度设计），不让 AI 从零生成（不稳定），保持 prompt 内的 few-shot 是当前最佳平衡点（[CLAUDE.md #28](CLAUDE.md)）。
+不做模板库（过度设计），不让 AI 从零生成（不稳定），保持 prompt 内的 few-shot 是当前最佳平衡点（[CLAUDE.md #28](../CLAUDE.md)）。
 
 ---
 
 ## 10. 关键设计决策索引
 
-每条都是踩过坑换来的。详见 [CLAUDE.md](CLAUDE.md) 对应 bug 编号。
+每条都是踩过坑换来的。详见 [CLAUDE.md](../CLAUDE.md) 对应 bug 编号。
 
 | 决策 | 原因 | 反例（bug 编号） |
 |---|---|---|
-| baseTransform 存四元数 | Euler 在 90° 附近有万向锁 | [#7](CLAUDE.md) |
-| origin 存关节父级 local | 父动 → origin 自动跟 | [#5](CLAUDE.md) |
-| 拓扑排序驱动关节链 | 场景树深度不等于关节依赖 | [#8](CLAUDE.md), [#10](CLAUDE.md) |
-| 跨 roundtrip 用 name 不用 uuid | uuid 每次加载重新生成 | [#18](CLAUDE.md), [#19](CLAUDE.md) |
-| 导出前归零 + 清选中 | 防止 double-apply + emissive 烘焙 | [#17](CLAUDE.md), [#20](CLAUDE.md) |
-| 导入两阶段应用 | 懒捕获必须在零位发生 | [#22](CLAUDE.md) |
-| joints.json currentValue 写 0 | GLB 和 JSON 语义必须一致 | [#30](CLAUDE.md) |
-| PKF step 用 joint name 不用 uuid | uuid 跨导入失效 | [#19](CLAUDE.md) |
-| AI 用 role 匹配不靠 axis 猜 | axis 相同但用途不同 | [#29](CLAUDE.md) |
-| Gizmo 角度解缠 | 四元数双重覆盖导致跳变 | [#23](CLAUDE.md) |
-| few-shot 不做模板库 | 模板数少时基础设施是浪费 | [#28](CLAUDE.md) |
-| 导出归零/恢复用 try/finally | 异常时不能卡在零位 | [#32](CLAUDE.md) |
-| 关节链 setJointDef 入口环检测 | 拓扑排序不处理环，源头堵住 | [#33](CLAUDE.md) |
+| baseTransform 存四元数 | Euler 在 90° 附近有万向锁 | [#7](../CLAUDE.md) |
+| origin 存关节父级 local | 父动 → origin 自动跟 | [#5](../CLAUDE.md) |
+| 拓扑排序驱动关节链 | 场景树深度不等于关节依赖 | [#8](../CLAUDE.md), [#10](../CLAUDE.md) |
+| 跨 roundtrip 用 name 不用 uuid | uuid 每次加载重新生成 | [#18](../CLAUDE.md), [#19](../CLAUDE.md) |
+| 导出前归零 + 清选中 | 防止 double-apply + emissive 烘焙 | [#17](../CLAUDE.md), [#20](../CLAUDE.md) |
+| 导入两阶段应用 | 懒捕获必须在零位发生 | [#22](../CLAUDE.md) |
+| joints.json currentValue 写 0 | GLB 和 JSON 语义必须一致 | [#30](../CLAUDE.md) |
+| PKF step 用 joint name 不用 uuid | uuid 跨导入失效 | [#19](../CLAUDE.md) |
+| AI 用 role 匹配不靠 axis 猜 | axis 相同但用途不同 | [#29](../CLAUDE.md) |
+| Gizmo 角度解缠 | 四元数双重覆盖导致跳变 | [#23](../CLAUDE.md) |
+| few-shot 不做模板库 | 模板数少时基础设施是浪费 | [#28](../CLAUDE.md) |
+| 导出归零/恢复用 try/finally | 异常时不能卡在零位 | [#32](../CLAUDE.md) |
+| 关节链 setJointDef 入口环检测 | 拓扑排序不处理环，源头堵住 | [#33](../CLAUDE.md) |
 
 ---
 
@@ -515,16 +515,16 @@ system prompt 里嵌一个完整的取货动作示例（parameters + steps + 公
 
 | 功能 | 文件 | 关键函数 |
 |---|---|---|
-| 关节定义 | [KeyframeManager.js](src/core/KeyframeManager.js) | `setJointDef` |
-| 单关节驱动 | [KeyframeManager.js](src/core/KeyframeManager.js) | `applyJointDrive` |
-| 拓扑排序驱动 | [KeyframeManager.js](src/core/KeyframeManager.js) | `applyAllJointDrives` |
-| PKF 公式求值 | [KeyframeManager.js](src/core/KeyframeManager.js) | `evaluatePkfFormula`, `evaluatePkfAt` |
-| 关键帧插值 | [KeyframeManager.js](src/core/KeyframeManager.js) | `evaluateAllAt` |
-| PKF 运行时驱动 | [main.js](src/main.js) | `applyPkfAtTime` |
-| 动画循环 | [main.js](src/main.js) | `updateTimeline`, `loop` |
-| 导出 | [main.js](src/main.js) + [ResultPackageExporter.js](src/core/ResultPackageExporter.js) | `exportPackageBtn`, `serializeSceneToGlb` |
-| 导入 | [main.js](src/main.js) | `handleImportPackage` |
-| AI 请求 | [main.js](src/main.js) | `requestAiGeneratePkf` |
-| AI 后端 | [conversion-service.js](tools/conversion-service.js) | `/api/generate-pkf` |
-| Gizmo 交互 | [SceneManager.js](src/core/SceneManager.js) | `showJointGizmo`, `onChange` |
-| 关节 UI | [EditorUI.js](src/ui/EditorUI.js) | `showJointConfigPanel` |
+| 关节定义 | [KeyframeManager.js](../src/core/KeyframeManager.js) | `setJointDef` |
+| 单关节驱动 | [KeyframeManager.js](../src/core/KeyframeManager.js) | `applyJointDrive` |
+| 拓扑排序驱动 | [KeyframeManager.js](../src/core/KeyframeManager.js) | `applyAllJointDrives` |
+| PKF 公式求值 | [KeyframeManager.js](../src/core/KeyframeManager.js) | `evaluatePkfFormula`, `evaluatePkfAt` |
+| 关键帧插值 | [KeyframeManager.js](../src/core/KeyframeManager.js) | `evaluateAllAt` |
+| PKF 运行时驱动 | [main.js](../src/main.js) | `applyPkfAtTime` |
+| 动画循环 | [main.js](../src/main.js) | `updateTimeline`, `loop` |
+| 导出 | [main.js](../src/main.js) + [ResultPackageExporter.js](../src/core/ResultPackageExporter.js) | `exportPackageBtn`, `serializeSceneToGlb` |
+| 导入 | [main.js](../src/main.js) | `handleImportPackage` |
+| AI 请求 | [main.js](../src/main.js) | `requestAiGeneratePkf` |
+| AI 后端 | [conversion-service.js](../tools/conversion-service.js) | `/api/generate-pkf` |
+| Gizmo 交互 | [SceneManager.js](../src/core/SceneManager.js) | `showJointGizmo`, `onChange` |
+| 关节 UI | [EditorUI.js](../src/ui/EditorUI.js) | `showJointConfigPanel` |

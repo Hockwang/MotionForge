@@ -13,12 +13,12 @@
 | 你是谁 / 想做什么 | 先读 |
 |---|---|
 | 新人 / 新 chat 接入项目 | [README.md](README.md)（3 分钟知道项目是什么） |
-| 看完整产品能力和操作流程 | [FLOW.md](FLOW.md) |
+| 看完整产品能力和操作流程 | [FLOW.md](docs/FLOW.md) |
 | **改代码 / 定位 bug / 理解架构** | 本文档（红线 + 钩子）+ [docs/index.md](docs/index.md)（知识库索引）|
 | 查某个历史 bug 怎么修的 | [docs/bugfix-log.md](docs/bugfix-log.md) |
 | 用诊断脚本排错 | [docs/diagnostics.md](docs/diagnostics.md) |
 | 了解 AI 打关节研究方向 | [AI-RIGGING-README.md](AI-RIGGING-README.md) |
-| 了解当前技术债 | [DEBT.md](DEBT.md) |
+| 了解当前技术债 | [DEBT.md](docs/DEBT.md) |
 | 看二期路线图 | [docs/ROADMAP.md](docs/ROADMAP.md) |
 
 **AI 打关节研究专题**：[HANDOFF.md](docs/ai-rigging/HANDOFF.md) / [RESEARCH-LOG.md](docs/ai-rigging/RESEARCH-LOG.md)

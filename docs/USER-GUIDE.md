@@ -267,6 +267,6 @@ __mf.getJointDefs().map(d => ({name: d.name, parent: d.parentId?.slice(0,8)}))
 
 - [FLOW.md](FLOW.md) — 故障定位决策树（更详细的排查步骤）
 - [HOW-IT-WORKS.md](HOW-IT-WORKS.md) — 内部技术原理（给开发者）
-- [README.md](README.md) — 项目总览 + 运行方式
+- [README.md](../README.md) — 项目总览 + 运行方式
 
 不会用？有 bug？在项目里提 issue 或问 Claude。

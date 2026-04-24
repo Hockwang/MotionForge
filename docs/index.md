@@ -98,9 +98,9 @@ updated: 2026-04-24
 
 **操作手册**：
 - [README.md](../README.md) — 项目概览（3 分钟版）
-- [FLOW.md](../FLOW.md) — 完整产品操作流程
+- [FLOW.md](FLOW.md) — 完整产品操作流程
 - **[diagnostics.md](diagnostics.md)** — 诊断脚本完整指南
-- [DEBT.md](../DEBT.md) — 技术债清单
+- [DEBT.md](DEBT.md) — 技术债清单
 - [ROADMAP.md](ROADMAP.md) — 二期路线图
 
 **对外契约**：

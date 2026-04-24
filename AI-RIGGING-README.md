@@ -161,5 +161,5 @@ AI 打关节吐出这个格式的数组，MotionForge 直接消费，**不需要
 
 **MotionForge 本体文档**：
 - [CLAUDE.md](CLAUDE.md) — 架构约束 + 29 条 bug 历史（含父子拓扑相关 bug）
-- [FLOW.md](FLOW.md) — 端到端流程 + 故障定位决策树
+- [FLOW.md](docs/FLOW.md) — 端到端流程 + 故障定位决策树
 - [README.md](README.md) — 安装运行

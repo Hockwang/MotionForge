@@ -1,6 +1,6 @@
 # 贡献指南
 
-> 面向改代码 / 修 bug / 加功能的人。纯使用者看 [USER-GUIDE.md](USER-GUIDE.md)。
+> 面向改代码 / 修 bug / 加功能的人。纯使用者看 [USER-GUIDE.md](docs/USER-GUIDE.md)。
 > 架构细节和历史债务在 [CLAUDE.md](CLAUDE.md)，这里只讲协作规则。
 
 ---
@@ -24,8 +24,8 @@ npm test          # 单元测试（vitest）
 ## 改动前必读
 
 1. **[CLAUDE.md 核心架构约束](CLAUDE.md#核心架构约束不可随意改动)** — 9 条红线（四元数 baseTransform / URDF 风格 origin / 拓扑排序 / 导出归零 / 两阶段导入 ...），每条都对应踩过的坑，别绕开
-2. **[DEBT.md](DEBT.md)** — 已知技术债，改动可能撞上
-3. **[HOW-IT-WORKS.md](HOW-IT-WORKS.md)** — FK 数学、PKF 求值、roundtrip 的原理
+2. **[DEBT.md](docs/DEBT.md)** — 已知技术债，改动可能撞上
+3. **[HOW-IT-WORKS.md](docs/HOW-IT-WORKS.md)** — FK 数学、PKF 求值、roundtrip 的原理
 
 ---
 
@@ -146,7 +146,7 @@ npm run test:watch # 开发时 watch 模式
 
 ### 冒烟测试流程
 
-改完跑一遍完整路径（参考 [DEBT.md 冒烟流程](DEBT.md#冒烟测试流程每条改动后跑一遍)）：
+改完跑一遍完整路径（参考 [DEBT.md 冒烟流程](docs/DEBT.md#冒烟测试流程每条改动后跑一遍)）：
 
 1. `npm run dev`
 2. 加载 `三向车.glb`
@@ -195,11 +195,11 @@ npm run test:watch # 开发时 watch 模式
 | 改动类型 | 必须更新 | 推荐更新 |
 |---|---|---|
 | 修 bug | [CLAUDE.md](CLAUDE.md) bug log | [CHANGELOG.md](CHANGELOG.md) |
-| 新增功能 | [CHANGELOG.md](CHANGELOG.md) + [README.md](README.md) 能力描述 | [USER-GUIDE.md](USER-GUIDE.md) / [HOW-IT-WORKS.md](HOW-IT-WORKS.md) |
-| Schema 变更 | [docs/schema/vN.md](docs/schema/) + [CHANGELOG.md](CHANGELOG.md) Breaking | [HOW-IT-WORKS.md §8](HOW-IT-WORKS.md) |
-| 新诊断脚本 | [CLAUDE.md 诊断指南](CLAUDE.md#诊断脚本指南) | [FLOW.md 故障表](FLOW.md) |
-| 架构决策 | [CLAUDE.md 核心架构约束](CLAUDE.md#核心架构约束不可随意改动)（如属于红线） | [HOW-IT-WORKS.md §10](HOW-IT-WORKS.md) |
-| 已知技术债 | [DEBT.md](DEBT.md) | — |
+| 新增功能 | [CHANGELOG.md](CHANGELOG.md) + [README.md](README.md) 能力描述 | [USER-GUIDE.md](docs/USER-GUIDE.md) / [HOW-IT-WORKS.md](docs/HOW-IT-WORKS.md) |
+| Schema 变更 | [docs/schema/vN.md](docs/schema/) + [CHANGELOG.md](CHANGELOG.md) Breaking | [HOW-IT-WORKS.md §8](docs/HOW-IT-WORKS.md) |
+| 新诊断脚本 | [CLAUDE.md 诊断指南](CLAUDE.md#诊断脚本指南) | [FLOW.md 故障表](docs/FLOW.md) |
+| 架构决策 | [CLAUDE.md 核心架构约束](CLAUDE.md#核心架构约束不可随意改动)（如属于红线） | [HOW-IT-WORKS.md §10](docs/HOW-IT-WORKS.md) |
+| 已知技术债 | [DEBT.md](docs/DEBT.md) | — |
 
 原则：**代码即事实，文档是导航**。事实变了，导航不同步，下一个接手的人就会被误导。
 
@@ -207,7 +207,7 @@ npm run test:watch # 开发时 watch 模式
 
 ## 问题反馈
 
-- 用户使用问题：优先参考 [USER-GUIDE.md 常见问题](USER-GUIDE.md#9-常见问题)
+- 用户使用问题：优先参考 [USER-GUIDE.md 常见问题](docs/USER-GUIDE.md#9-常见问题)
 - 开发问题：先查 [CLAUDE.md](CLAUDE.md) bug 历史（35 条覆盖大多数常见坑）
 - 实在查不到：提 issue，附上复现步骤 + `__mf` 诊断输出
 

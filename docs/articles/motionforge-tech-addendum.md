@@ -3,7 +3,7 @@
 > 作者：Hockwang  项目：MotionForge —— 基于 Three.js + Vite 的浏览器端 FK 求解器 + 参数化动画系统
 > 阅读时间：约 20 分钟
 > 适合谁：读过 mvp1 那篇《MotionForge 技术原理》，想看"让系统长期能跑"的工程部分
-> 前置阅读：[HOW-IT-WORKS.md](../../HOW-IT-WORKS.md)（mvp1 技术原理，2026-04-16）
+> 前置阅读：[HOW-IT-WORKS.md](../HOW-IT-WORKS.md)（mvp1 技术原理，2026-04-16）
 
 ## TL;DR
 
@@ -142,7 +142,7 @@ if (fork && forkAnchorLocal) {
 ## 2. ZIP 导入的事务化
 
 > ⚠️ 术语区分：本章讲的 **Phase 1 / Phase 2** 是 **ZIP 导入整体流程**的两阶段（解析 → mutation）。
-> mvp1 的 [HOW-IT-WORKS.md §8.3](../../HOW-IT-WORKS.md) 也有"两阶段"，那是 **joint 驱动**的两阶段（零位捕获 base → 恢复 value）。
+> mvp1 的 [HOW-IT-WORKS.md §8.3](../HOW-IT-WORKS.md) 也有"两阶段"，那是 **joint 驱动**的两阶段（零位捕获 base → 恢复 value）。
 > 两者是**不同层次**的两阶段：外层 ZIP 流程的 Phase 2 内部仍然会走 HOW-IT-WORKS §8.3 的 joint 两阶段。
 
 ### 2.1 问题
@@ -443,7 +443,7 @@ Vite 看到 `await import(...)` 自动切独立 chunk，浏览器第一次访问
 
 ## 结语
 
-mvp1 [HOW-IT-WORKS.md](../../HOW-IT-WORKS.md) 写的是**"怎么让这个系统跑对"**——数学、核心流程、踩坑换来的 11 条设计决策。
+mvp1 [HOW-IT-WORKS.md](../HOW-IT-WORKS.md) 写的是**"怎么让这个系统跑对"**——数学、核心流程、踩坑换来的 11 条设计决策。
 这篇写的是**"怎么让这个系统长期被人用"**——工程基建、可视化、测试、CI、bundle。
 
 做项目最容易犯的错是过度重视前者（算法 / 数学 / 核心正确）而忽视后者（基建 / 测试 / 协作效率）。前者决定系统的天花板，后者决定下限能持续多久。没有后者，前者做得再漂亮也会在"换个协作者"或"下游对接"那一刻崩。

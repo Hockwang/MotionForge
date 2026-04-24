@@ -58,14 +58,14 @@ Web 端 3D 动作编辑器（Three.js + Vite），用自然语言或关键帧驱
 
 | 子系统 | 代码入口 | 深入文档 |
 |---|---|---|
-| FK 关节求解 | [KeyframeManager.js](src/core/KeyframeManager.js) `applyJointDrive` | [HOW-IT-WORKS §2](HOW-IT-WORKS.md) |
-| 拓扑排序 | `applyAllJointDrives` | [HOW-IT-WORKS §4](HOW-IT-WORKS.md) |
-| PKF 公式求值 | `evaluatePkfFormula` / `evaluatePkfAt` | [HOW-IT-WORKS §5](HOW-IT-WORKS.md) |
-| 全局关键帧 | `evaluateAllAt` | [HOW-IT-WORKS §6](HOW-IT-WORKS.md) |
-| 导出 ZIP | [ResultPackageExporter.js](src/core/ResultPackageExporter.js) | [HOW-IT-WORKS §8](HOW-IT-WORKS.md) |
-| 导入两阶段 | [main.js](src/main.js) `handleImportPackage` | [HOW-IT-WORKS §8](HOW-IT-WORKS.md) |
-| AI 后端 | [conversion-service.js](tools/conversion-service.js) | [HOW-IT-WORKS §9](HOW-IT-WORKS.md) |
-| Gizmo + ViewHelper | [SceneManager.js](src/core/SceneManager.js) | [HOW-IT-WORKS §3](HOW-IT-WORKS.md) |
+| FK 关节求解 | [KeyframeManager.js](src/core/KeyframeManager.js) `applyJointDrive` | [HOW-IT-WORKS §2](docs/HOW-IT-WORKS.md) |
+| 拓扑排序 | `applyAllJointDrives` | [HOW-IT-WORKS §4](docs/HOW-IT-WORKS.md) |
+| PKF 公式求值 | `evaluatePkfFormula` / `evaluatePkfAt` | [HOW-IT-WORKS §5](docs/HOW-IT-WORKS.md) |
+| 全局关键帧 | `evaluateAllAt` | [HOW-IT-WORKS §6](docs/HOW-IT-WORKS.md) |
+| 导出 ZIP | [ResultPackageExporter.js](src/core/ResultPackageExporter.js) | [HOW-IT-WORKS §8](docs/HOW-IT-WORKS.md) |
+| 导入两阶段 | [main.js](src/main.js) `handleImportPackage` | [HOW-IT-WORKS §8](docs/HOW-IT-WORKS.md) |
+| AI 后端 | [conversion-service.js](tools/conversion-service.js) | [HOW-IT-WORKS §9](docs/HOW-IT-WORKS.md) |
+| Gizmo + ViewHelper | [SceneManager.js](src/core/SceneManager.js) | [HOW-IT-WORKS §3](docs/HOW-IT-WORKS.md) |
 
 ### 当前能做 / 不能做（一句话）
 
@@ -85,17 +85,17 @@ Web 端 3D 动作编辑器（Three.js + Vite），用自然语言或关键帧驱
 
 | 你是谁 | 先读这个 |
 |---|---|
-| **纯用户**（不懂技术，想用编辑器做动画） | 👉 [USER-GUIDE.md](USER-GUIDE.md)（基础使用，从加载模型到导出） |
-| **进阶用户**（会基础，想跑 🚀 一键 / 模板 / AI 调试） | 👉 [AI-WORKFLOW.md](AI-WORKFLOW.md)（AI 协作动画指南） |
+| **纯用户**（不懂技术，想用编辑器做动画） | 👉 [USER-GUIDE.md](docs/USER-GUIDE.md)（基础使用，从加载模型到导出） |
+| **进阶用户**（会基础，想跑 🚀 一键 / 模板 / AI 调试） | 👉 [AI-WORKFLOW.md](docs/AI-WORKFLOW.md)（AI 协作动画指南） |
 | 想快速运行项目 | 继续往下读（本文件） |
-| 想看完整流程和故障排查 | [FLOW.md](FLOW.md) |
-| 想了解技术原理（FK 数学、PKF 求值、roundtrip） | [HOW-IT-WORKS.md](HOW-IT-WORKS.md) |
+| 想看完整流程和故障排查 | [FLOW.md](docs/FLOW.md) |
+| 想了解技术原理（FK 数学、PKF 求值、roundtrip） | [HOW-IT-WORKS.md](docs/HOW-IT-WORKS.md) |
 | 想改代码 / 定位 bug / 理解架构 | [CLAUDE.md](CLAUDE.md) |
 | **想贡献代码**（协作规则 / commit / 文档同步） | [CONTRIBUTING.md](CONTRIBUTING.md) |
 | 想看版本历史和 breaking change | [CHANGELOG.md](CHANGELOG.md) |
 | 想对接 ZIP 输出（下游系统） | [docs/schema/v7.md](docs/schema/v7.md) |
 | 想了解 AI 打关节研究方向（长期课题） | [AI-RIGGING-README.md](AI-RIGGING-README.md) |
-| 想了解当前技术债 | [DEBT.md](DEBT.md) |
+| 想了解当前技术债 | [DEBT.md](docs/DEBT.md) |
 | 想看二期路线图（5 个未来方向） | [docs/ROADMAP.md](docs/ROADMAP.md) |
 
 **历史文档**（了解演进过程）：
@@ -108,23 +108,23 @@ Web 端 3D 动作编辑器（Three.js + Vite），用自然语言或关键帧驱
 
 | 遇到的问题 | 看哪里 |
 |---|---|
-| 不知道怎么开始用 | [USER-GUIDE §2-3](USER-GUIDE.md) |
-| 关节配了但模型不动 | [USER-GUIDE FAQ](USER-GUIDE.md#9-常见问题) |
-| 旋转方向反了 / 绕错中心 | [USER-GUIDE §4.3](USER-GUIDE.md) |
-| AI 生成的动作选错关节 | [USER-GUIDE FAQ · Q](USER-GUIDE.md#9-常见问题) → 检查 role 字段 |
-| 导出后再导入模型不对 | [FLOW.md 故障表](FLOW.md) |
+| 不知道怎么开始用 | [USER-GUIDE §2-3](docs/USER-GUIDE.md) |
+| 关节配了但模型不动 | [USER-GUIDE FAQ](docs/USER-GUIDE.md#9-常见问题) |
+| 旋转方向反了 / 绕错中心 | [USER-GUIDE §4.3](docs/USER-GUIDE.md) |
+| AI 生成的动作选错关节 | [USER-GUIDE FAQ · Q](docs/USER-GUIDE.md#9-常见问题) → 检查 role 字段 |
+| 导出后再导入模型不对 | [FLOW.md 故障表](docs/FLOW.md) |
 | 播放循环卡顿 / 瞬跳 | [CLAUDE #31](CLAUDE.md) |
 | 窗口变窄右面板消失 | 按 Ctrl+0 重置浏览器缩放 |
-| 想了解坐标约定（Y-up 还是 Z-up） | [HOW-IT-WORKS §1](HOW-IT-WORKS.md) |
+| 想了解坐标约定（Y-up 还是 Z-up） | [HOW-IT-WORKS §1](docs/HOW-IT-WORKS.md) |
 
 **开发层面**（你在改代码时遇到）：
 
 | 遇到的问题 | 看哪里 |
 |---|---|
-| 新 bug 要定位 | [FLOW §2 故障定位表](FLOW.md) → 对应诊断脚本 |
-| 要理解 FK 数学 / 公式 | [HOW-IT-WORKS §2](HOW-IT-WORKS.md) |
-| 要理解 PKF 求值管线 | [HOW-IT-WORKS §5](HOW-IT-WORKS.md) |
-| 要理解导出/导入 roundtrip | [HOW-IT-WORKS §8](HOW-IT-WORKS.md) |
+| 新 bug 要定位 | [FLOW §2 故障定位表](docs/FLOW.md) → 对应诊断脚本 |
+| 要理解 FK 数学 / 公式 | [HOW-IT-WORKS §2](docs/HOW-IT-WORKS.md) |
+| 要理解 PKF 求值管线 | [HOW-IT-WORKS §5](docs/HOW-IT-WORKS.md) |
+| 要理解导出/导入 roundtrip | [HOW-IT-WORKS §8](docs/HOW-IT-WORKS.md) |
 | 遇到"链式关节下沉 / 断链" | [CLAUDE #18 #22](CLAUDE.md) |
 | 遇到"导入后停在末态" | [CLAUDE #30](CLAUDE.md) |
 | 遇到"旋转 90° 失真" | [CLAUDE #7 万向锁](CLAUDE.md) |
@@ -132,7 +132,7 @@ Web 端 3D 动作编辑器（Three.js + Vite），用自然语言或关键帧驱
 | 修完 bug 要归档记录 | [CONTRIBUTING §协作规则](CONTRIBUTING.md#协作规则) |
 | 文档同步范围（改代码要改哪些文档） | [CONTRIBUTING §文档同步要求](CONTRIBUTING.md#文档同步要求) |
 | 要解析 ZIP 输出 / 对接下游 | [docs/schema/v7.md](docs/schema/v7.md) |
-| 想看还有哪些债 | [DEBT.md](DEBT.md) |
+| 想看还有哪些债 | [DEBT.md](docs/DEBT.md) |
 
 **研究层面**（和 AI 打关节相关）：
 
@@ -197,7 +197,7 @@ Converter 服务同时承载 AI 后端（端口 8091）。设置环境变量：
 - `pkf.json` — 参数化公式（可选）
 - `model.glb` — GLTFExporter 序列化后的场景
 
-完整流程图见 [FLOW.md](FLOW.md)。
+完整流程图见 [FLOW.md](docs/FLOW.md)。
 
 ---
 
@@ -247,4 +247,4 @@ __mf.getJointDefs()     // 关节定义快照
 __mf.editableObjects()  // 可编辑对象列表
 ```
 
-遇到 bug → 先看 [FLOW.md 第 2 节故障定位表](FLOW.md)，再看对应诊断脚本。
+遇到 bug → 先看 [FLOW.md 第 2 节故障定位表](docs/FLOW.md)，再看对应诊断脚本。

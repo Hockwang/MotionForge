@@ -328,4 +328,4 @@ AI 打关节只要吐出这个 schema，MotionForge 直接消费，不用改代�
 - [AI-RIGGING-PLAN.md](../archive/AI-RIGGING-PLAN.md) — 产品愿景 + 技术判断（早期草稿，部分废弃）
 - [HANDOFF.md](HANDOFF.md) — 给研究方的 context 包
 - [CLAUDE.md](../../CLAUDE.md) — MotionForge 架构约束 + bug 历史（含父子拓扑相关 #10 #18 #22）
-- [FLOW.md](../../FLOW.md) — 端到端流程图
+- [FLOW.md](../FLOW.md) — 端到端流程图

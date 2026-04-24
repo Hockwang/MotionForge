@@ -147,7 +147,7 @@ finally 块可选再 `trajectoryOverlay?.requestRefresh()` 恢复。2 行改动�
 - [docs/concepts/forklift-pickup-template.md:8,28,157,293,300,339,369,397,425](concepts/forklift-pickup-template.md) 多处"14 段"需改成"17 段（含 3 段可选）"或按上下文改
 - [docs/diagnostics.md:26](diagnostics.md#L26) 目录项"叉车 14 段模板路径验证"
 - [CHANGELOG.md:93](../CHANGELOG.md#L93) `5 个浏览器 Console 脚本` 实际 9 个
-- [DEBT.md:144](../DEBT.md#L144) `5 个 console 诊断脚本` 实际 9 个
+- [DEBT.md:144](DEBT.md#L144) `5 个 console 诊断脚本` 实际 9 个
 
 **历史引用（不该改）**：
 - docs/log.md 里的 milestone 条目（2026-04-22 14 段、2026-04-22 → 17 段扩展）—— 这些是**历史时间线**，必须保留 14 段的字样记录决策过程
@@ -198,7 +198,7 @@ finally 块可选再 `trajectoryOverlay?.requestRefresh()` 恢复。2 行改动�
 - [docs/raw/alignment-state-animation-framework-2026-04-23.md](raw/alignment-state-animation-framework-2026-04-23.md) —— 和 mentor 的对齐文档
 - [docs/gotchas/008-trajectory-overlay-as-suspect.md](gotchas/008-trajectory-overlay-as-suspect.md) —— 今天刚加
 - [docs/log.md](log.md) —— 决策时间线（在 index.md 最下方但未标重要性）
-- [DEBT.md](../DEBT.md) —— 技术债
+- [DEBT.md](DEBT.md) —— 技术债
 
 **index.md line 63 也过时**：`诊断脚本完整指南 7 脚本 + 7 场景` 实际 9 脚本（`ls tests/diag-*.js | wc -l = 9`）
 
