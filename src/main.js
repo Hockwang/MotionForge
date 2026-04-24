@@ -637,6 +637,12 @@ async function handleImportPackage(file) {
   ui.setLoadStatus(`正在读取资产包 ${file.name}...`);
 
   try {
+    // ──────────────────────────────────────────────────────────────
+    // Phase 1: 全部解析到内存，零 mutation
+    // ──────────────────────────────────────────────────────────────
+    // #64 (REVIEW-v17 #1 事务化)：任何 JSON 坏掉、文件缺失都在这里抛 → catch 时
+    //   sceneManager / keyframeManager / trajectoryOverlay 都未被触碰，当前工程状态完整保留。
+    //   旧版代码先 setSceneRoot 再解析，失败时旧模型已被 dispose，用户只能重新加载。
     const zipData = await file.arrayBuffer();
     const zip = await JSZip.loadAsync(zipData);
 
@@ -649,6 +655,32 @@ async function handleImportPackage(file) {
     const modelZipEntry = modelFileName ? zip.file(modelFileName) : null;
     if (!modelZipEntry) throw new Error(`资产包中缺少模型文件: ${modelFileName || '(未指定)'}`);
 
+    // 预解析 joints.json（容器可能不存在 → jointsData=null，和老代码行为一致）
+    const hasLegacyJointDefsFile = !!manifest.files?.joint_definitions;
+    const jointsFileName = manifest.files?.joints;
+    let jointsZipEntry = jointsFileName ? zip.file(jointsFileName) : null;
+    if (!jointsZipEntry) {
+      jointsZipEntry = Object.values(zip.files).find((f) => /^joints-.*\.json$/i.test(f.name)) || null;
+    }
+    if (!jointsZipEntry && hasLegacyJointDefsFile) {
+      jointsZipEntry = zip.file(manifest.files.joint_definitions)
+        || Object.values(zip.files).find((f) => /^joint-definitions.*\.json$/i.test(f.name));
+    }
+    const jointsData = jointsZipEntry ? JSON.parse(await jointsZipEntry.async('string')) : null;
+
+    // 预解析 motion.json
+    const motionFileName = manifest.files?.motion || 'motion.json';
+    const motionZipEntry = zip.file(motionFileName) || zip.file('motion.json');
+    const motionData = motionZipEntry ? JSON.parse(await motionZipEntry.async('string')) : null;
+
+    // 预解析 pkf.json（可选）
+    const pkfFileName = manifest.files?.pkf;
+    const pkfZipEntry = pkfFileName
+      ? zip.file(pkfFileName)
+      : Object.values(zip.files).find((f) => /^pkf-.*\.json$/i.test(f.name));
+    const pkfData = pkfZipEntry ? JSON.parse(await pkfZipEntry.async('string')) : null;
+
+    // 读 model buffer + 走 Three.js loader；loader 只构造对象，不 attach 到场景
     ui.setLoadStatus('正在加载模型...');
     const modelBuffer = await modelZipEntry.async('arraybuffer');
     const modelBlob = new Blob([modelBuffer]);
@@ -657,6 +689,10 @@ async function handleImportPackage(file) {
     const root = await assetLoader.loadFromFile(modelFile, (status) => {
       ui.setLoadStatus(`${modelFileName}：${status}`);
     });
+
+    // ──────────────────────────────────────────────────────────────
+    // Phase 2: 全部校验通过，开始 mutation
+    // ──────────────────────────────────────────────────────────────
     // v5 修复：导出时已归零关节 + GLB 存的是自然状态，alignObjectToGround 正常运行即可。
     // （之前用 skipAlign:true 是因为 GLB 烘焙了已驱动的 transform + 对齐偏移，现在不需要了）
     // [trajectory-overlay] 切场景前清旧 group（同上）
@@ -697,7 +733,7 @@ async function handleImportPackage(file) {
     // v4: model.glb 由 GLTFExporter 序列化，包含运行时插入的 group。
     //     origin 语义改为「父刚性坐标系」（parent rigid frame，无 scale）
     const schemaVersion = manifest.schema_version || 1;
-    const hasLegacyJointDefsFile = !!manifest.files?.joint_definitions;
+    // #64: hasLegacyJointDefsFile 已在 Phase 1 声明
     // v < 4：origin / 场景树状态都不兼容当前代码，导入后 reset 关节定义
     const needsOriginReset = schemaVersion < 4;
     if (schemaVersion < 2 || hasLegacyJointDefsFile) {
@@ -714,19 +750,9 @@ async function handleImportPackage(file) {
     }
 
     // Restore joint definitions (FK layer-tree joints) — v2 stored under "joints"
+    // #64: jointsData 已在 Phase 1 预解析，这里直接使用（零 JSON parse）
     keyframeManager.jointDefinitions.clear();
-    const jointsFileName = manifest.files?.joints;
-    // v2 优先：joints-{ts}.json 直接是 FK 关节定义
-    // v1 兜底：尝试老的 joint-definitions-{ts}.json
-    let jointsFile = jointsFileName ? zip.file(jointsFileName) : null;
-    if (!jointsFile) {
-      jointsFile = Object.values(zip.files).find((f) => /^joints-.*\.json$/i.test(f.name)) || null;
-    }
-    if (!jointsFile && hasLegacyJointDefsFile) {
-      jointsFile = zip.file(manifest.files.joint_definitions)
-        || Object.values(zip.files).find((f) => /^joint-definitions.*\.json$/i.test(f.name));
-    }
-    if (jointsFile) {
+    if (jointsData) {
       // Build path-based lookup for fallback matching
       const objectsByPath = new Map();
       editableObjects.forEach((obj) => {
@@ -734,9 +760,8 @@ async function handleImportPackage(file) {
         if (path) objectsByPath.set(path, obj);
       });
 
-      const data = JSON.parse(await jointsFile.async('string'));
       // v2+ 用 definitions 数组；v1 老 joints.json 用 joints 数组（关节点，跳过它）
-      const definitionsArr = Array.isArray(data.definitions) ? data.definitions : [];
+      const definitionsArr = Array.isArray(jointsData.definitions) ? jointsData.definitions : [];
       definitionsArr.forEach((d) => {
         // Priority: 1) name match, 2) scene_path match, 3) fallback to stored id
         let childObj = d.name ? objectsByName.get(d.name) : null;
@@ -783,11 +808,9 @@ async function handleImportPackage(file) {
 
     // ── 恢复 motion.json（v2 schema：全局 clips + jointValues 关键帧） ──
     // 老 schema (v1) 是 per-object channels.translate/rotate/joint，不再支持
-    const motionFileName = manifest.files?.motion || 'motion.json';
-    const motionFile = zip.file(motionFileName) || zip.file('motion.json');
+    // #64: motionData 已在 Phase 1 预解析
     let oldMotionDetected = false;
-    if (motionFile) {
-      const motionData = JSON.parse(await motionFile.async('string'));
+    if (motionData) {
       const clipsArr = motionData.clips || [];
 
       // 检测格式：
@@ -853,14 +876,10 @@ async function handleImportPackage(file) {
     }
 
     // ── 恢复 PKF 数据（向后兼容：旧包无 pkf 字段时跳过）──
-    const pkfFileName = manifest.files?.pkf;
-    const pkfFile = pkfFileName
-      ? zip.file(pkfFileName)
-      : Object.values(zip.files).find((f) => /^pkf-.*\.json$/i.test(f.name));
+    // #64: pkfData 已在 Phase 1 预解析
     let restoredPkfParams = 0;
     let restoredPkfSteps = 0;
-    if (pkfFile) {
-      const pkfData = JSON.parse(await pkfFile.async('string'));
+    if (pkfData) {
       // 恢复参数
       (pkfData.parameters || []).forEach((p) => {
         keyframeManager.addPkfParameter({
@@ -2319,7 +2338,11 @@ ui.pkfPreviewBtn.addEventListener('click', () => {
 ui.exportJsonBtn.addEventListener('click', () => {
   const clips = buildExportClips();
   const jointDefs = keyframeManager.getAllJointDefs();
-  if (!clips.length && !jointDefs.length) {
+  // #63: `clips.length` 永远非零（buildExportClips 至少产生默认 clip），
+  // 改查"实际有内容"：关节定义 / 任一 clip 有关键帧 / 任一 clip 有 reparent 事件
+  const hasKeyframes = clips.some((c) => (c.keyframes?.length || 0) > 0);
+  const hasReparentEvents = clips.some((c) => (c.reparent_events?.length || 0) > 0);
+  if (!jointDefs.length && !hasKeyframes && !hasReparentEvents) {
     ui.exportOutput.textContent = '没有可导出的数据，请先创建关节或添加关键帧。';
     return;
   }
@@ -2468,11 +2491,25 @@ function refreshMarkerList() {
 }
 
 ui.exportPackageBtn.addEventListener('click', async () => {
+  // #63: ZIP 导出 guard 加严。
+  //  (a) 没加载模型时提前拦截 —— 否则走到 serializeSceneToGlb 才因 sceneRoot 空抛 cryptic error
+  //  (b) `clips.length` 总是非零（buildExportClips 至少产生默认 clip），改查实际内容：
+  //      关节 / 关键帧 / reparent 事件 / PKF / markers 任意一项存在才允许导出
+  if (!sceneManager.sceneRoot) {
+    ui.exportOutput.textContent = '请先加载模型再导出 ZIP。';
+    return;
+  }
+
   const clips = buildExportClips();
   const jointDefs = keyframeManager.getAllJointDefs();
+  const hasKeyframes = clips.some((c) => (c.keyframes?.length || 0) > 0);
+  const hasReparentEvents = clips.some((c) => (c.reparent_events?.length || 0) > 0);
+  const hasPkf = (keyframeManager.getAllPkfParameters()?.length || 0) > 0
+    || (keyframeManager.getAllPkfSteps()?.length || 0) > 0;
+  const hasMarkers = (keyframeManager.getAllMarkers()?.length || 0) > 0;
 
-  if (!clips.length && !jointDefs.length) {
-    ui.exportOutput.textContent = '没有可导出的数据，请先创建关节或添加关键帧。';
+  if (!jointDefs.length && !hasKeyframes && !hasReparentEvents && !hasPkf && !hasMarkers) {
+    ui.exportOutput.textContent = '没有可导出的数据，请先创建关节、添加关键帧或 PKF。';
     return;
   }
 

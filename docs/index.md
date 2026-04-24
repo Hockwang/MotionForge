@@ -68,7 +68,8 @@ updated: 2026-04-23
 - [README.md](../README.md) — 项目概览（3 分钟版）
 - [FLOW.md](../FLOW.md) — 完整产品操作流程
 - [DEBT.md](../DEBT.md) — 技术债清单（持续跟踪）
-- [docs/schema/v4.md](schema/v4.md) — ZIP schema v4 详细规范
+- [docs/schema/v7.md](schema/v7.md) — ZIP schema v7 详细规范（当前版本）
+- [docs/schema/v4.md](schema/v4.md) — ZIP schema v4 字段参考（历史版本）
 - [docs/ROADMAP.md](ROADMAP.md) — 二期路线图
 - **[docs/REVIEW-v15.md](REVIEW-v15.md)** — mvp3 最新 review（F28-F43 + 收尾 checklist）
 - [docs/REVIEW-v14.md](REVIEW-v14.md) — v14.1 master review（F1-F27，多数已完成）

@@ -611,6 +611,30 @@ updated: 2026-04-22
   2. **类型假设要早暴露**：Three.js `Object3D.material` 按 API 就是 `Material | Material[]`，早期单材质只是运气好；类似"看似 scalar 实际可以是 array"的 API（`animations`、`children`、`skeletons`）都值得 grep 一遍做审计
   3. **代码结构"整齐"未必对**：`arrayBuffer()` 放在 extension 分流之前是"整齐"的顺序化写法，但在分支中并非所有分支都需要这一步——**对称不等于正确**
 
+#### #63 REVIEW-v17 第一批 P1/P2 收尾 — schema 文档 v7 + 空导出 guard + ZIP 导入事务化
+
+- **症状 / 风险**：
+  - REVIEW-v17 第 6 条：代码写 `schema_version: 7` 但 `docs/schema/` 下只有 `v4.md`，README 链接还指向 v4。下游按 v4 实现会漏读 `scene_markers` / `limit_upper` / `overflow_to` / `template_meta` / `template_segment` 等字段
+  - REVIEW-v17 第 5 条：`clips.length` 在 `buildExportClips` 之后**恒为非零**（至少有默认 clip），导致 `!clips.length && !jointDefs.length` guard 几乎永远失败；没加载模型时 ZIP 导出会跑到 `serializeSceneToGlb` 再因 `sceneRoot=null` 抛 cryptic error
+  - REVIEW-v17 第 1 条（P1）：`handleImportPackage` 先 `setSceneRoot(root)` + `keyframeManager.reset()` 再解析 joints/motion/pkf。任何 JSON 文件损坏，用户当前模型已经被替换、关节/关键帧已清空，catch 只显示错误 —— 用户手里只剩空场景
+
+- **排查**：外部审阅者（GPT-5.5 独立 review）三连命中。作者本地核对代码行后全部坐实。
+
+- **根因**：
+  - #63-doc：schema 每次加字段都只改代码注释，没同步 `docs/schema/` 文档；v4.md 是两年前的老快照
+  - #63-guard：`buildExportClips` 从 `globalClips` Map 产出数组，默认 clip 一直存在 → `clips.length ≥ 1` 恒成立
+  - #63-import：导入流程把"加载新内容"和"清空旧状态"混在同一段 try 里，顺序是 **mutate-first-validate-later**，失败路径没兜底
+
+- **修复**：
+  - #63-doc：新建 [docs/schema/v7.md](schema/v7.md)（完整字段定义 + v5/v6/v7 增量迁移表 + scene_markers/limit_upper/overflow_to/template_segment 全覆盖）；[README.md](../README.md) / [docs/index.md](index.md) / [docs/concepts/zip-output-schema.md](concepts/zip-output-schema.md) 的对外链接都改指向 v7.md，v4.md 作为历史版本保留
+  - #63-guard：[main.js](../src/main.js) 两个导出按钮都改成查"实际有内容"：JSON 导出查 `jointDefs / 任一 clip 有关键帧 / 任一 clip 有 reparent 事件`；ZIP 导出额外查 PKF 和 markers，并且在最前面加 `sceneRoot` 存在性检查
+  - #63-import：[main.js `handleImportPackage`](../src/main.js) 重构为**两阶段**：Phase 1 读 ZIP + 解析所有 JSON 到 `jointsData` / `motionData` / `pkfData` / `manifest` 内存变量；只有全部解析成功后进入 Phase 2 的 `trajectoryOverlay.clear()` + `setSceneRoot(root)` + keyframeManager 重置。任一 JSON 损坏在 Phase 1 抛 → 场景状态一字未动
+
+- **经验教训**：
+  1. **schema 版本号变动必须三处联动**：`ResultPackageExporter.js` 常量 / `docs/schema/vN.md` 文档 / `README.md` + `docs/index.md` 链接。漏一处就会让下游系统按错的 schema 实现
+  2. **guard 条件要查"实际状态"不是"容器大小"**：`Map/Array.length` 经常因为默认元素恒为非零，用这种值做 guard 等于没加。查字段的**实质内容**（总关键帧数、总步骤数）才可靠
+  3. **mutate-first-validate-later 是导入类代码的反模式**：所有解析/校验必须在改全局状态之前做完；把"读取数据"和"应用数据"切分成两段，catch 才能真的零污染。这个模式适用于所有"加载文件覆盖当前工程"的场景
+
 ---
 
 ## 核心经验教训（跨 bug 总结）

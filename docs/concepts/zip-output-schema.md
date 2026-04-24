@@ -140,13 +140,15 @@ motionforge_YYYYMMDD_HHMMSS.zip
 | v3 | origin 改为 parent-local；motion.json 全局关键帧格式 |
 | v4 | model.glb 由 GLTFExporter 重新序列化（含 runtime 插入的 group） |
 | v5 | motion.json 新增 `reparent_events[]`；manifest 新增 `source.root_name` |
-| v6 | manifest 新增 `scene_markers[]`；joints 新增 `role` 字段 |
+| v6 | manifest 新增 `scene_markers[]`；joints 新增 `role` 字段；pkf.json 可选文件 + `template_meta` |
+| v7 | joints 新增 `limit_upper` + `overflow_to`（双段门架 overflow，bugfix #59）；pkf steps 新增 `template_segment` + `template_segment_name`（模板段诊断元数据） |
 
 ## 重要约束
 
 - `model.glb` 烘焙零位态，`joints.json` 的 `current_value` 也必须是 0（两者语义必须一致，否则导入 double-apply）
 - `parent_name` / `child_name` / `new_parent_name` 是跨 roundtrip 的稳定引用，不要用 UUID
-- 详细 schema 定义见 [`docs/schema/v4.md`](../schema/v4.md)（注：v4.md 是当前最完整的字段参考，v5/v6 增量字段见上表）
+- 详细 schema 定义见 [`docs/schema/v7.md`](../schema/v7.md)（当前版本，含 v5/v6/v7 全部字段）
+- 历史版本字段参考见 [`docs/schema/v4.md`](../schema/v4.md)
 
 ## 相关文件
 
