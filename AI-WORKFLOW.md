@@ -1,7 +1,7 @@
 # MotionForge AI 协作动画指南
 
-> 作者：正淳
-> 姊妹篇：[USER-GUIDE.md](USER-GUIDE.md)（从零开始的基础使用）、[MotionForge 技术原理](docs/articles/motionforge-tech-addendum.md)（内部实现）
+> 作者：Hockwang
+> 姊妹篇：[USER-GUIDE.md](USER-GUIDE.md)（从零开始的基础使用）、[HOW-IT-WORKS.md](HOW-IT-WORKS.md)（内部实现原理，mvp1）、[技术补遗](docs/articles/motionforge-tech-addendum.md)（mvp3 工程基建）
 > 阅读时间：约 12 分钟
 > 适合谁：已经会用基础功能（加载模型、配关节、打关键帧），想用 **AI + 模板 + 可视化调试** 把工作流跑顺的人
 
@@ -186,6 +186,8 @@ size: { w: 1.0, h: 1.0, d: 1.0 }  // 宽 高 深（米）
 ---
 
 ## 5. AI 自由生成路径
+
+> 基础的 AI 面板操作（点按钮、输入文字、点生成、应用）见 [USER-GUIDE §5](USER-GUIDE.md#5-用-ai-自然语言做动画推荐)。本章只补"进阶怎么用"：**写 prompt 的原则、常见 AI 错误类型、怎么定位偏差**。
 
 ### 5.1 什么时候用
 
